@@ -25,6 +25,7 @@
   <a href="#quick-start"><img src="https://img.shields.io/badge/node-%E2%89%A518-339933.svg?logo=node.js&amp;logoColor=white" alt="Node.js 18+"></a>
   <img src="https://img.shields.io/badge/dependencies-0-brightgreen.svg" alt="Zero dependencies">
   <a href="https://indigo-rain.github.io/bioinfo-guidebook/"><img src="https://img.shields.io/badge/live%20demo-GitHub%20Pages-2ea44f.svg?logo=githubpages&amp;logoColor=white" alt="Live demo"></a>
+  <a href="https://github.com/Indigo-Rain/bioinfo-guidebook/actions/workflows/verify.yml"><img src="https://github.com/Indigo-Rain/bioinfo-guidebook/actions/workflows/verify.yml/badge.svg" alt="CI: verify"></a>
 </p>
 
 <p align="center">
