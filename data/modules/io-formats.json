@@ -1,0 +1,738 @@
+[
+  {
+    "id": "io_fastq_to_fasta",
+    "name": "FASTQ 与 FASTA 互转",
+    "category": "io-formats",
+    "layer": "engine",
+    "kind": "adapter",
+    "maturity": "stable",
+    "domains": ["genomics", "metagenomics"],
+    "tags": ["格式转换", "fastq", "fasta", "seqkit", "seqtk", "序列"],
+    "summary": "在 FASTQ 与 FASTA 之间转换并明确质量值去向",
+    "what": [
+      "它存在的理由是工具链的输入格式并不统一：比对、组装、分类工具几乎只接受 FASTQ，而基于序列本身的分析（同源搜索、k-mer 比较、参考序列表、多数系统发育与注释工具）只接受 FASTA。把这层不匹配显式地用一个转换步骤解决，比在每个下游命令里临时写 sed 更安全——因为格式转换是流程里最容易被忽略、也最容易造成静默数据损坏的一环（转换本身不产生任何报错，只是数据含义变了）。",
+      "两个方向的语义完全不同，这是所有坑的根源。FASTQ→FASTA 会永久丢掉质量值，是不可逆的信息损失；FASTA→FASTQ 必须**伪造**质量值（常见做法是全部写成最高质量字符，或全部写成最低质量），而下游任何按质量过滤、修剪或加权共识的工具都会把这些伪造值当成真实测量结果，从而给出看似正常实则无依据的结论。因此只应在确实需要 FASTA 时才转换，并始终保留原始 FASTQ。",
+      "实践细节同样会造成静默错误：默认的 FASTA 折行宽度（通常 60–70 列）会让假设「一条序列一行」的 awk/统计脚本彻底算错，需要显式写成不折行；双端数据必须对 R1 与 R2 分别转换且保持顺序一致，只转一侧会让下游的配对逻辑错位。序列 ID 也要核对：Illumina 头里的空格描述段与 /1、/2 后缀在不同工具中处理方式不同，转换后可能与元数据表对不上。"
+    ],
+    "inputs": [
+      { "type": "clean-reads", "name": "读长文件 (FASTQ)", "required": true, "note": "gzip 压缩同样支持；这一侧是 FASTQ→FASTA 的主流用法" },
+      { "type": "genome-fasta", "name": "序列文件 (FASTA)", "required": false, "note": "反向转换时使用：FASTA→FASTQ 必须伪造质量值" }
+    ],
+    "outputs": [
+      { "type": "genome-fasta", "name": "转换后的 FASTA 序列", "ext": ".fasta", "note": "质量值已丢弃；建议显式设置不折行" },
+      { "type": "clean-reads", "name": "转换后的 FASTQ 读长", "ext": ".fq.gz", "note": "质量值为伪造值，仅用于要求 FASTQ 输入但不使用质量信息的工具" },
+      { "type": "log-report", "name": "转换日志与序列统计", "ext": ".convert.log", "note": "输入输出条数、总碱基数；条数不一致立即暴露问题" }
+    ],
+    "provides": [
+      { "tool": "seqkit", "version": "2.9.x", "access": "cli", "install": "conda", "note": "Go 实现，流式低内存；fq2fa/fa2fq 与 seq 子命令都可用" },
+      { "tool": "seqtk", "version": "1.4.x", "access": "cli", "install": "conda", "note": "更老但极稳定的小工具；seq -A 是常用的 FASTQ→FASTA 路径" }
+    ],
+    "feeds": [
+      { "target": "anno_prodigal", "viaType": "genome-fasta", "note": "基因预测只吃 FASTA；这是最常见的转换动机" },
+      { "target": "asm_filter_contigs", "viaType": "genome-fasta", "note": "过滤前统一为 FASTA，避免同一批文件混着两种格式" },
+      { "target": "phy_mafft", "viaType": "genome-fasta", "note": "多序列比对工具通常只接受 FASTA" },
+      { "target": "py_biopython", "viaType": "genome-fasta", "note": "交给脚本做序列级读写与进一步整理" }
+    ],
+    "usage": [
+      {
+        "label": "FASTQ → FASTA（不折行，便于脚本按行处理）",
+        "lang": "bash",
+        "code": "seqkit fq2fa reads.fq.gz -w 0 -o reads.fasta\nseqkit stats -T reads.fq.gz reads.fasta   # 核对序列条数是否一致"
+      },
+      {
+        "label": "seqtk 路线（等价、更轻量）",
+        "lang": "bash",
+        "code": "seqtk seq -A reads.fq.gz > reads.fasta"
+      },
+      {
+        "label": "FASTA → FASTQ：显式指定伪造的质量值",
+        "lang": "bash",
+        "code": "seqkit fa2fq reads.fasta -o reads.fq\n# 生成的质量值是伪造的；脚本里务必注释清楚，避免下游误用质量过滤"
+      }
+    ],
+    "recipes": {
+      "bash": "seqkit fq2fa 01_clean/${SAMPLE}_R1.fq.gz -w 0 -o 01_clean/${SAMPLE}_R1.fasta\nseqkit stats -T 01_clean/${SAMPLE}_R1.fq.gz 01_clean/${SAMPLE}_R1.fasta > 10_logs/${SAMPLE}.fastq2fasta.stats.tsv",
+      "python": "run([\"seqkit\", \"fq2fa\", str(QC_DIR / f\"{sample}_R1.fq.gz\"), \"-w\", \"0\",\n     \"-o\", str(QC_DIR / f\"{sample}_R1.fasta\")])\nwith open(LOG_DIR / f\"{sample}.fastq2fasta.stats.tsv\", \"w\", encoding=\"utf-8\") as fh:\n    subprocess.run([\"seqkit\", \"stats\", \"-T\",\n                    str(QC_DIR / f\"{sample}_R1.fq.gz\"),\n                    str(QC_DIR / f\"{sample}_R1.fasta\")], check=True, stdout=fh)"
+    },
+    "params": [
+      { "flag": "seqkit fq2fa -w", "default": "60", "note": "FASTA 折行宽度；设 0 表示不折行。假设「一序列一行」的脚本必须用 -w 0" },
+      { "flag": "seqtk seq -A", "default": "—", "note": "FASTQ→FASTA 的经典路径；加 -C 会把质量值转成大小写掩码而不是丢弃，需要时更合适" },
+      { "flag": "seqkit fa2fq 的质量值", "default": "以官方文档为准", "note": "反向转换必然伪造质量；伪造值必须在下游被忽略，否则结论无效" },
+      { "flag": "是否保留配对命名", "default": "保留", "note": "R1/R2 的后缀与头描述段要保持一致，否则下游配对逻辑会悄悄错位" }
+    ],
+    "pitfalls": [
+      "两个方向的代价不对等：FASTQ→FASTA 丢质量值且不可逆，FASTA→FASTQ 必须伪造质量值。后者最危险——伪造的高质量值会让按质量过滤、修剪、共识加权的工具给出看起来正常、实则无依据的结果。",
+      "默认折行会造成静默错算。用 awk 按行统计序列长度或 GC 的脚本，遇到 60 列折行的 FASTA 会得到完全错误的数字；转换时显式写 -w 0，或先把脚本改成真正的 FASTA 解析。",
+      "只转 R1 不转 R2 是常见的半成品错误。下游配对工具在两侧格式不一致时往往不报错，只是把 R2 当空文件或错位读取，结果表现为比对率异常低。",
+      "序列 ID 在转换后可能与元数据表对不上：Illumina 头里的空格描述段、/1 与 /2 后缀、以及某些工具默认截断到第一个空格的行为都会改变 ID。转换后必须做一次 ID 集合比对。",
+      "转换是有损操作，务必保留原始文件并记录校验和；只留 FASTA 时，将来想重做质量相关的分析就只能重新下载数据。",
+      "输出压缩别写成「重定向到 .gz 文件名」却没有真正压缩：文件能读出内容（很多工具会自动识别），但下游按扩展名判断格式的工具会失败，排查成本很高。"
+    ],
+    "related": [
+      { "id": "util_seqkit", "note": "更全面的序列文件操作；本模块是它在格式互转上的专门用法" },
+      { "id": "io_compress_index", "note": "转换后统一压缩格式，便于下游随机访问与归档" },
+      { "id": "qc_dedup_reads", "note": "常在格式整理前先做去重与长度过滤" },
+      { "id": "py_biopython", "note": "需要按条件精细改写序列 ID 或描述时的脚本路线" }
+    ],
+    "docs": [
+      { "label": "第 11 章 流程与可复现性", "path": "docs/guidebook/11-workflow-reproducibility.md" }
+    ]
+  },
+  {
+    "id": "io_bam_to_bed",
+    "name": "比对转覆盖度与区间 (BAM → BED / depth)",
+    "category": "io-formats",
+    "layer": "engine",
+    "kind": "adapter",
+    "maturity": "stable",
+    "domains": ["genomics", "metagenomics"],
+    "tags": ["覆盖度", "bed", "depth", "bam", "坐标", "分箱"],
+    "summary": "从 BAM 生成覆盖度、区间与深度轨迹文件",
+    "what": [
+      "BAM 是线性化的比对容器，本身不适合做区间运算：想知道「哪些区域覆盖度大于 10×」「这些基因有没有被测到」「分箱需要的每个 contig 平均深度是多少」，都需要把它转换成逐区间（BED）或逐碱基（depth）的表示。这一步可以被下游脚本各自临时计算，但那样既慢又容易在坐标换算上出错，做成显式的转换模块更安全。",
+      "坐标系差异是这里的经典静默错误来源：SAM/BAM 的位置是 1-based 闭区间，BED 是 0-based 半开区间。手写 awk 做换算时差一位几乎不会被发现，但足以让落在基因边界上的读长被判成「不在基因内」，区间取交集的结果随之整体偏移。凡是坐标换算都应交给 samtools、bedtools 这类工具，而不是自己加减。",
+      "覆盖度数字的含义也取决于参数，而不是工具：不指定 -a 时只输出有读长覆盖的位置，用它算出的「平均深度」分母是覆盖位置数而非基因组长度，与全基因组平均深度可以差很多；对同一位点，不同 samtools 版本默认排除的比对标志也可能不同。任何跨样本、跨版本的覆盖度比较，都必须先确认这些设置一致，并把它们写进日志。"
+    ],
+    "inputs": [
+      { "type": "bam", "name": "比对结果 (BAM)", "required": true, "note": "必须已按坐标排序；未排序的 BAM 会让覆盖度工具直接失败或给出空结果" },
+      { "type": "reference-genome", "name": "参考基因组", "required": false, "note": "用于生成染色体长度表 (chrom.sizes)，是 bigWig 一类格式的必需输入" }
+    ],
+    "outputs": [
+      { "type": "bam", "name": "坐标排序并建立索引的 BAM", "ext": ".sorted.bam", "note": "后续所有区间与覆盖度操作的可靠基础" },
+      { "type": "tsv-table", "name": "覆盖区间表 (BED)", "ext": ".bed", "note": "0-based 半开区间；可直接与其他注释做交集" },
+      { "type": "tsv-table", "name": "逐碱基深度表", "ext": ".depth.tsv", "note": "位点级深度；是否包含零覆盖位置取决于参数，必须在表头或日志里说明" },
+      { "type": "log-report", "name": "覆盖度统计", "ext": ".coverage.txt", "note": "平均/中位深度、覆盖比例、所用参数；判断数据是否足够支撑结论" }
+    ],
+    "provides": [
+      { "tool": "SAMtools", "version": "1.1x", "access": "cli", "install": "conda", "note": "sort/index/depth/coverage 等子命令；版本间默认过滤行为有差异" },
+      { "tool": "bedtools", "version": "2.3x", "access": "cli", "install": "conda", "note": "genomecov、coverage、makewindows 等区间统计；输出坐标同样要留意 0-based" },
+      { "tool": "deepTools", "version": "3.5.x", "access": "cli", "install": "conda", "note": "bamCoverage 生成覆盖度轨迹（可转 bigWig）；需要正确的 chrom.sizes" }
+    ],
+    "feeds": [
+      { "target": "meta_binning_metabat", "viaType": "bam", "note": "分箱工具需要每个样本的覆盖度信息，从排序索引好的 BAM 计算" },
+      { "target": "meta_coverm", "viaType": "bam", "note": "MAG 丰度定量直接消费比对结果" },
+      { "target": "util_bedtools", "viaType": "tsv-table", "note": "把覆盖区间与基因、岛等注释做交集与统计" },
+      { "target": "io_compress_index", "viaType": "tsv-table", "note": "大的 BED 需要 bgzip + tabix 才能被高效随机访问" }
+    ],
+    "usage": [
+      {
+        "label": "从排序好的 BAM 生成区间与深度",
+        "lang": "bash",
+        "code": "samtools sort -@ 8 -o aligned.sorted.bam aligned.bam\nsamtools index aligned.sorted.bam\nbedtools genomecov -ibam aligned.sorted.bam -bga > coverage.bedgraph\nsamtools depth -a -q 20 -Q 20 aligned.sorted.bam > depth.tsv"
+      },
+      {
+        "label": "按窗口汇总（分箱或可视化前的常用形式）",
+        "lang": "bash",
+        "code": "bedtools makewindows -g chrom.sizes -w 5000 > windows.bed\nbedtools coverage -a windows.bed -b coverage.bedgraph > window_coverage.tsv"
+      },
+      {
+        "label": "先确认 BAM 自身完整",
+        "lang": "bash",
+        "code": "samtools quickcheck -v aligned.sorted.bam\nsamtools flagstat aligned.sorted.bam | head"
+      }
+    ],
+    "recipes": {
+      "bash": "samtools sort -@ ${THREADS} -o 07_compare/${SAMPLE}.sorted.bam ${SAMPLE}.bam\nsamtools index 07_compare/${SAMPLE}.sorted.bam\nsamtools depth -a -q 20 -Q 20 07_compare/${SAMPLE}.sorted.bam \\\n  > 07_compare/${SAMPLE}.depth.tsv\nsamtools coverage 07_compare/${SAMPLE}.sorted.bam > 10_logs/${SAMPLE}.coverage.txt",
+      "python": "run([\"samtools\", \"sort\", \"-@\", str(THREADS), \"-o\", str(CMP_DIR / f\"{sample}.sorted.bam\"), str(bam_in)])\nrun([\"samtools\", \"index\", str(CMP_DIR / f\"{sample}.sorted.bam\")])\nwith open(CMP_DIR / f\"{sample}.depth.tsv\", \"w\", encoding=\"utf-8\") as fh:\n    subprocess.run([\"samtools\", \"depth\", \"-a\", \"-q\", \"20\", \"-Q\", \"20\",\n                    str(CMP_DIR / f\"{sample}.sorted.bam\")], check=True, stdout=fh)"
+    },
+    "params": [
+      { "flag": "samtools depth -a", "default": "关闭", "note": "输出零覆盖位置。不加它算出的平均深度分母是覆盖位置数，不是基因组长度，两者差别可能很大" },
+      { "flag": "samtools depth -aa", "default": "关闭", "note": "连完全没有读长的参考序列也输出；按 contig 汇总时必须加" },
+      { "flag": "-q / -Q", "default": "0 / 0", "note": "碱基质量与比对质量下限；做变异或覆盖度定量时常用 20，但必须与上下游流程一致" },
+      { "flag": "bedtools genomecov -bga", "default": "关闭", "note": "以 bedGraph 形式输出（包含零覆盖区间）；不加则只报告有覆盖的部分" },
+      { "flag": "bedtools coverage -split", "default": "关闭", "note": "按比对块而非整段计算；处理含长 N 或剪接比对时必需，细菌基因组一般不需要" }
+    ],
+    "pitfalls": [
+      "BAM/SAM 是 1-based、BED 是 0-based 半开。手写 awk 换算差一位不会被任何工具报错，但会让落在边界上的读长判错；坐标换算一律交给 samtools 与 bedtools。",
+      "不加 -a 的深度输出只包含有覆盖的位置，用它算「平均深度」会明显高估。跨样本比较前先确认所有样本用的是同一组参数，并把参数写进日志。",
+      "不同 samtools 版本默认排除的比对标志（未比对、次要比对、QC 失败、重复）不完全相同，这会让同一份 BAM 在两个版本下给出不同的覆盖度；升级工具时要重新核对基线数字。",
+      "坐标顺序与 contig 命名必须对齐：BAM 里的参考名与 chrom.sizes、BED 文件里的名字不一致时，很多工具会静默产生空结果而不是报错，表现为「覆盖度全为 0」。",
+      "生成 bigWig 一类的轨迹文件要求染色体长度表与参考完全一致，顺序或长度不一致会被静默截断；转换后应回读一遍确认坐标范围与参考一致。",
+      "输入 BAM 在拷贝中断时可能缺少 EOF 标记，部分工具仍能读到末尾而不报错，覆盖度会静默少算；处理前先用 samtools quickcheck 验证完整性。"
+    ],
+    "related": [
+      { "id": "util_samtools", "note": "更全面的比对文件操作模块；本模块是它在坐标转换上的专门用法" },
+      { "id": "util_bedtools", "note": "拿到 BED 之后的区间运算" },
+      { "id": "meta_coverm", "note": "典型下游：需要 BAM 计算 MAG 丰度" },
+      { "id": "io_compress_index", "note": "大 BED 与深度文件的压缩与索引" }
+    ],
+    "docs": [
+      { "label": "第 11 章 流程与可复现性", "path": "docs/guidebook/11-workflow-reproducibility.md" }
+    ]
+  },
+  {
+    "id": "io_gff_convert",
+    "name": "注释格式互转 (GFF / GTF / GenBank)",
+    "category": "io-formats",
+    "layer": "engine",
+    "kind": "adapter",
+    "maturity": "stable",
+    "domains": ["genomics"],
+    "tags": ["注释", "gff3", "gtf", "genbank", "坐标", "属性"],
+    "summary": "在注释格式之间转换并保住坐标与层级",
+    "what": [
+      "同一个注释在不同工具眼里是不同的格式：定量工具要 GTF，泛基因组与多数注释流程要 GFF3，提交数据库与部分可视化工具要 GenBank。它们携带的信息基本相同，但语法与层级约定完全不同——GFF3 用 ID/Parent 表达父子关系，GTF 用 gene_id/transcript_id 且要求严格的 feature 层级，GenBank 是定长列格式并自带序列。转换步骤存在的意义就是把这些不匹配显式承担下来，而不是让下游工具在报错信息里暗示「你的注释格式不对」。",
+      "这类转换的主要风险是静默丢失信息。常见丢失项包括：非标准的属性键（表达量、置信度、数据库交叉引用）、exon 与 UTR 层级（只留下 gene 与 CDS，导致定量工具统计到 0 条或计数偏大）、CDS 的 phase 与 partial 标记（之后做翻译或比较时才发现密码子错位）。更隐蔽的是坐标约定：GFF/GTF 与 GenBank 都是 1-based 闭区间，BED 是 0-based 半开，注释转 BED 时必须整体减一。",
+      "可靠的做法是把转换当成一次数据迁移而不是文本替换：先明确目标工具到底需要哪种格式与哪些 feature，转换后做往返验证（GFF→GTF→GFF）并比较 feature 数与坐标，抽样核对几个已知基因的起止位置；原始注释必须永久保留，因为任何转换都可能丢掉下游当时用不到、以后却需要的信息。"
+    ],
+    "inputs": [
+      { "type": "gff", "name": "原始注释文件", "required": true, "note": "GFF3 或 GTF；转换前先确认它来自哪套注释流程与版本" },
+      { "type": "genome-fasta", "name": "基因组序列", "required": false, "note": "输出 GenBank/EMBL 时需要把序列嵌入，也用于核对坐标是否超出序列长度" }
+    ],
+    "outputs": [
+      { "type": "gff", "name": "转换后的注释表 (GFF3 / GTF)", "ext": ".gff3 / .gtf", "note": "同一个端口承载两种注释表格式，实际格式由扩展名与内容体现" },
+      { "type": "gff", "name": "GenBank / EMBL 注释文件", "ext": ".gbk / .embl", "note": "类型登记中没有独立的 GenBank 类型，这里按注释表归类；实际是嵌入了序列的定长列格式" },
+      { "type": "log-report", "name": "转换日志与丢弃项统计", "ext": ".convert.log", "note": "输入输出 feature 数、被丢弃的 feature 类型；数字对不上就要查原因" }
+    ],
+    "provides": [
+      { "tool": "gffread", "version": "0.12.x", "access": "cli", "install": "conda", "note": "轻量快速的 GFF/GTF 互转与序列提取；对非标准属性容忍度一般" },
+      { "tool": "AGAT", "version": "1.7.x", "access": "cli", "install": "conda", "note": "专门处理注释层级与标准化的工具集，对不规范的 GFF/GTF 更健壮" },
+      { "tool": "Biopython", "version": "1.8x", "access": "python-api", "install": "pip", "note": "GenBank/EMBL 读写与逐 feature 改写；需要精细控制时用脚本" }
+    ],
+    "feeds": [
+      { "target": "pange_panaroo", "viaType": "gff", "note": "泛基因组构建要求统一来源的 GFF3；本模块负责把注释整理成它接受的形态" },
+      { "target": "pange_roary", "viaType": "gff", "note": "经典流程同样只接受注释表输入" },
+      { "target": "tran_featurecounts", "viaType": "gff", "note": "计数工具要求严格的 GTF 层级，转换正确与否直接决定计数是否为 0" },
+      { "target": "comp_proksee", "viaType": "gff", "note": "环形图需要 GenBank 或 GFF 作为注释轨道" }
+    ],
+    "usage": [
+      {
+        "label": "GFF3 → GTF（供定量工具使用）",
+        "lang": "bash",
+        "code": "agat_convert_sp_gff2gtf.pl --gff annotation.gff3 -o annotation.gtf\nhead -5 annotation.gtf   # 确认 feature 层级与 gene_id/transcript_id 属性都在"
+      },
+      {
+        "label": "提取/统计：确认转换没有丢 feature",
+        "lang": "bash",
+        "code": "awk -F'\\t' '!/^#/{print $3}' annotation.gff3 | sort | uniq -c\nawk -F'\\t' '!/^#/{print $3}' annotation.gtf   | sort | uniq -c\n# 两边的 feature 类型计数应对得上（GTF 会把 CDS/exon 归到 transcript 下）"
+      },
+      {
+        "label": "生成 GenBank（嵌入序列，供可视化或提交）",
+        "lang": "bash",
+        "code": "gffread annotation.gff3 -g genome.fna -F -o annotation.gbk\n# 注意 -F 的语义与版本有关，以官方文档为准"
+      }
+    ],
+    "recipes": {
+      "bash": "agat_convert_sp_gff2gtf.pl --gff 03_annotation/${SAMPLE}.gff3 \\\n  -o 03_annotation/${SAMPLE}.gtf > 10_logs/${SAMPLE}.gff2gtf.log 2>&1\nawk -F'\\t' '!/^#/{print $3}' 03_annotation/${SAMPLE}.gff3 | sort | uniq -c \\\n  >> 10_logs/${SAMPLE}.gff2gtf.log",
+      "python": "from Bio import SeqIO\nrecords = list(SeqIO.parse(str(ANNO_DIR / f\"{sample}.gbk\"), \"genbank\"))\nfor rec in records:\n    print(rec.id, len(rec.seq), len(rec.features))\n# 往返验证：读回转换结果并比较 feature 数与坐标范围"
+    },
+    "params": [
+      { "flag": "目标 feature 层级", "default": "全部保留", "note": "只保留 gene/mRNA/CDS 会丢掉 exon 与 UTR；定量工具常因缺 exon 而统计为 0" },
+      { "flag": "CDS phase 与 partial 标记", "default": "保留", "note": "关系到翻译是否正确与基因是否完整；被丢弃后才会在翻译或比较阶段暴露" },
+      { "flag": "坐标基准", "default": "1-based 闭区间", "note": "GFF/GTF/GenBank 都是 1-based；要输出 BED 必须减一，否则整体偏移一位" },
+      { "flag": "非标准属性的处理", "default": "以官方文档为准", "note": "各转换器对未知属性的保留策略不同；关键属性应在转换前记录清单，转换后逐一核对" },
+      { "flag": "是否嵌入序列", "default": "按目标格式", "note": "GenBank/EMBL 需要序列；纯坐标表格式不需要，强行嵌入会让文件体积暴增" }
+    ],
+    "pitfalls": [
+      "把 GFF3 的分隔符简单替换成 GTF 语法得到的文件不是 GTF：GTF 需要 gene_id/transcript_id 的层级关系，缺少 exon 层级时定量工具会报错或统计到 0 条，让人误以为样本没有表达。",
+      "feature 层级在转换中大量丢失是最常见的问题：exon、UTR、tRNA、ncRNA 等被静默丢弃，直到下游某一步才发现；转换前后都要按 feature 类型计数比对。",
+      "坐标约定必须核对：GFF/GTF 与 GenBank 是 1-based 闭区间，BED 是 0-based 半开。注释转 BED 时整体减一，并抽查几个已知基因的起止坐标确认。",
+      "环形基因组上跨原点的基因（起始大于终止）会让不少解析器出错或截断；转换前先扫描这类 feature 并单独处理。",
+      "CDS phase 与 partial 标记被丢弃后，翻译或蛋白比较会出现密码子错位，而错误只在最终结果里表现为「序列对不上」，排查代价很高。",
+      "转换永远不要覆盖原始注释，也不要在原始目录里原地改文件；正确的做法是输出到新目录并在日志里记录输入文件的校验和，保证可回溯。"
+    ],
+    "related": [
+      { "id": "anno_bakta", "note": "常用注释来源；其 GFF3 与 GenBank 输出质量直接影响转换成功率" },
+      { "id": "anno_prokka", "note": "另一常用来源；注意它与 Bakta 的基因命名与层级差异" },
+      { "id": "tran_featurecounts", "note": "对 GTF 层级最敏感的典型下游" },
+      { "id": "io_compress_index", "note": "注释文件做区间查询前的压缩与索引" }
+    ],
+    "docs": [
+      { "label": "第 11 章 流程与可复现性", "path": "docs/guidebook/11-workflow-reproducibility.md" }
+    ]
+  },
+  {
+    "id": "io_vcf_convert",
+    "name": "变异格式互转 (VCF / PED / PHYLIP)",
+    "category": "io-formats",
+    "layer": "engine",
+    "kind": "adapter",
+    "maturity": "stable",
+    "domains": ["genomics", "phylogenetics"],
+    "tags": ["vcf", "plink", "ped", "phylip", "基因型", "缺失值"],
+    "summary": "在 VCF、基因型矩阵与建树格式之间转换",
+    "what": [
+      "变异检出的产物几乎都是 VCF，而几乎没有下游工具直接消费 VCF：群体遗传与关联分析要 PLINK 的 PED/BED 格式，系统发育程序要比对矩阵（PHYLIP/FASTA），分型与聚类要 0/1 或 A/C/G/T 的基因型矩阵。转换步骤因此不可避免，而它恰好是「等位基因编码」与「缺失值语义」最容易出错的地方。",
+      "最典型的静默错误是等位基因编码：PLINK 默认把次等位基因编码成 1、主等位基因编码成 2，这与 VCF 的 ALT 没有固定对应关系。直接假定「1 = 携带突变」会让整张基因型矩阵的含义反过来，而所有统计仍然能跑出漂亮结果。另一个常见问题是缺失值：VCF 的 ./. 必须被显式映射（PLINK 默认的缺失基因型是 0，且 0 在不同命令里还可能被当成参考纯合），否则缺失与参考纯合混在一起，频率估计与聚类全都会偏。",
+      "坐标与位点集合也要交代清楚：VCF 的 POS 是 1-based，BED 是 0-based 半开；未做左对齐与归一化的 VCF 会让同一个变异在不同样本中出现在不同位置，直接虚增 SNP 数。多等位位点需要显式策略（拆分或过滤），并把过滤前后的位点数写进报告——位点数从 12 万变成 8 万而不自知，是所有后续比较失真的源头。"
+    ],
+    "inputs": [
+      { "type": "vcf", "name": "变异位点集合 (VCF)", "required": true, "note": "多菌株/多样本基因型；建议先归一化再转换" },
+      { "type": "reference-genome", "name": "参考基因组", "required": false, "note": "重建序列、校验 REF 碱基或生成区间文件时需要" }
+    ],
+    "outputs": [
+      { "type": "vcf", "name": "规范化后的 VCF", "ext": ".vcf.gz", "note": "左对齐、拆分多等位并统一过滤；后续转换都应基于它" },
+      { "type": "tsv-table", "name": "基因型矩阵 (PED / 0-1-2)", "ext": ".ped / .geno.tsv", "note": "必须明确写出编码规则：哪一列代表哪个等位基因" },
+      { "type": "alignment-fasta", "name": "变异位点比对 (PHYLIP / FASTA)", "ext": ".phy / .snp.fasta", "note": "供建树程序使用；名称长度与布局限制见相关条目" },
+      { "type": "cluster-dist", "name": "变异距离矩阵", "ext": ".dist.tsv", "note": "按位点差异直接计算的距离，可作为分型的快速口径" },
+      { "type": "log-report", "name": "转换与过滤统计", "ext": ".convert.log", "note": "位点数与样本数在转换前后的变化；缺了它无法发现静默丢位点" }
+    ],
+    "provides": [
+      { "tool": "bcftools", "version": "1.1x", "access": "cli", "install": "conda", "note": "归一化、过滤、格式转换的主力；norm 是转换前的必备步骤" },
+      { "tool": "VCFtools", "version": "0.1.x", "access": "cli", "install": "conda", "note": "经典 VCF 处理工具；部分子命令已停止维护，注意输出语义" },
+      { "tool": "PLINK", "version": "2.0.x", "access": "cli", "install": "binary", "note": "基因型矩阵与关联分析的行业标准；版本号形如 2.00a 持续滚动，使用时记录确切 build" }
+    ],
+    "feeds": [
+      { "target": "comp_snp_dist", "viaType": "vcf", "note": "多菌株共有位点是 SNP 距离计算的前提" },
+      { "target": "phy_iqtree", "viaType": "alignment-fasta", "note": "变异位点比对可直接建树" },
+      { "target": "r_matrix_stats", "viaType": "cluster-dist", "note": "距离矩阵进入 R 做聚类与统计" },
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "基因型矩阵交给脚本做整理与导出" }
+    ],
+    "usage": [
+      {
+        "label": "转换前先归一化（左对齐 + 拆分多等位）",
+        "lang": "bash",
+        "code": "bcftools norm -f reference.fna -m -any -Oz -o variants.norm.vcf.gz variants.vcf.gz\nbcftools index variants.norm.vcf.gz\nbcftools stats variants.norm.vcf.gz | head -20"
+      },
+      {
+        "label": "转成 PLINK 基因型矩阵（注意编码方向）",
+        "lang": "bash",
+        "code": "plink --vcf variants.norm.vcf.gz --biallelic-only --allow-extra-chr \\\n      --recode --out cohort\n# 记录编码规则：默认 1/2 对应次/主等位基因，与 VCF 的 ALT 不必然一致"
+      },
+      {
+        "label": "抽出变异位点比对供建树",
+        "lang": "bash",
+        "code": "bcftools view -Oz -o snp.vcf.gz variants.norm.vcf.gz\nvcf-to-tab < snp.vcf.gz > snp.tab   # 或直接用 snp-sites 从比对侧生成矩阵"
+      }
+    ],
+    "recipes": {
+      "bash": "bcftools norm -f ${REF_FASTA} -m -any -Oz -o 06_phylo/${PROJECT}.norm.vcf.gz ${PROJECT}.vcf.gz\nbcftools index 06_phylo/${PROJECT}.norm.vcf.gz\nplink --vcf 06_phylo/${PROJECT}.norm.vcf.gz --biallelic-only --allow-extra-chr \\\n      --recode --out 09_results/${PROJECT}\nbcftools stats 06_phylo/${PROJECT}.norm.vcf.gz > 10_logs/${PROJECT}.vcf_convert.log",
+      "python": "run([\"bcftools\", \"norm\", \"-f\", str(ref_fasta), \"-m\", \"-any\",\n     \"-Oz\", \"-o\", str(PHYLO_DIR / f\"{project}.norm.vcf.gz\"), str(vcf_in)])\nrun([\"bcftools\", \"index\", str(PHYLO_DIR / f\"{project}.norm.vcf.gz\")])\nrun([\"plink\", \"--vcf\", str(PHYLO_DIR / f\"{project}.norm.vcf.gz\"),\n     \"--biallelic-only\", \"--allow-extra-chr\", \"--recode\",\n     \"--out\", str(RES_DIR / project)])"
+    },
+    "params": [
+      { "flag": "bcftools norm -m -any", "default": "关闭", "note": "把多等位位点拆成多个双等位记录；不做这一步时下游工具可能静默丢弃这些位点" },
+      { "flag": "bcftools norm -f", "default": "无", "note": "左对齐参考；不做归一化时同一变异在不同样本里位置不同，会虚增 SNP 数" },
+      { "flag": "plink --biallelic-only", "default": "关闭", "note": "PLINK 1.9 对多等位位点的默认处理会丢位点；显式设定并在日志中报告过滤前后位点数" },
+      { "flag": "缺失基因型编码", "default": "0", "note": "PLINK 用 0 表示缺失，而 0 在部分命令里又被当作参考纯合；必须与参考纯合区分开" },
+      { "flag": "等位基因编码方向", "default": "1/2 = 次/主等位", "note": "与 VCF 的 ALT 无固定关系；把编码写进结果表注释，别让下游猜" }
+    ],
+    "pitfalls": [
+      "PLINK 的 1/2 对应次等位与主等位基因，不等于 VCF 里的 ALT。直接把 1 当作「携带突变」会让整张矩阵含义反转，而所有统计照常运行、结果看起来完全正常。",
+      "缺失值语义必须显式映射：VCF 的 ./. 到 PLINK 的 0 是一次语义转换，0 又常被当成参考纯合。混用会把缺失样本算成野生型，直接偏倚等位基因频率。",
+      "未归一化的 VCF 会让同一变异在不同样本中落在不同坐标，SNP 数被系统性地虚增；多菌株比较前必须做左对齐与多等位拆分。",
+      "多等位位点常被静默丢弃（工具默认行为不同）。转换前后都要报告位点数，出现明显下降时先查这里，而不是先怀疑数据质量。",
+      "PHYLIP 与 FASTA 一旦生成就丢失坐标信息，无法再回到 VCF；原始 VCF 必须保留，否则任何一个后续问题都要从比对重新做起。",
+      "基于组装的变异与基于读长比对的变异语义不同：前者包含组装错误与基因内容差异。把两种来源的 VCF 混在同一张矩阵里比较，结论不可解释。"
+    ],
+    "related": [
+      { "id": "var_bcftools_call", "note": "VCF 的主要来源；本模块常紧接其后" },
+      { "id": "io_table_to_phylip", "note": "从基因型矩阵到建树格式的下一步" },
+      { "id": "comp_snp_dist", "note": "消费共有位点集合做距离与分型" },
+      { "id": "io_compress_index", "note": "VCF 的 bgzip 压缩与 tabix 索引" }
+    ],
+    "docs": [
+      { "label": "第 11 章 流程与可复现性", "path": "docs/guidebook/11-workflow-reproducibility.md" }
+    ]
+  },
+  {
+    "id": "io_table_to_phylip",
+    "name": "表格转 PHYLIP / Nexus（建树输入）",
+    "category": "io-formats",
+    "layer": "engine",
+    "kind": "adapter",
+    "maturity": "stable",
+    "domains": ["phylogenetics", "genomics"],
+    "tags": ["phylip", "nexus", "建树输入", "序列名截断", "距离矩阵"],
+    "summary": "把 SNP 表或距离矩阵转成 PHYLIP / Nexus 格式",
+    "what": [
+      "建树程序对输入格式的要求既严格又古老：PHYLIP 与 Nexus 都有自己的头部声明（taxa 数、位点数或字符集定义），而 SNP 表、等位基因表、距离矩阵这些现代产物必须先转成它们才能建树。这一步的问题不在语法，而在于 PHYLIP 的两条硬限制会**静默损坏数据**，是整套流程里最危险的一类转换。",
+      "第一条硬限制是首行声明。PHYLIP 的第一行必须写对「序列条数 位点数」；数字偏小时，很多解析器不会报错，而是安静地丢掉多出来的序列——最终树里少了样本，只能靠数叶节点才发现。第二条是序列名的长度限制：严格 PHYLIP 的名字空间只有 10 个字符，超长名字可能被截断，前 10 个字符相同的样本会互相冲突甚至被丢弃。这就是为什么转换时必须同时输出一份「短名 ↔ 原名」映射表，并回读验证。",
+      "还有一类错误来自格式混用：PHYLIP 的序列格式与距离格式完全不同（序列格式首行有两个数字，距离格式只有个数且矩阵是下三角），把序列矩阵喂给基于距离的建树程序不会报错，只会给出一棵毫无意义的树。相对安全的做法是固定一个内部规范（例如带枝长的 Newick + 位点表），其余格式都从它派生，而不是在各种格式之间反复往返转换。"
+    ],
+    "inputs": [
+      { "type": "tsv-table", "name": "SNP / 等位基因矩阵", "required": true, "note": "行=样本，列=位点；列名与坐标必须能追溯到原始 VCF" },
+      { "type": "cluster-dist", "name": "距离矩阵", "required": false, "note": "需要输出 PHYLIP 距离格式时提供；与序列矩阵不可混用" }
+    ],
+    "outputs": [
+      { "type": "alignment-fasta", "name": "PHYLIP / Nexus 序列比对", "ext": ".phy / .nex", "note": "类型登记中没有独立 PHYLIP 类型，这里按比对数据归类" },
+      { "type": "cluster-dist", "name": "PHYLIP 距离矩阵", "ext": ".dist.phy", "note": "下三角格式，首行只有样本数，与序列格式不同" },
+      { "type": "tsv-table", "name": "序列名映射表", "ext": ".name_map.tsv", "note": "短名 ↔ 原始样本 ID；PHYLIP 名称受限，没有这张表结果无法解释" },
+      { "type": "log-report", "name": "转换与自检日志", "ext": ".convert.log", "note": "taxa 数、位点数、被截断或冲突的名字清单" }
+    ],
+    "provides": [
+      { "tool": "Biopython", "version": "1.8x", "access": "python-api", "install": "pip", "note": "Alphabet/AlignIO 可写出 PHYLIP 与 Nexus；需注意 relaxed 与 strict 模式" },
+      { "tool": "pandas", "version": "2.2.x", "access": "python-api", "install": "pip", "note": "从表格读入并用 pandas 做位点级拼接与名字检查" },
+      { "tool": "EMBOSS (seqret)", "version": "6.6.x", "access": "cli", "install": "conda", "note": "命令行批量格式互转；对 PHYLIP 的名字限制有内置处理" }
+    ],
+    "feeds": [
+      { "target": "phy_iqtree", "viaType": "alignment-fasta", "note": "IQ-TREE 接受 PHYLIP 与 FASTA，是最常见的消费方" },
+      { "target": "phy_raxml", "viaType": "alignment-fasta", "note": "对 PHYLIP 名字长度尤其敏感；转换后必须核对 taxa 数" },
+      { "target": "phy_fasttree", "viaType": "alignment-fasta", "note": "快速建树的输入；样本多时要求所有序列等长" }
+    ],
+    "usage": [
+      {
+        "label": "从 SNP 表生成 PHYLIP 序列比对（示意，务必回读验证）",
+        "lang": "python",
+        "code": "import pandas as pd\nfrom Bio import AlignIO\nmat = pd.read_csv(\"snp_matrix.tsv\", sep=\"\\t\", index_col=0)   # 行=样本，列=位点\naln = mat.apply(lambda r: \"\".join(r.astype(str)), axis=1)\nwith open(\"snp.phy\", \"w\", encoding=\"utf-8\") as fh:\n    fh.write(f\" {len(aln)} {len(aln.iloc[0])}\\n\")\n    for name, seq in aln.items():\n        short = str(name)[:10]\n        fh.write(f\"{short:<10} {seq}\\n\")\n# 回读验证：taxa 数与位点数必须与源表一致"
+      },
+      {
+        "label": "回读自检（这一步不能省）",
+        "lang": "python",
+        "code": "from Bio import AlignIO\naln = AlignIO.read(\"snp.phy\", \"phylip-relaxed\")\nprint(len(aln), aln.get_alignment_length())   # 与源表逐一比对"
+      },
+      {
+        "label": "最短路径：让 IQ-TREE 直接吃 FASTA，避开 PHYLIP 限制",
+        "lang": "bash",
+        "code": "iqtree2 -s snp.fasta -m GTR+G -T 8 --prefix tree\n# 多数现代建树程序都接受 FASTA，能不用 PHYLIP 就不用"
+      }
+    ],
+    "recipes": {
+      "python": "import pandas as pd\nmat = pd.read_csv(PHYLO_DIR / f\"{project}.snp_matrix.tsv\", sep=\"\\t\", index_col=0)\nseqs = mat.astype(str).agg(\"\".join, axis=1)\nname_map = {name[:10]: name for name in seqs.index}\nassert len(name_map) == len(seqs), \"截断后出现重名：必须加长命名策略或改用 relaxed PHYLIP\"\nwith open(PHYLO_DIR / f\"{project}.snp.phy\", \"w\", encoding=\"utf-8\") as fh:\n    fh.write(f\" {len(seqs)} {len(seqs.iloc[0])}\\n\")\n    for short, seq in zip(name_map, seqs):\n        fh.write(f\"{short:<10} {seq}\\n\")\npd.Series(name_map).to_csv(LOG_DIR / f\"{project}.name_map.tsv\", sep=\"\\t\", header=[\"original\"])",
+      "bash": "python 11_scripts/table_to_phylip.py \\\n  --matrix 06_phylo/${PROJECT}.snp_matrix.tsv \\\n  --out 06_phylo/${PROJECT}.snp.phy \\\n  --name-map 10_logs/${PROJECT}.name_map.tsv\ngrep -c '^' 06_phylo/${PROJECT}.snp.phy   # 行数 = taxa 数 + 1"
+    },
+    "params": [
+      { "flag": "strict / relaxed PHYLIP", "default": "strict", "note": "strict 的名字空间只有 10 个字符；relaxed 更长但并非所有程序都支持，以目标程序文档为准" },
+      { "flag": "interleaved / sequential", "default": "sequential", "note": "两种布局互不兼容；用错布局时解析器可能只读到第一条序列的片段" },
+      { "flag": "首行声明", "default": "无", "note": "必须是「taxa 数 位点数」且与实际内容一致；写错会导致序列被静默丢弃" },
+      { "flag": "名称替换策略", "default": "截断", "note": "更安全的做法是统一编号（S001…）并另存映射表，避免截断后重名" },
+      { "flag": "距离格式与序列格式", "default": "按目标程序", "note": "两者头部与矩阵结构完全不同，不能混用；选择错误不会报错但结果无意义" }
+    ],
+    "pitfalls": [
+      "PHYLIP 的首行声明写错时，很多解析器不报错而是安静地丢掉多余的序列。完成转换后必须回读并比对 taxa 数，不能只看文件「能不能打开」。",
+      "严格 PHYLIP 的名字只有 10 个字符空间：长名会被截断，前 10 个字符相同的样本会冲突甚至丢样本。必须输出短名与原始 ID 的映射表，冲突时改用编号命名。",
+      "序列格式与距离格式是两种不同的 PHYLIP：首行结构、矩阵形状都不同。把序列矩阵喂给距离法建树程序会得到一棵看似正常、实则无意义的树。",
+      "空行与留白会截断解析：多数 PHYLIP 解析器在第一个空行处停止读取；名字与序列之间用空格对齐时，若名字里本身含空格会整体错位。",
+      "距离矩阵中的 0（完全相同的样本）不是错误，但邻接法会产生多分支或任意拓扑；解释树形时要说明这一点，而不是把多分支当成支持的证据。",
+      "这类转换是有损的：位点坐标、REF/ALT 信息、缺失值语义都会在转换为比对矩阵后消失。原始表格与 VCF 必须保留，映射表必须与树一起归档。"
+    ],
+    "related": [
+      { "id": "io_vcf_convert", "note": "常见的上游：从 VCF 得到 SNP 或基因型矩阵" },
+      { "id": "pange_core_align", "note": "提供串联比对；多数情况下可直接输出 FASTA，无需 PHYLIP" },
+      { "id": "phy_iqtree", "note": "主要消费方；接受 FASTA 时可绕开 PHYLIP 的名称限制" },
+      { "id": "phy_raxml", "note": "对 PHYLIP 名称长度尤其保守，转换后务必核对 taxa 数" }
+    ],
+    "docs": [
+      { "label": "第 11 章 流程与可复现性", "path": "docs/guidebook/11-workflow-reproducibility.md" },
+      { "label": "第 7 章 比较基因组与泛基因组", "path": "docs/guidebook/07-comparative-pangenome.md" }
+    ]
+  },
+  {
+    "id": "io_biom_to_tsv",
+    "name": "BIOM 与环境数据表互转",
+    "category": "io-formats",
+    "layer": "engine",
+    "kind": "adapter",
+    "maturity": "stable",
+    "domains": ["metagenomics"],
+    "tags": ["biom", "丰度表", "qiime2", "phyloseq", "方向", "分类注释"],
+    "summary": "把 BIOM 丰度表与 TSV / 元数据表互相转换",
+    "what": [
+      "扩增子与宏基因组流程使用的 BIOM（二进制或 JSON 的稀疏矩阵格式）能同时携带丰度矩阵、特征注释与样本元数据，而 R 的 phyloseq、Python 的 pandas 以及大多数绘图工具只认平面表格。转换步骤存在的原因就是这两种世界之间的落差：BIOM 里有结构（稀疏、带层级注释），平面表格里没有。",
+      "这类转换最容易造成的静默错误是矩阵方向。BIOM 约定为特征 × 样本，而相当多的 R 函数与教程期望样本 × 特征；方向弄反后所有统计依然能跑完、数字看起来也正常，但样本间比较变成了特征间比较，结论全错，而且在平面表格里没有任何元信息能把方向找回来。因此转换后应在表头（或同目录的说明文件）里写死方向，并把特征 ID 与样本 ID 的数量与元数据表逐一比对。",
+      "第二个陷阱是分类注释列。BIOM 常把界门纲目科属种的层级压成一整列用分号或竖线分隔的字符串，简单按分隔符切分时，只要某个分类名本身含分隔符，列数就会错乱；反过来，把注释当普通字符串处理又会在下游无法按门/属汇总。稳妥做法是保留原始注释列，另用专门的解析生成固定列数的分类表，并检查列数恒定。"
+    ],
+    "inputs": [
+      { "type": "feature-table", "name": "特征丰度表 (BIOM / TSV)", "required": true, "note": "QIIME 2 导出物或 BIOM 文件；需记录是 BIOM 1.0 还是 2.1" },
+      { "type": "tsv-table", "name": "样本元数据表", "required": false, "note": "与丰度表同批转换，样本 ID 必须完全一致" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "丰度表 (TSV)", "ext": ".feature-table.tsv", "note": "方向在表头写明：默认特征 × 样本" },
+      { "type": "feature-table", "name": "BIOM 格式丰度表", "ext": ".biom", "note": "反向转换；供仍使用 BIOM 的工具消费" },
+      { "type": "tsv-table", "name": "拆分后的分类注释表", "ext": ".taxonomy.tsv", "note": "固定列数的层级表，与丰度表按特征 ID 对应" },
+      { "type": "log-report", "name": "转换与一致性日志", "ext": ".convert.log", "note": "特征数、样本数、ID 比对结果与稀疏度" }
+    ],
+    "provides": [
+      { "tool": "biom-format", "version": "2.1.x", "access": "python-api", "install": "pip", "note": "BIOM 读写与 TSV 互转的官方库；命令行工具也由它提供" },
+      { "tool": "QIIME 2", "version": "2024.x", "access": "cli", "install": "conda", "note": "按年月发布版本，记录时必须写清具体月份；qiime tools export 是标准导出路径" },
+      { "tool": "phyloseq", "version": "1.4x", "access": "r-api", "install": "cran", "note": "R 侧的丰度表 + 注释 + 元数据三件套对象；对方向与 ID 对齐最敏感" }
+    ],
+    "feeds": [
+      { "target": "amplicon_phyloseq", "viaType": "feature-table", "note": "phyloseq 对象构建需要特征表与分类注释" },
+      { "target": "amplicon_qiime2_diversity", "viaType": "feature-table", "note": "多样性计算在 QIIME 2 内部消费特征表工件" },
+      { "target": "r_read_import", "viaType": "tsv-table", "note": "平面表格进入 R 做统计与绘图" },
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "进入 pandas 做整理、稀疏化或合并元数据" }
+    ],
+    "usage": [
+      {
+        "label": "从 QIIME 2 工件导出平面表",
+        "lang": "bash",
+        "code": "qiime tools export --input-path table.qza --output-path exported/\nbiom convert -i exported/feature-table.biom -o feature-table.tsv --to-tsv\nhead -3 feature-table.tsv   # 确认第一列是特征 ID、后续列是样本"
+      },
+      {
+        "label": "反向：TSV → BIOM",
+        "lang": "bash",
+        "code": "biom convert -i feature-table.tsv -o feature-table.biom --to-hdf5 --table-type=\"OTU table\"\n# 表类型参数名以官方文档为准"
+      },
+      {
+        "label": "方向与 ID 自检",
+        "lang": "bash",
+        "code": "head -1 feature-table.tsv | tr '\\t' '\\n' | wc -l      # 列数\ncut -f1 feature-table.tsv | tail -n +2 | wc -l          # 行数\ncut -f1 metadata.tsv | tail -n +2 | sort > /tmp/m.txt\nhead -1 feature-table.tsv | tr '\\t' '\\n' | tail -n +2 | sort > /tmp/s.txt\ncomm -3 /tmp/m.txt /tmp/s.txt                            # 空输出表示样本 ID 完全一致"
+      }
+    ],
+    "recipes": {
+      "bash": "qiime tools export --input-path ${TABLE_QZA} --output-path 08_amplicon/export\nbiom convert -i 08_amplicon/export/feature-table.biom \\\n  -o 08_amplicon/${PROJECT}.feature-table.tsv --to-tsv\necho \"方向: 特征 x 样本\" > 10_logs/${PROJECT}.biom_convert.log\nhead -1 08_amplicon/${PROJECT}.feature-table.tsv | tr '\\t' '\\n' | wc -l >> 10_logs/${PROJECT}.biom_convert.log",
+      "python": "import biom\ntable = biom.load_table(str(AMP_DIR / \"export\" / \"feature-table.biom\"))\nwith open(AMP_DIR / f\"{project}.feature-table.tsv\", \"w\", encoding=\"utf-8\") as fh:\n    table.to_tsv(fh, header_key=\"#OTU ID\")\n# 记录方向与形状，避免下游误读\n(LOG_DIR / f\"{project}.biom_convert.log\").write_text(\n    f\"shape(features x samples)={table.shape}\\tdirection=features x samples\\n\", encoding=\"utf-8\")"
+    },
+    "params": [
+      { "flag": "biom convert --to-tsv / --to-hdf5", "default": "无", "note": "显式选择目标格式；BIOM 1.0（稠密 TSV）与 2.1（稀疏 HDF5/JSON）语义不同" },
+      { "flag": "表类型", "default": "以官方文档为准", "note": "OTU 表与功能表在注释处理上不同；选错会让分类注释列被当成普通数据" },
+      { "flag": "矩阵方向", "default": "特征 × 样本", "note": "BIOM 的约定；转换为 R 常用形式时需转置，必须在表头写明方向" },
+      { "flag": "分类注释列", "default": "保留原始列", "note": "同时另存拆分后的层级表；分类名含分隔符时简单切分会造成列数错乱" },
+      { "flag": "稀疏与稠密", "default": "保持稀疏", "note": "稀疏表转稠密 TSV 会让文件体积与内存占用暴增，尤其在特征数上万时" }
+    ],
+    "pitfalls": [
+      "矩阵方向弄反后所有统计都能跑完、数字看起来正常，结论却完全错误；平面表格本身不记录方向，因此必须在表头或同目录说明文件里写死「特征 × 样本」，并在下游脚本里断言形状。",
+      "分类注释列不能靠分隔符硬切：分类名里可能含分号或竖线，切出来列数会不一致；应使用专门解析并检查列数恒定，同时保留原始注释字符串。",
+      "BIOM 1.0 与 2.1 是两种不同格式（稠密与稀疏）。工具自动判断失败时往往给出空表或只有表头的文件，而不是报错；转换后第一件事是核对行数、列数与总丰度。",
+      "样本 ID 与元数据表必须完全一致。常见问题是丰度表用 Sample_1、元数据用 sample1，或多了几个被过滤掉的样本；转换后做一次集合比对，而不是等统计时报错。",
+      "稀疏矩阵转 TSV 会产生海量 0，文件体积可能膨胀几十倍；特征数上万时应保留稀疏表示或压缩，别让中间文件成为流程瓶颈。",
+      "转换会改写特征 ID 中的特殊字符（空格、逗号、分号），在多次往返后与注释表、参考数据库对不上；归档时保留原始 BIOM 与转换脚本，便于回溯。"
+    ],
+    "related": [
+      { "id": "amplicon_qiime2_import", "note": "上游：把原始读长导入 QIIME 2 并生成特征表工件" },
+      { "id": "amplicon_phyloseq", "note": "主要消费方：需要特征表 + 分类注释 + 元数据三者对齐" },
+      { "id": "amplicon_taxonomy_assign", "note": "分类注释的来源，决定拆分表能否建立" },
+      { "id": "io_interop_standard", "note": "大矩阵跨语言传输时改用列式格式，避免 CSV 往返失真" }
+    ],
+    "docs": [
+      { "label": "第 11 章 流程与可复现性", "path": "docs/guidebook/11-workflow-reproducibility.md" },
+      { "label": "第 8 章 宏基因组与微生物组", "path": "docs/guidebook/08-metagenome-microbiome.md" }
+    ]
+  },
+  {
+    "id": "io_newick_convert",
+    "name": "树文件格式互转 (Newick / Nexus / NEXML)",
+    "category": "io-formats",
+    "layer": "engine",
+    "kind": "adapter",
+    "maturity": "stable",
+    "domains": ["phylogenetics"],
+    "tags": ["newick", "nexus", "树格式", "支持度", "定根", "枝长"],
+    "summary": "在 Newick、Nexus 与表格之间转换树文件",
+    "what": [
+      "每套建树与可视化工具都有自己的树文件方言：贝叶斯程序要 Nexus（含 translate 块），最大似然程序默认写 Newick，可视化平台对 Newick 中的定根标记与节点标签有各自约定，而脚本处理往往更需要一张「分支 × 支持度 × 枝长」的表格。转换步骤的作用就是在这些方言之间搬运，而它搬运的东西比看上去多——拓扑只是树的一部分。",
+      "丢失通常发生在没人检查的地方。多数转换器会保留拓扑却丢内部节点标签（支持度）或枝长；方括号注释（携带后验、高度等元数据）常被直接剥离；Nexus 的 translate 块把物种名换成编号，只保留树行会让叶名变成 1…N；最隐蔽的是定根信息——Newick 本身不记录树是否已定根，Nexus 用 [&R]/[&U] 记录，一次往返转换就能把已定根的树变成「未定根」，拓扑看起来一模一样，但外群判断与祖先状态重建的解释已经变了。",
+      "可靠做法是把树当成有 schema 的数据：先确定一个内部规范（建议保留枝长与支持度的 Newick，加上一份节点支持度表），其他格式都从它派生；每次转换后自检叶数、叶名集合、枝长总和与根到叶距离分布，而不是只比较拓扑字符串。叶名中若含空格、冒号、括号、逗号等 Newick 保留字符，必须加引号或提前统一替换，否则解析会失败或被静默截断。"
+    ],
+    "inputs": [
+      { "type": "tree", "name": "树文件", "required": true, "note": "Newick / Nexus / NEXML 均可；转换前先确认它是否已定根、是否带支持度" },
+      { "type": "tsv-table", "name": "叶名对照与元数据表", "required": false, "note": "用于检查叶名一致性，或为可视化平台准备注释信息" }
+    ],
+    "outputs": [
+      { "type": "tree", "name": "转换后的树文件", "ext": ".treefile / .nex / .xml", "note": "同一端口承载多种树格式，实际格式由扩展名与内容体现" },
+      { "type": "tsv-table", "name": "分支与支持度表", "ext": ".branches.tsv", "note": "父节点、子节点、枝长、支持度；便于脚本核查与统计" },
+      { "type": "log-report", "name": "转换自检日志", "ext": ".convert.log", "note": "叶数、枝长总和、定根状态、被剥离的注释数" }
+    ],
+    "provides": [
+      { "tool": "DendroPy", "version": "4.5.x", "access": "python-api", "install": "pip", "note": "树对象读写与格式互转；对支持度与枝长的处理比 Biopython 更细致" },
+      { "tool": "Biopython", "version": "1.8x", "access": "python-api", "install": "pip", "note": "Bio.Phylo 读写 Newick/Nexus；对注释与定根标记支持有限" },
+      { "tool": "ape", "version": "5.7.x", "access": "r-api", "install": "cran", "note": "R 侧读树与统计的通用包；read.tree/read.nexus 的默认行为不同，注意区分" }
+    ],
+    "feeds": [
+      { "target": "viz_tree_plot", "viaType": "tree", "note": "可视化前统一为带枝长与支持度的规范格式" },
+      { "target": "phy_tree_compare", "viaType": "tree", "note": "拓扑比较要求两棵树都完整保留叶名与定根状态" },
+      { "target": "phy_root_calibrate", "viaType": "tree", "note": "定根操作需要明确的定根状态与外群信息" }
+    ],
+    "usage": [
+      {
+        "label": "Newick → Nexus（保留枝长与支持度）",
+        "lang": "python",
+        "code": "from Bio import Phylo\nimport io\ntree = Phylo.read(\"tree.nwk\", \"newick\")\nPhylo.write(tree, \"tree.nex\", \"nexus\")\n# 读回验证：叶数、叶名集合、总枝长是否与输入一致"
+      },
+      {
+        "label": "导出分支表供脚本核查",
+        "lang": "python",
+        "code": "from Bio import Phylo\nrows = []\nfor clade in Phylo.read(\"tree.nwk\", \"newick\").find_clades(order=\"level\"):\n    rows.append((clade.name, clade.branch_length, clade.confidence))\nprint(\"branches:\", len(rows))\nprint(\"tips:\", sum(1 for r in rows if r[0]))"
+      },
+      {
+        "label": "R 侧读取并快速核对",
+        "lang": "r",
+        "code": "library(ape)\ntr <- read.tree(\"tree.nwk\")\ncat(length(tr$tip.label), is.rooted(tr), sum(tr$edge.length), \"\\n\")\n# 这三个数字应与你记录的一致；不一致说明转换过程改动了树"
+      }
+    ],
+    "recipes": {
+      "python": "import dendropy\ntree = dendropy.Tree.get(path=str(PHYLO_DIR / f\"{project}.nwk\"), schema=\"newick\",\n                        preserve_underscores=True)\ntree.write(path=str(PHYLO_DIR / f\"{project}.nex\"), schema=\"nexus\")\n(LOG_DIR / f\"{project}.tree_convert.log\").write_text(\n    f\"taxa={len(tree.taxon_namespace)}\\trooted={tree.is_rooted}\\t\"\n    f\"total_length={sum(e.length or 0 for e in tree.edges())}\\n\", encoding=\"utf-8\")",
+      "bash": "python 11_scripts/convert_tree.py --in 06_phylo/${PROJECT}.nwk \\\n  --out 06_phylo/${PROJECT}.nex --log 10_logs/${PROJECT}.tree_convert.log\ncat 10_logs/${PROJECT}.tree_convert.log   # 核对叶数、定根状态与枝长总和"
+    },
+    "params": [
+      { "flag": "定根标记 [&R]/[&U]", "default": "保留", "note": "Nexus 用它记录是否已定根；丢失后往返转换会把有根树变成无根树，下游解释随之改变" },
+      { "flag": "内部节点标签", "default": "保留", "note": "自展支持度常写在内部节点标签里；被丢弃后树上就只剩拓扑，无法判断分支可靠性" },
+      { "flag": "枝长", "default": "保留", "note": "有些转换器只写拓扑；枝长被清零后仍能画图，但所有基于距离的分析都失效" },
+      { "flag": "translate 块", "default": "保留", "note": "Nexus 用它把物种名映射为编号；丢掉后叶名会变成 1…N" },
+      { "flag": "叶名引号与替换", "default": "按目标平台", "note": "空格、冒号、括号、逗号为保留字符；可视化平台还可能把下划线转成空格，提交前统一处理" }
+    ],
+    "pitfalls": [
+      "Newick 不记录是否已定根，Nexus 用 [&R]/[&U] 记录。一次往返转换就能把有根树变成「未定根」，拓扑不变但外群与祖先状态重建的含义已经不同，且不会有任何警告。",
+      "支持度与枝长是两种不同的数，位置也不同（内部节点标签 vs 枝长字段）。有些转换器会把支持度写进枝长字段，得到一棵「枝长等于自展值」的树，建树与可视化软件都不会报错。",
+      "方括号注释会被多数解析器剥离。若树的元数据（后验概率、分化时间、宿主信息）存在注释里，往返转换后就永久消失了。",
+      "Nexus 的 translate 块把叶名换成编号：只保留树行而丢掉 translate 表，叶名就变成 1…N，事后无法与样本表对应。",
+      "叶名中的空格、冒号、括号、逗号是 Newick 保留字符，未加引号会解析失败或截断；iTOL 等在线平台还会把下划线显示成空格，提交前应统一叶名规则。",
+      "转换后必须做结构化自检（叶数、叶名集合、枝长总和、根到叶距离分布），只比较拓扑字符串会漏掉枝长清零、支持度丢失这类问题。"
+    ],
+    "related": [
+      { "id": "phy_iqtree", "note": "树的常见来源；输出格式与支持度写法因参数而异" },
+      { "id": "phy_tree_compare", "note": "拓扑比较前必须先保证两棵树的叶名与定根状态一致" },
+      { "id": "viz_tree_plot", "note": "可视化平台对格式与叶名的额外约定是转换的主要动机" },
+      { "id": "phy_root_calibrate", "note": "定根与外群设置需要完整的定根信息" }
+    ],
+    "docs": [
+      { "label": "第 11 章 流程与可复现性", "path": "docs/guidebook/11-workflow-reproducibility.md" }
+    ]
+  },
+  {
+    "id": "io_compress_index",
+    "name": "压缩与索引 (bgzip / tabix / samtools index)",
+    "category": "io-formats",
+    "layer": "engine",
+    "kind": "adapter",
+    "maturity": "stable",
+    "domains": ["genomics", "metagenomics"],
+    "tags": ["bgzip", "tabix", "索引", "随机访问", "csi", "压缩"],
+    "summary": "为大盘文件建立随机访问所需的压缩与索引",
+    "what": [
+      "「压缩」和「可随机访问」是两件事，而流程里经常被混为一谈：普通 gzip 无法从中间开始解压，因此任何按区间查询的工具（按区域取变异、查看某个基因的覆盖度、对巨大的 BED 做区间交集）都无法使用它——只能从头解压到目标位置。bgzip 写出的分块 gzip 流可以随机定位，tabix 为坐标类文本（VCF/BED/GFF）建索引，samtools index 为 BAM/CRAM 建索引。这一步就是把「能存」变成「能用」的转换。",
+      "静默问题来自两类不一致。第一类是压缩方式与文件名不一致：gzip 与 bgzip 生成的文件内容相同、扩展名相同，肉眼与大多数工具都分辨不出，但只有 bgzip 的结果能被索引；用 gzip 压缩后再建索引会失败或产出一个谁也读不了的索引，而错误现场离真正原因很远。第二类是被索引文件本身不完整：对仍在写入、或被中断拷贝的文件建索引，会得到结构上合法、内容却缺失的索引，之后按区间查询会静默少返回记录，比直接报错危险得多。",
+      "还有两个容易被忽略的边界：tabix 的默认 tbi 索引有坐标上限（约 2^29 bp），超出的大基因组必须改用 CSI；索引文件是派生数据，与数据文件必须成对管理——漏拷索引会让流程在下游报出莫名其妙的错误，而拷来一个版本不匹配的旧索引会让查询结果直接错位。因此索引应当可重建，并在归档时与数据一起做校验。"
+    ],
+    "inputs": [
+      { "type": "bam", "name": "比对文件 (BAM / CRAM)", "required": false, "note": "需要先按坐标排序才能建立索引" },
+      { "type": "vcf", "name": "变异文件 (VCF)", "required": false, "note": "需 bgzip 压缩后才能建 tabix 索引" },
+      { "type": "tsv-table", "name": "坐标类文本 (BED / GFF)", "required": false, "note": "同样要求按下坐标排序后用 bgzip 压缩" }
+    ],
+    "outputs": [
+      { "type": "bam", "name": "排序并建索引的 BAM", "ext": ".sorted.bam(.bai/.csi)", "note": "索引与数据必须成对分发" },
+      { "type": "vcf", "name": "bgzip 压缩并建索引的 VCF", "ext": ".vcf.gz(.tbi/.csi)", "note": "随机访问的前提；大基因组需选 CSI" },
+      { "type": "tsv-table", "name": "bgzip 压缩并建索引的区间表", "ext": ".bed.gz(.tbi)", "note": "区间查询与大文件交集的性能基础" },
+      { "type": "log-report", "name": "压缩与索引记录", "ext": ".index.log", "note": "所用压缩方式、索引类型、坐标上限与校验和" }
+    ],
+    "provides": [
+      { "tool": "SAMtools", "version": "1.1x", "access": "cli", "install": "conda", "note": "sort/index/quickcheck；索引前必须先坐标排序" },
+      { "tool": "HTSlib (bgzip / tabix)", "version": "1.1x", "access": "cli", "install": "conda", "note": "分块压缩与区间索引的参考实现；bgzip 与 tabix 版本需与消费工具兼容" },
+      { "tool": "pysam", "version": "0.22.x", "access": "python-api", "install": "pip", "note": "脚本侧读写压缩与索引文件；底层同样依赖 htslib 行为" }
+    ],
+    "feeds": [
+      { "target": "util_samtools", "viaType": "bam", "note": "索引后的 BAM 才能被区间查询与统计" },
+      { "target": "var_bcftools_call", "viaType": "bam", "note": "坐标排序并建立索引的 BAM 是变异检出的直接输入，也是后续按区域调用的前提" },
+      { "target": "comp_snp_dist", "viaType": "vcf", "note": "bgzip 压缩并建立索引的多菌株位点集合可直接进入 SNP 距离计算" },
+      { "target": "util_bedtools", "viaType": "tsv-table", "note": "大区间文件的交集与合并需要压缩索引支撑" },
+      { "target": "py_pysam", "viaType": "bam", "note": "脚本按区间随机读取比对记录" }
+    ],
+    "usage": [
+      {
+        "label": "VCF：bgzip 压缩后建索引",
+        "lang": "bash",
+        "code": "bcftools sort -Oz -o variants.sorted.vcf.gz variants.vcf.gz\ntabix -p vcf variants.sorted.vcf.gz\ntabix -l variants.sorted.vcf.gz            # 列出索引中的序列，确认索引确实建上了"
+      },
+      {
+        "label": "BED：排序、压缩、建索引",
+        "lang": "bash",
+        "code": "sort -k1,1 -k2,2n regions.bed | bgzip -c > regions.bed.gz\ntabix -p bed regions.bed.gz"
+      },
+      {
+        "label": "BAM：排序、索引并验证完整性",
+        "lang": "bash",
+        "code": "samtools sort -@ 8 -o aligned.sorted.bam aligned.bam\nsamtools index aligned.sorted.bam\nsamtools quickcheck -v aligned.sorted.bam"
+      }
+    ],
+    "recipes": {
+      "bash": "bcftools sort -Oz -o 06_phylo/${PROJECT}.sorted.vcf.gz ${PROJECT}.vcf.gz\ntabix -p vcf 06_phylo/${PROJECT}.sorted.vcf.gz\ntabix -l 06_phylo/${PROJECT}.sorted.vcf.gz > 10_logs/${PROJECT}.index.log\nbcftools index --stats 06_phylo/${PROJECT}.sorted.vcf.gz >> 10_logs/${PROJECT}.index.log",
+      "python": "run([\"bcftools\", \"sort\", \"-Oz\", \"-o\", str(PHYLO_DIR / f\"{project}.sorted.vcf.gz\"), str(vcf_in)])\nrun([\"tabix\", \"-p\", \"vcf\", str(PHYLO_DIR / f\"{project}.sorted.vcf.gz\")])\n# 用 pysam 回读验证索引可用，而不是只看索引文件是否存在\nimport pysam\nwith pysam.VariantFile(str(PHYLO_DIR / f\"{project}.sorted.vcf.gz\")) as vcf:\n    first = next(iter(vcf.fetch()), None)\nprint(\"index_ok\", first is not None)"
+    },
+    "params": [
+      { "flag": "bgzip vs gzip", "default": "bgzip", "note": "只有 bgzip 的分块流才能被索引与随机访问；两者文件内容相同、扩展名相同，无法从外表区分" },
+      { "flag": "tabix -p", "default": "自动", "note": "预设坐标格式（vcf/bed/gff）；预设选错时坐标解析会错位，索引虽能建立但查询结果不可信" },
+      { "flag": "tabix -C", "default": "关闭", "note": "使用 CSI 索引；坐标超过约 2^29 bp 的基因组必须用它，配合 -c 设置 bin 大小" },
+      { "flag": "samtools index -c", "default": "关闭", "note": "生成 CSI 而非 BAI；超长参考序列（单条超过 512 Mb）或大量 contig 时需要" },
+      { "flag": "排序键", "default": "坐标", "note": "索引前必须按坐标排序，且染色体顺序要与消费工具一致；按名字排序的 BAM 无法建立可用索引" }
+    ],
+    "pitfalls": [
+      "gzip 与 bgzip 产出的文件内容相同、扩展名相同，肉眼与多数工具都分辨不出，但只有 bgzip 的结果可被索引。用 gzip 压缩再 tabix 会失败，或生成一个谁也读不了的索引，而报错现场离真正原因很远。",
+      "对仍在写入或被中断拷贝的文件建索引会得到「结构合法、内容缺失」的索引，之后按区间查询静默少返回记录。索引必须在文件写完并关闭之后建立，必要时先校验和。",
+      "tabix 默认的 tbi 有坐标上限（约 2^29 bp）：大基因组或长 scaffold 必须改用 CSI，否则索引失败或覆盖不全，问题只在查询某些区域时才暴露。",
+      "建索引要求按坐标排序，且染色体排序顺序要与查询工具一致。字典序排列会把 chr10 排在 chr2 之前，区间查询因此返回空结果——而文件本身看起来完全正常。",
+      "BAM 缺少 EOF 标记（常见于拷贝中断）时，部分工具仍能读到末尾而不报错，覆盖度与索引都会静默少算；建索引前先用 samtools quickcheck 验证。",
+      "索引是派生数据：漏拷索引会让下游报出难以理解的错误，拷来旧索引则会让查询结果错位。归档时把数据与索引一起校验，并在流程里保证索引可随时重建。"
+    ],
+    "related": [
+      { "id": "util_samtools", "note": "BAM 侧的排序、索引与完整性检查" },
+      { "id": "io_bam_to_bed", "note": "覆盖度与区间转换；其输入要求已排序并建索引的 BAM" },
+      { "id": "util_checksum", "note": "为数据与索引建立校验和，防止成对文件不匹配" },
+      { "id": "py_pysam", "note": "脚本侧随机访问压缩与索引文件的典型消费方" }
+    ],
+    "docs": [
+      { "label": "第 11 章 流程与可复现性", "path": "docs/guidebook/11-workflow-reproducibility.md" }
+    ]
+  },
+  {
+    "id": "io_interop_standard",
+    "name": "跨语言数据互通 (Parquet / Arrow / Feather)",
+    "category": "io-formats",
+    "layer": "engine",
+    "kind": "adapter",
+    "maturity": "active",
+    "domains": ["genomics", "metagenomics", "transcriptomics"],
+    "tags": ["parquet", "feather", "arrow", "schema", "跨语言", "矩阵"],
+    "summary": "用列式格式在 Python / R 与命令行之间传表",
+    "what": [
+      "流程里最频繁的动作之一是把一张表从 Python 交给 R、再交给绘图或交付脚本，默认手段是 CSV/TSV。但平面文本不携带 schema，这一路上会发生一连串静默的类型改写：样本 ID 0012 被推断成整数丢掉前导零，字符串 NA 在 R 里默认读成缺失值（连基因名里的 NA 也一起被吃掉），布尔值在两种语言里写成 TRUE 与 True，浮点数按默认位数打印后丢掉精度。列式格式（Parquet/Feather/Arrow）把这些信息随数据一起传，往返不再依赖双方的默认推断。",
+      "解析上的收益同样明显：列式存储可以只读需要的列、按块并行，特征数上万、样本数上千的丰度矩阵用它读写比 CSV 快一个数量级，磁盘占用也更小。它的边界必须诚实说明：它保留列名与类型，但**不保留** R 的 factor、属性与行名，arrow 库版本不匹配时新特性读不了，而且格式本身不阻止你把长表（tidy 格式）当成宽矩阵读回来——结构化格式让「schema 是什么」变成显式问题，但不会替你回答。",
+      "实践建议是把 schema 当成接口契约：定义一次列名、类型与矩阵方向，写进同目录的说明或代码常量，再让所有跨语言环节共用它。跨机器交换时固定 arrow/pyarrow 版本；如果下游确实依赖行顺序（例如与另一个表按位置对齐），显式带上一列行 ID 并在读入后排序，而不是依赖读回顺序恰好一致。"
+    ],
+    "inputs": [
+      { "type": "dataframe", "name": "内存中的表格对象", "required": true, "note": "pandas / R data.frame；写出前先规整列名与类型" },
+      { "type": "csv-table", "name": "平面表格文件", "required": false, "note": "已有 CSV/TSV 时先读入并显式指定 dtypes，再转成列式格式" }
+    ],
+    "outputs": [
+      { "type": "dataframe", "name": "列式格式表 (Parquet / Feather)", "ext": ".parquet / .feather", "note": "类型与列名随文件保存；类型登记中没有 Parquet 类型，这里按数据框归类" },
+      { "type": "tsv-table", "name": "供存档与人工查看的 TSV", "ext": ".tsv", "note": "交付与快速查看仍用文本表，但不要用它做跨语言传输" },
+      { "type": "csv-table", "name": "供外部工具读取的 CSV", "ext": ".csv", "note": "Excel 等工具需要；导出时显式控制浮点位数与缺失值写法" },
+      { "type": "log-report", "name": "schema 与版本记录", "ext": ".schema.txt", "note": "列名、dtype、方向、arrow 版本；缺了它跨机器复现会失败" }
+    ],
+    "provides": [
+      { "tool": "pyarrow", "version": "17.0.x", "access": "python-api", "install": "pip", "note": "Parquet/Feather 读写与 schema 定义；版本决定可用特性" },
+      { "tool": "pandas", "version": "2.2.x", "access": "python-api", "install": "pip", "note": "to_parquet/read_parquet；dtype 需要在写出前显式固定" },
+      { "tool": "arrow (R)", "version": "16.1.x", "access": "r-api", "install": "cran", "note": "R 侧读写 Parquet/Feather；版本随 Arrow C++ 发布，安装时以仓库实际版本为准" }
+    ],
+    "feeds": [
+      { "target": "py_pandas_io", "viaType": "dataframe", "note": "在同一语言内继续做整理与计算" },
+      { "target": "r_read_import", "viaType": "csv-table", "note": "交给 R 做统计时用文本表交换，并显式声明各列类型" },
+      { "target": "r_export_table", "viaType": "csv-table", "note": "R 侧导出的结果表可回传给 Python 汇总" },
+      { "target": "py_export_report", "viaType": "tsv-table", "note": "生成交付表格与报告" }
+    ],
+    "usage": [
+      {
+        "label": "Python 写出 Parquet（显式固定 dtype）",
+        "lang": "python",
+        "code": "import pandas as pd\ndf = pd.read_csv(\"abundance.tsv\", sep=\"\\t\", dtype={\"sample_id\": \"string\"})\ndf.to_parquet(\"abundance.parquet\", index=False)\nprint(df.dtypes)   # 把 dtype 记录进日志，便于跨机器复现"
+      },
+      {
+        "label": "R 读回并核对 schema",
+        "lang": "r",
+        "code": "library(arrow)\ndf <- read_parquet(\"abundance.parquet\")\nstr(df, list.len = 5)   # 类型应与写出端一致；factor/属性不会保留"
+      },
+      {
+        "label": "导出人类可读版本时控制精度与缺失写法",
+        "lang": "python",
+        "code": "df.to_csv(\"abundance.csv\", index=False, float_format=\"%.6g\", na_rep=\"NA\")\n# na_rep 与 R 的 na.strings 必须约定一致，否则字符串 NA 与缺失值会被混淆"
+      }
+    ],
+    "recipes": {
+      "python": "import pandas as pd\ndf = pd.read_csv(TSV_IN, sep=\"\\t\", dtype=DTYPES)\ndf.to_parquet(RES_DIR / f\"{project}.parquet\", index=False)\n(LOG_DIR / f\"{project}.schema.txt\").write_text(\n    \"\\n\".join(f\"{c}\\t{t}\" for c, t in df.dtypes.items()) + \"\\n\", encoding=\"utf-8\")",
+      "bash": "python 11_scripts/to_parquet.py \\\n  --input 09_results/${PROJECT}.abundance.tsv \\\n  --output 09_results/${PROJECT}.parquet \\\n  --schema-log 10_logs/${PROJECT}.schema.txt\npython -c \"import pandas as pd; print(pd.read_parquet('09_results/${PROJECT}.parquet').shape)\""
+    },
+    "params": [
+      { "flag": "dtype 显式声明", "default": "自动推断", "note": "推断会改写 ID 与缺失值语义；跨语言交换的表必须逐列声明类型" },
+      { "flag": "float_format", "default": "以库默认为准", "note": "导出文本表时限制小数位数会丢精度；分析用的表不要用文本格式传输" },
+      { "flag": "na_rep / na.strings", "default": "NA", "note": "两端必须约定同一个缺失值写法，否则字符串 NA 与真实缺失会被混为一谈" },
+      { "flag": "压缩方式", "default": "snappy", "note": "Parquet 自带压缩；大矩阵用 zstd 更省空间，但读端需要同版本支持" },
+      { "flag": "index / 行名", "default": "不写出", "note": "行名与 R 的 row.names 不会作为元数据保留；需要时显式写成一列 ID" }
+    ],
+    "pitfalls": [
+      "CSV 往返会静默改变类型：样本 ID 0012 变整数丢前导零、字符串 NA 在 R 里变缺失值、布尔写成 TRUE/True、浮点按默认位数丢精度。跨语言交换表格必须显式声明 schema。",
+      "Parquet/Feather 保留类型与列名，但不保留 R 的 factor、属性与行名。把这些语义寄存在属性里的脚本读回来只会得到普通字符串。",
+      "大矩阵用 CSV 传输既慢又容易因浮点格式化产生系统性偏差；列式格式在特征数上万时的读写差距可以到数量级，别让文本表成为流程瓶颈。",
+      "arrow 库版本不匹配时，写入端使用的新特性在读端可能直接不支持；跨机器交换时要固定 pyarrow / arrow 版本并在日志里记录。",
+      "Parquet 不承诺行顺序的语义。若下游依赖行序（例如与另一张表按位置对齐），应显式写出一列行 ID 并在读入后排序。",
+      "格式只保证 schema 被忠实保存，不保证 schema 是对的：把长表当矩阵读回来时它同样会成功。表方向与长宽格式仍需要人工定义与断言。"
+    ],
+    "related": [
+      { "id": "py_pandas_io", "note": "Python 侧的表格读取与整理" },
+      { "id": "r_read_import", "note": "R 侧的读入与清洗；跨语言时最容易出现类型失真" },
+      { "id": "py_export_report", "note": "把结果表输出成交付格式" },
+      { "id": "util_checksum", "note": "中间产物跨机器传递时的完整性校验" }
+    ],
+    "docs": [
+      { "label": "第 11 章 流程与可复现性", "path": "docs/guidebook/11-workflow-reproducibility.md" }
+    ]
+  }
+]

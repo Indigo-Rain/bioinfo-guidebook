@@ -1,0 +1,58 @@
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [18, 20, 22]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Build and validate (strict)
+        run: node tools/build.mjs --strict
+
+      - name: Check generated artifacts are up to date
+        if: matrix.node == 22
+        run: git diff --exit-code -- index.html data/bundle.json
+
+      - name: Unit tests
+        run: node --test tools/tests/model.test.mjs
+
+      - name: Export verification
+        run: node tools/verify-exports.mjs
+
+      - name: Preset edge diagnosis
+        run: node tools/diagnose-preset-edges.mjs
+
+      - name: Static smoke checks
+        run: |
+          set +e
+          node tools/smoke-edge.mjs
+          code=$?
+          if [ "$code" -eq 2 ]; then
+            echo "::warning::Browser render probe skipped in this environment."
+            exit 0
+          fi
+          exit "$code"

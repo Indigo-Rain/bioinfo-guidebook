@@ -1,0 +1,1881 @@
+[
+  {
+    "id": "wf_snakemake",
+    "name": "流程编排：Snakemake",
+    "category": "workflow",
+    "layer": "engine",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics",
+      "phylogenetics"
+    ],
+    "tags": [
+      "snakemake",
+      "流程",
+      "编排",
+      "可重复",
+      "python"
+    ],
+    "summary": "用声明式规则与依赖图编排可重跑的分析流程",
+    "what": [
+      "Snakemake 用 Python 语法写规则（rule）：每条规则声明输入、输出与要跑的命令，引擎据此构建依赖图，自动决定执行顺序、并行度与是否需要重跑。它的核心承诺是「你描述想要什么，而不是怎么跑」——中间文件缺失或过期时它会自己补算，某步失败时修好再跑就只重做受影响的部分。",
+      "它最实用的三个特性是：**断点续跑**（不用手工判断从哪继续）、**逐规则环境隔离**（`--use-conda` 让每个工具在自己的 conda 环境里跑，避免工具间依赖冲突）、以及**集群/profile 抽象**（同一份流程在本地、Slurm、云上以不同 profile 运行，改的是配置而不是流程代码）。",
+      "与之配套的工程习惯同样重要：先手工跑通一步再写进 rule、每次改完先 `-n`（dry-run）确认依赖图、日志在 rule 里显式声明而不是靠终端输出。这些习惯决定了流程是「能跑」还是「能维护」。"
+    ],
+    "inputs": [
+      {
+        "type": "script",
+        "name": "已验证的分析命令",
+        "required": true,
+        "note": "每条命令先手工跑通、确认参数与产物，再写进 rule"
+      },
+      {
+        "type": "tsv-table",
+        "name": "样本清单",
+        "required": true,
+        "note": "驱动通配符展开；列名会出现在 rule 的输入模板中"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "script",
+        "name": "Snakefile 与规则目录",
+        "ext": "Snakefile",
+        "note": "流程定义；配合 workflow/ 与 config/ 目录组织"
+      },
+      {
+        "type": "script",
+        "name": "环境定义文件",
+        "ext": "envs/*.yaml",
+        "note": "逐规则的 conda 环境，是可复现性的基础"
+      },
+      {
+        "type": "log-report",
+        "name": "运行日志与基准报告",
+        "ext": ".snakemake/log/",
+        "note": "含每步命令、耗时与资源用量"
+      },
+      {
+        "type": "report",
+        "name": "自动生成的流程报告",
+        "ext": ".report.html",
+        "note": "含 DAG、各步命令与运行统计，适合交接"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "Snakemake",
+        "version": "8.x",
+        "access": "cli",
+        "install": "conda",
+        "note": "Python 编写；可通过 pip 或 conda 安装"
+      },
+      {
+        "tool": "Graphviz",
+        "version": "9.x",
+        "access": "cli",
+        "install": "conda",
+        "note": "画 DAG 时可选依赖；dot 命令用于 --dag 输出"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "wf_reproducibility",
+        "viaType": "report",
+        "note": "Snakemake 报告含每条规则的实际命令，是溯源证据链"
+      },
+      {
+        "target": "wf_conda_env",
+        "viaType": "script",
+        "note": "逐规则环境定义需要与环境锁定方案配合"
+      },
+      {
+        "target": "wf_container",
+        "viaType": "script",
+        "note": "流程可进一步用容器固化，比 conda 更彻底"
+      },
+      {
+        "target": "wf_cluster_submit",
+        "viaType": "script",
+        "note": "用 profile 把同一流程投到集群上运行"
+      },
+      {
+        "target": "wf_checkpoint_pipeline",
+        "viaType": "script",
+        "note": "断点续跑依赖规则的输入输出声明是否准确"
+      }
+    ],
+    "usage": [
+      {
+        "label": "完整的目录结构与最小流程",
+        "lang": "bash",
+        "code": "# 推荐目录结构\n# project/\n#   Snakefile            <- 流程定义\n#   config/config.yaml   <- 参数与样本表\n#   workflow/envs/*.yaml <- 逐规则环境\n#   workflow/scripts/    <- 复杂步骤的脚本\n#   00_raw/ 01_clean/ ... <- 数据目录（不进版本管理）\n\nsnakemake --cores 8 -n -r          # 先干跑\nsnakemake --cores 8 --use-conda    # 再真跑"
+      },
+      {
+        "label": "配置文件驱动的参数管理（不要硬编码）",
+        "lang": "python",
+        "code": "\"\"\"Snakefile 片段：所有可变参数来自 config.yaml\"\"\"\nimport pandas as pd\n\nconfigfile: \"config/config.yaml\"\n\n# config.yaml 内容示例：\n#   threads: {fastp: 8, spades: 16}\n#   fastp: {min_qual: 20, min_len: 50}\n#   samples: config/samples.tsv\n\nsamples = pd.read_csv(config[\"samples\"], sep=\"\\t\", dtype=str)[\"sample\"].tolist()\n\nrule all:\n    input:\n        expand(\"02_assembly/{sample}/contigs.fasta\", sample=samples)\n\nrule qc:\n    input:\n        r1=\"00_raw/{sample}_R1.fq.gz\",\n        r2=\"00_raw/{sample}_R2.fq.gz\",\n    output:\n        r1=\"01_clean/{sample}_R1.fq.gz\",\n        r2=\"01_clean/{sample}_R2.fq.gz\",\n    params:\n        q=config[\"fastp\"][\"min_qual\"],\n        l=config[\"fastp\"][\"min_len\"],\n    threads: config[\"threads\"][\"fastp\"]\n    log: \"10_logs/qc/{sample}.log\"\n    conda: \"workflow/envs/qc.yaml\"\n    shell:\n        \"fastp -i {input.r1} -I {input.r2} -o {output.r1} -O {output.r2} \"\n        \"-q {params.q} -l {params.l} -w {threads} 2> {log}\""
+      },
+      {
+        "label": "集群 profile（同一流程换运行环境）",
+        "lang": "bash",
+        "code": "# workflow/profiles/slurm/config.yaml 里声明默认资源与提交方式，\n# 之后命令中不再需要 --cluster 之类参数\nsnakemake --profile workflow/profiles/slurm --use-conda\n\n# 常用运维命令\nsnakemake -n -r                                  # 干跑并打印命令\nsnakemake --dag | dot -Tpdf > dag.pdf            # 依赖图\nsnakemake --report report.html                   # 生成可交接的报告\nsnakemake --cores 8 --rerun-incomplete           # 清理不完整输出后续跑\nsnakemake --unlock                               # 上次异常中断后解除锁定"
+      }
+    ],
+    "recipes": {
+      "bash": "snakemake -n -r                       # 1. 干跑确认依赖图\nsnakemake --cores 8 --use-conda \\\n  --rerun-incomplete --keep-going --printshellcmds\nsnakemake --report 09_results/workflow_report.html",
+      "python": "# Snakefile 本身是声明式文件，但可使用任意 Python 表达式组织配置。\n# 建议把复杂逻辑抽到 workflow/scripts/ 下，rule 里只留一行调用，\n# 这样脚本可以单独测试，rule 保持可读。\nfrom pathlib import Path\n\nimport pandas as pd\n\nconfigfile: \"config/config.yaml\"\nCONFIG = dict(config)\nSAMPLES = pd.read_csv(CONFIG[\"samples\"], sep=\"\\t\", dtype=str)[\"sample\"].tolist()\n\nrule all:\n    input:\n        expand(\"09_results/qc/{sample}.json\", sample=SAMPLES)\n"
+    },
+    "params": [
+      {
+        "flag": "--cores / -j",
+        "default": "1",
+        "note": "本地并行度。不指定会串行执行；写一个数字是全部规则共享的上限，规则内部的 threads 决定实际占用"
+      },
+      {
+        "flag": "--use-conda",
+        "default": "关闭",
+        "note": "按规则的 conda 指令创建独立环境。这是流程可复现性的关键，不加则所有工具共用当前环境"
+      },
+      {
+        "flag": "--rerun-incomplete",
+        "default": "关闭",
+        "note": "清理上次中断留下的不完整输出。不加会因「文件存在但无效」而卡住"
+      },
+      {
+        "flag": "--keep-going",
+        "default": "关闭",
+        "note": "某分支失败后继续跑其它样本；批量任务必备，否则一个失败会中断全部"
+      },
+      {
+        "flag": "--printshellcmds",
+        "default": "关闭",
+        "note": "打印实际执行的命令。核对参数是否如你所想的最直接方式"
+      },
+      {
+        "flag": "--forcerun / -R",
+        "default": "无",
+        "note": "强制重跑某些规则。升级工具或改环境后必须显式重跑，Snakemake 不会自动检测工具版本变化"
+      },
+      {
+        "flag": "--unlock",
+        "default": "无",
+        "note": "上次异常退出留下的锁需要手动解除；不解除时任何命令都会报「目录被锁定」"
+      },
+      {
+        "flag": "--latency-wait",
+        "default": "5",
+        "note": "共享文件系统上的文件同步延迟；在 NFS 上跑时调到 30~60 可避免「输出文件不存在」的假报错"
+      }
+    ],
+    "pitfalls": [
+      "**output 声明不完整**。如果某步实际产出三个文件但只声明了一个，Snakemake 会认为该步骤已完成而跳过，最终缺少文件却报告「流程成功」。规则里的 output 必须列全。",
+      "样本名含连字符、点或空格时通配符匹配出问题。样本名统一用下划线能避免绝大多数此类问题。",
+      "不在 rule 里声明 log。批量运行时错误信息只留在终端，无从追溯。每步都应有 `log:` 并配合 `2> {log}`。",
+      "**误以为 Snakemake 会检测工具版本变化**。它按文件时间戳与内容判断是否需要重跑；升级了工具但输出文件还在，它不会重跑。改环境后要用 `--forcerun` 显式重跑相关步骤并在报告中记录。",
+      "在共享文件系统上不设 `--latency-wait`，导致 Snapkemake 看不到刚写出的文件并重复执行或报错。",
+      "异常中断后不 `--unlock`，后续所有命令都失败且错误信息不够直白。",
+      "把绝对路径或硬编码样本名写进 rule。这类流程无法移植，也失去了工作流引擎的意义。",
+      "用 `shell:` 里写多行长逻辑（几十行 shell）。这类逻辑应抽成 `workflow/scripts/` 下的脚本并用 `script:` 调用，否则无法单独测试、也极难调试。",
+      "在 rule 里用 `run:` 写大量 Python 而不落日志。`run:` 块出错时的堆栈信息不如脚本文件清晰，复杂逻辑应放到脚本里。"
+    ],
+    "related": [
+      {
+        "id": "py_snakemake_py",
+        "note": "最小可用骨架与规则写法入门"
+      },
+      {
+        "id": "wf_nextflow",
+        "note": "另一套主流引擎；DSL 不同但解决的问题相同"
+      },
+      {
+        "id": "wf_dag_rule",
+        "note": "依赖声明与 DAG 的通用概念"
+      },
+      {
+        "id": "wf_conda_env",
+        "note": "逐规则环境与依赖锁定"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 11 章 工作流引擎与可重复性",
+        "path": "docs/guidebook/11-workflow-reproducibility.md"
+      }
+    ]
+  },
+  {
+    "id": "wf_nextflow",
+    "name": "流程编排：Nextflow",
+    "category": "workflow",
+    "layer": "engine",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics",
+      "phylogenetics"
+    ],
+    "tags": [
+      "nextflow",
+      "流程",
+      "编排",
+      "容器",
+      "groovy"
+    ],
+    "summary": "用数据流式 DSL 编排跨平台的分析流程",
+    "what": [
+      "Nextflow 用 Groovy 方言写流程：process 声明输入输出与容器，channel 负责在 process 之间传递数据，引擎按数据可用性自动并行。它与 Snakemake 解决同一类问题，但设计取向不同——Snakemake 以「文件与依赖图」为中心，Nextflow 以「数据流与 channel」为中心。",
+      "它最突出的优势是**与容器和云平台的集成**：每个 process 声明 `container`，同一份流程在本地 Docker、集群 Singularity、AWS Batch 或 Google Cloud 上都能运行，只需切换 profile。这也是 nf-core 生态（大量已发表的标准化流程）选择它的原因。",
+      "代价是学习曲线更陡：channel 的语义（值通道 vs 队列通道、operators 的惰性求值）需要一段时间才能建立直觉。选型建议是：需要复用 nf-core 现成流程、或要跑在多种执行平台上，选 Nextflow；以文件为中心的本地/单集群分析、且偏好 Python，选 Snakemake。"
+    ],
+    "inputs": [
+      {
+        "type": "script",
+        "name": "已验证的分析命令",
+        "required": true,
+        "note": "同样建议先手工跑通再写进 process"
+      },
+      {
+        "type": "tsv-table",
+        "name": "样本清单 / 输入表",
+        "required": true,
+        "note": "常以 samplesheet.csv 形式作为参数输入"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "script",
+        "name": "Nextflow 流程定义",
+        "ext": "main.nf",
+        "note": "process 与 workflow 定义"
+      },
+      {
+        "type": "script",
+        "name": "运行配置",
+        "ext": "nextflow.config",
+        "note": "executor、容器、资源与各 profile 的配置"
+      },
+      {
+        "type": "log-report",
+        "name": "执行轨迹与报告",
+        "ext": ".nextflow.log",
+        "note": "含每任务的命令、耗时、CPU/内存峰值与退出码"
+      },
+      {
+        "type": "report",
+        "name": "流程运行报告",
+        "ext": ".report.html",
+        "note": "可视化各任务的资源用量与状态，便于定位瓶颈"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "Nextflow",
+        "version": "24.x",
+        "access": "cli",
+        "install": "conda",
+        "note": "需要 Java 运行环境（自带简化安装脚本）"
+      },
+      {
+        "tool": "nf-core tools",
+        "version": "3.x",
+        "access": "cli",
+        "install": "pip",
+        "note": "流程脚手架与规范检查；复用 nf-core 生态的入口"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "wf_container",
+        "viaType": "script",
+        "note": "每 process 声明容器是与容器化结合最自然的方式"
+      },
+      {
+        "target": "wf_cluster_submit",
+        "viaType": "script",
+        "note": "通过 executor 配置投到不同调度器"
+      },
+      {
+        "target": "wf_reproducibility",
+        "viaType": "log-report",
+        "note": "trace 与 report 记录每任务的完整命令与资源，是溯源证据"
+      },
+      {
+        "target": "wf_dag_rule",
+        "viaType": "script",
+        "note": "process 与 channel 的依赖关系构成 DAG"
+      }
+    ],
+    "usage": [
+      {
+        "label": "最小流程：process + channel",
+        "lang": "bash",
+        "code": "// main.nf\nnextflow.enable.dsl=2\n\nprocess QC {\n    container 'quay.io/biocontainers/fastp:0.23.4--h5f740d0_0'\n    cpus 8\n\n    input:\n    tuple val(sample), path(r1), path(r2)\n\n    output:\n    tuple val(sample), path(\"${sample}_R1.fq.gz\"), path(\"${sample}_R2.fq.gz\")\n    path(\"${sample}.fastp.json\")\n\n    script:\n    \"\"\"\n    fastp -i $r1 -I $r2 \\\\\n          -o ${sample}_R1.fq.gz -O ${sample}_R2.fq.gz \\\\\n          -w ${task.cpus} -j ${sample}.fastp.json\n    \"\"\"\n}\n\nworkflow {\n    Channel\n        .fromPath(\"00_raw/*_R1.fq.gz\")\n        .map { f -> def s = f.baseName - ~/_R1$/; tuple(s, f, file(\"00_raw/${s}_R2.fq.gz\")) }\n        .set { reads }\n\n    QC(reads)\n}"
+      },
+      {
+        "label": "运行与调试",
+        "lang": "bash",
+        "code": "# -resume 是核心功能：已成功的任务会被复用\nnextflow run main.nf -resume -with-trace -with-report report.html\n\n# 用容器与指定 profile\nnextflow run main.nf -profile docker -resume\n\n# 逐步排查：先看将要执行什么\nnextflow run main.nf -resume -preview"
+      },
+      {
+        "label": "配置文件：把资源与平台分开",
+        "lang": "bash",
+        "code": "// nextflow.config\nprocess {\n    errorStrategy = 'retry'        // 失败自动重试，适合集群的偶发失败\n    maxRetries = 2\n    maxForks = 20                  // 同时运行的任务上限\n}\n\nprofiles {\n    local {\n        process.executor = 'local'\n        process.cpus = 4\n    }\n    slurm {\n        process.executor = 'slurm'\n        process.queue = 'normal'\n        process.clusterOptions = '--account=myproject'\n    }\n    docker {\n        docker.enabled = true\n    }\n}"
+      }
+    ],
+    "recipes": {
+      "bash": "nextflow run main.nf -resume \\\n  -profile local \\\n  -with-trace 09_results/nextflow_trace.txt \\\n  -with-report 09_results/nextflow_report.html \\\n  -with-timeline 09_results/nextflow_timeline.html",
+      "python": "# Nextflow 流程本身是 Groovy，不通过 Python 调用。\n# 但常用做法是用 Python 生成 samplesheet 与参数文件，再启动流程：\nimport subprocess\nfrom pathlib import Path\n\nsamplesheet = Path(\"09_results/samplesheet.csv\")\nsamplesheet.write_text(\n    \"sample,fastq_1,fastq_2\\n\" +\n    \"\\n\".join(f\"{p.stem[:-3]},00_raw/{p.name},00_raw/{p.name.replace('_R1','_R2')}\"\n              for p in sorted(Path(\"00_raw\").glob(\"*_R1.fq.gz\"))),\n    encoding=\"utf-8\",\n)\n\nsubprocess.run([\n    \"nextflow\", \"run\", \"main.nf\", \"-resume\",\n    \"-profile\", \"local\",\n    \"--input\", str(samplesheet),\n], check=True)"
+    },
+    "params": [
+      {
+        "flag": "-resume",
+        "default": "关闭",
+        "note": "**最常用的参数**。复用已完成任务的缓存目录，是「失败后接着跑」的实现方式"
+      },
+      {
+        "flag": "-profile",
+        "default": "无",
+        "note": "切换 executor 与容器方案；把环境差异集中在配置文件而非流程代码"
+      },
+      {
+        "flag": "process.errorStrategy",
+        "default": "'terminate'",
+        "note": "默认一个任务失败即终止全部。集群长跑任务建议 'retry' 以吸收偶发的节点故障"
+      },
+      {
+        "flag": "process.maxForks",
+        "default": "无限制",
+        "note": "不限制会一次提交大量任务压垮集群或撑满内存。按集群配额设置"
+      },
+      {
+        "flag": "-with-trace / -with-report",
+        "default": "关闭",
+        "note": "trace 记录每任务命令与资源峰值，report 是可视化版本；两者都应保留作为溯源材料"
+      },
+      {
+        "flag": "nextflow.enable.dsl",
+        "default": "2（新版默认）",
+        "note": "老流程用 DSL1 语法，与 DSL2 不兼容；读老代码时先确认版本"
+      }
+    ],
+    "pitfalls": [
+      "**channel 的惰性求值导致「流程什么也没做」**。channel 只在被使用时求值，定义了 channel 却没有 terminal operator（如 `view`、`collect`）或 process 输入时，它什么都不执行而且不报错。",
+      "`-resume` 依赖 `work/` 缓存目录。手工删掉 `work/` 或换了工作目录后，resume 会从头重跑。清理空间时要保留 `work/`（或用 `nextflow clean` 精细清理）。",
+      "进程内使用了未在 input 声明的文件。Nextflow 的缓存依据是声明的输入输出哈希，未声明的依赖变化不会触发重跑，会得到「看起来成功但用了旧数据」的结果。",
+      "把大文件通过 channel 传递并在 process 间复制。在集群上是昂贵操作；应传路径而非内容，必要时用 `path` 与软链接。",
+      "不设 `maxForks` 与资源限制，一次提交数百个任务。这是压垮集群最常见的原因，也会拖慢所有人。",
+      "在 process 里写绝对路径或在 `script` 中引用当前目录的文件。容器运行时工作目录与本地不同，这类写法在本地能跑、在容器里必失败。",
+      "DSL1 与 DSL2 语法混用（例如在新流程里用 `Channel.fromPath` 的老式四参数 process）。升级旧流程时要系统地改，不要局部混。",
+      "忽略 `trace` 报告，因此不知道哪个任务吃掉了大部分内存与时间。优化流程的第一步就是看 trace，而不是凭感觉调参。"
+    ],
+    "related": [
+      {
+        "id": "wf_snakemake",
+        "note": "同类工具；以文件与依赖图为中心，Python 语法"
+      },
+      {
+        "id": "wf_container",
+        "note": "Nextflow 与容器的结合最自然"
+      },
+      {
+        "id": "wf_cluster_submit",
+        "note": "通过 executor 配置接入不同调度器"
+      },
+      {
+        "id": "wf_dag_rule",
+        "note": "process 与 channel 构成的依赖关系"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 11 章 工作流引擎与可重复性",
+        "path": "docs/guidebook/11-workflow-reproducibility.md"
+      }
+    ]
+  },
+  {
+    "id": "wf_conda_env",
+    "name": "环境与依赖锁定 (conda / mamba / pixi)",
+    "category": "workflow",
+    "layer": "engine",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics",
+      "phylogenetics"
+    ],
+    "tags": [
+      "conda",
+      "mamba",
+      "环境",
+      "依赖",
+      "复现"
+    ],
+    "summary": "为每个工具建立隔离环境并锁定版本",
+    "what": [
+      "生信工具的依赖关系极其复杂：同一个环境里装 SPAdes 与 Prokka 可能因为 Python 或 GCC 版本冲突而装不上，装上了也可能因为共享库版本不一致而在运行时报错。conda 生态（含更快的 mamba）解决的是这个问题：每个工具或每组相关工具放在独立环境里，互不干扰。",
+      "但「能装上」不等于「能复现」。conda 的求解器每次可能选出不同的依赖版本组合，因此**必须把求解结果导出为锁文件**（`conda env export` 或显式写死版本）。这是可重复性的最低要求：半年后重建环境时，应当装出与当时一致的版本。",
+      "工程实践上有两条路线：逐工具环境（每个工具一个 yaml，简单明确、环境多但互不影响）与逐流程环境（整个流程一个环境，省事但容易冲突）。工作流引擎（Snakemake/Nextflow）通常配合前者：每个规则声明自己的环境文件。"
+    ],
+    "inputs": [
+      {
+        "type": "script",
+        "name": "工具清单与版本要求",
+        "required": true,
+        "note": "来自分析设计；版本要求应记录在主版本号粒度（如 0.23.x）"
+      },
+      {
+        "type": "log-report",
+        "name": "现有环境导出",
+        "required": false,
+        "note": "从已有环境导出作为锁文件基础"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "script",
+        "name": "环境定义文件",
+        "ext": "envs/*.yaml",
+        "note": "声明工具与主版本，供 conda/mamba 创建"
+      },
+      {
+        "type": "script",
+        "name": "锁定文件",
+        "ext": "*.lock.yaml",
+        "note": "含完整依赖树的精确版本与构建号，是可复现的关键"
+      },
+      {
+        "type": "log-report",
+        "name": "环境清单与校验",
+        "ext": "env_versions.txt",
+        "note": "记录每个工具的实际版本，应随结果一起归档"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "mamba",
+        "version": "1.5.x",
+        "access": "cli",
+        "install": "conda",
+        "note": "conda 的快速求解器实现；大环境上快很多"
+      },
+      {
+        "tool": "conda",
+        "version": "24.x",
+        "access": "cli",
+        "install": "binary",
+        "note": "环境管理基础；Miniforge/Minconda 常用发行版"
+      },
+      {
+        "tool": "pixi",
+        "version": "0.4x",
+        "access": "cli",
+        "install": "binary",
+        "note": "基于 conda 生态的新一代项目管理工具，支持逐项目锁定"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "wf_snakemake",
+        "viaType": "script",
+        "note": "Snakemake 的 --use-conda 读取逐规则环境文件"
+      },
+      {
+        "target": "wf_container",
+        "viaType": "script",
+        "note": "环境定义可直接转成容器镜像配方，比 conda 更彻底"
+      },
+      {
+        "target": "wf_reproducibility",
+        "viaType": "log-report",
+        "note": "环境版本清单是结果可追溯的必要部分"
+      },
+      {
+        "target": "util_install_tools",
+        "viaType": "script",
+        "note": "工具安装的实际操作步骤"
+      }
+    ],
+    "usage": [
+      {
+        "label": "逐工具环境：声明 + 创建 + 锁定",
+        "lang": "bash",
+        "code": "# envs/qc.yaml\n# name: qc\n# channels: [bioconda, conda-forge]\n# dependencies:\n#   - fastp=0.23.4\n#   - fastqc=0.12.1\n#   - multiqc=1.21\n\nmamba env create -f envs/qc.yaml -p envs/qc\n\n# 锁定：导出完整依赖树（含 build 号），这才是可复现的依据\nmamba env export -p envs/qc --no-builds > envs/qc.lock.yaml"
+      },
+      {
+        "label": "通道顺序很重要（写错会装到不同版本）",
+        "lang": "bash",
+        "code": "# 全局配置：bioconda 必须在 defaults 之前，conda-forge 通常放最后\nconda config --add channels bioconda\nconda config --add channels conda-forge\nconda config --set channel_priority strict\n\n# 使用 --strict 通道优先级可避免混用通道导致的依赖冲突\nmamba create -n qc -c bioconda -c conda-forge --strict-channel-priority fastp=0.23.4"
+      },
+      {
+        "label": "记录实际版本（结果归档时必做）",
+        "lang": "bash",
+        "code": "{\n  echo \"# 生成时间: $(date -Iseconds)\"\n  for tool in fastp spades.py quast.py bakta prokka; do\n    printf \"%-14s \" \"$tool\"\n    command -v \"$tool\" >/dev/null 2>&1 && \"$tool\" --version 2>&1 | head -1 || echo \"未安装\"\n  done\n} | tee 10_logs/env_versions.txt"
+      }
+    ],
+    "recipes": {
+      "bash": "set -euo pipefail\nmkdir -p envs 10_logs\n\n# 1. 创建环境（若不存在）\nfor envfile in envs/*.yaml; do\n  name=$(basename \"$envfile\" .yaml)\n  case \"$name\" in *.lock) continue ;; esac\n  if [ ! -d \"envs/$name\" ]; then\n    echo \"创建环境 $name\"\n    mamba env create -f \"$envfile\" -p \"envs/$name\"\n  fi\n  mamba env export -p \"envs/$name\" --no-builds > \"envs/$name.lock.yaml\"\ndone\n\n# 2. 记录实际版本\n{\n  echo \"# 环境版本清单  $(date -Iseconds)\"\n  for name in $(ls envs | grep -v '\\.yaml\\|lock'); do\n    printf \"### %s\\n\" \"$name\"\n    \"envs/$name/bin/python\" -c \"import sys; print('python', sys.version.split()[0])\" 2>/dev/null || true\n  done\n} > 10_logs/env_versions.txt\n\necho \"完成。锁文件与版本清单已写入 envs/ 与 10_logs/\"",
+      "python": "import subprocess\nfrom pathlib import Path\n\nENVS = Path(\"envs\")\nLOG = Path(\"10_logs/env_versions.txt\")\nLOG.parent.mkdir(parents=True, exist_ok=True)\n\nlines = [\"# 环境版本清单\"]\nfor spec in sorted(ENVS.glob(\"*.yaml\")):\n    if spec.stem.endswith(\".lock\"):\n        continue\n    try:\n        out = subprocess.run(\n            [\"mamba\", \"env\", \"export\", \"-p\", str(ENVS / spec.stem), \"--no-builds\"],\n            check=True, capture_output=True, text=True,\n        ).stdout\n        (ENVS / f\"{spec.stem}.lock.yaml\").write_text(out, encoding=\"utf-8\")\n        lines.append(f\"{spec.stem}: 已锁定 {len(out.splitlines())} 行\")\n    except subprocess.CalledProcessError as err:\n        lines.append(f\"{spec.stem}: 锁定失败 - {err}\")\n\nLOG.write_text(\"\\n\".join(lines) + \"\\n\", encoding=\"utf-8\")\nprint(\"\\n\".join(lines))"
+    },
+    "params": [
+      {
+        "flag": "channel_priority",
+        "default": "\"flexible\"",
+        "note": "设成 strict 可避免跨通道混用导致的依赖冲突；代价是有时求解会失败，此时需显式指定通道"
+      },
+      {
+        "flag": "版本指定粒度",
+        "default": "不指定",
+        "note": "yaml 里写 `fastp=0.23.4`（精确）或 `fastp=0.23`（次版本）；不指定版本等于放弃可复现性"
+      },
+      {
+        "flag": "env export --no-builds",
+        "default": "含 build",
+        "note": "含 build 号的锁文件最严格（跨平台可能装不上）；--no-builds 略宽松但可移植性更好"
+      },
+      {
+        "flag": "-p 路径 vs -n 名字",
+        "default": "-n",
+        "note": "用路径（-p）把环境放在项目目录里，便于打包与清理，也不会与全局环境重名混淆"
+      },
+      {
+        "flag": "mamba vs conda",
+        "default": "conda",
+        "note": "同样的求解逻辑，mamba 更快。大环境（数百依赖）上差别可达数十倍"
+      }
+    ],
+    "pitfalls": [
+      "**不导出锁文件**。只留一个写了 `fastp=0.23.4` 的 yaml 不够——它的依赖（如 htslib、libdeflate）版本未固定，半年后重建会装到不同版本，可能导致结果差异。必须 `env export` 锁定完整依赖树。",
+      "通道顺序写错（defaults 在 bioconda 之前），会装到不同来源的同名包或找不到包。约定顺序是 bioconda → conda-forge → defaults，且建议开 strict 优先级。",
+      "用 `pip install` 把包装进 conda 环境，破坏依赖一致性。conda 环境里混 pip 包会让后续 `env export` 无法完整描述环境。必须在 bioconda 找不到时才用 pip，并在文档里显式记录。",
+      "环境名重复导致误用：不同项目都叫 `bioinfo`，激活后跑的是别人的环境。用项目内路径（-p envs/xxx）可以避免。",
+      "环境目录纳入版本管理。conda 环境有数 GB，且含平台相关二进制；应纳入的是 yaml/lock 文件，环境目录本身写进 .gitignore。",
+      "长期不更新环境导致装不上新工具（通道里的旧包被清理）。但也不要随意更新——更新环境意味着结果可能需要重跑，应作为显式决策并记录。",
+      "Windows 上的部分生信工具没有原生构建，需要 WSL 或容器。这类情况应提前确认，而不是在流程跑到一半时才发现。",
+      "把 `conda activate` 写在脚本里而不初始化 shell，导致 `CommandNotFoundError`。非交互式脚本中应显式 source conda 的 init 脚本或直接调用环境的绝对路径。"
+    ],
+    "related": [
+      {
+        "id": "wf_container",
+        "note": "比 conda 更彻底的隔离方案；两者常结合使用"
+      },
+      {
+        "id": "util_install_tools",
+        "note": "工具安装的操作层说明"
+      },
+      {
+        "id": "util_download_ref",
+        "note": "数据库版本管理与环境版本管理同等重要"
+      },
+      {
+        "id": "wf_reproducibility",
+        "note": "环境与数据库版本是溯源链条的两条主线"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 1 章 环境与工程规范",
+        "path": "docs/guidebook/01-environment-and-conventions.md"
+      },
+      {
+        "label": "第 11 章 工作流引擎与可重复性",
+        "path": "docs/guidebook/11-workflow-reproducibility.md"
+      }
+    ]
+  },
+  {
+    "id": "wf_container",
+    "name": "容器化运行 (Docker / Singularity)",
+    "category": "workflow",
+    "layer": "engine",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics",
+      "phylogenetics"
+    ],
+    "tags": [
+      "docker",
+      "singularity",
+      "apptainer",
+      "容器",
+      "复现"
+    ],
+    "summary": "把工具与依赖封进镜像，彻底消除环境差异",
+    "what": [
+      "容器把操作系统层以下之外的软件依赖全部封进一个镜像：工具二进制、共享库、Python/R 包、甚至参考数据的目录结构。使用镜像时你拿到的是「作者当时验证过的那一套环境」，而不是「按依赖文件重建出来的近似环境」。这是可复现性最强的手段。",
+      "生信场景下两套工具各有位置：Docker 适合本地开发与单机运行，生态与镜像仓库最丰富（BioContainers 提供数千个已构建的生信镜像）；Singularity/Apptainer 适合共享集群与 HPC，因为它不要求 root 权限运行，且可以直接读取宿主机目录，不需要把数据拷进容器。",
+      "容器解决不了的问题要说清楚：它固定的是**软件**，不是**数据**。参考数据库、工具索引、分类模型都不在镜像里（体积太大），仍需单独管理版本。因此容器与数据库版本管理是两条并行的主线，缺一不可。"
+    ],
+    "inputs": [
+      {
+        "type": "script",
+        "name": "环境定义或工具清单",
+        "required": true,
+        "note": "容器配方可由 conda 环境文件转换而来，也可直接写 Dockerfile"
+      },
+      {
+        "type": "script",
+        "name": "流程定义",
+        "required": false,
+        "note": "Snakemake/Nextflow 的 process 或 rule 中声明容器"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "script",
+        "name": "容器配方文件",
+        "ext": "Dockerfile / *.def",
+        "note": "可重建镜像的配方；应纳入版本管理"
+      },
+      {
+        "type": "script",
+        "name": "镜像引用清单",
+        "ext": "containers.tsv",
+        "note": "记录每个工具所用的镜像与其 digest，digest 比 tag 更可靠"
+      },
+      {
+        "type": "log-report",
+        "name": "容器内工具版本清单",
+        "ext": "container_versions.txt",
+        "note": "从容器内导出实际版本，作为溯源证据"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "Docker",
+        "version": "26.x",
+        "access": "cli",
+        "install": "binary",
+        "note": "本地开发与单机运行；镜像生态最丰富"
+      },
+      {
+        "tool": "Apptainer",
+        "version": "1.3.x",
+        "access": "cli",
+        "install": "conda",
+        "note": "原 Singularity；HPC 上无 root 运行的标准方案"
+      },
+      {
+        "tool": "Podman",
+        "version": "5.x",
+        "access": "cli",
+        "install": "binary",
+        "note": "无守护进程的容器运行时，权限模型更贴近集群要求"
+      },
+      {
+        "tool": "BioContainers",
+        "version": "registry",
+        "access": "bundled",
+        "install": "container",
+        "note": "预构建的生信镜像仓库；多数常用工具已有官方镜像"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "wf_snakemake",
+        "viaType": "script",
+        "note": "规则可用 container 指令直接引用镜像"
+      },
+      {
+        "target": "wf_nextflow",
+        "viaType": "script",
+        "note": "process 的 container 声明是最常用的结合方式"
+      },
+      {
+        "target": "wf_cluster_submit",
+        "viaType": "script",
+        "note": "集群上通常需要 Apptainer 而非 Docker"
+      },
+      {
+        "target": "wf_reproducibility",
+        "viaType": "log-report",
+        "note": "镜像 digest 是比版本号更可靠的溯源标识"
+      }
+    ],
+    "usage": [
+      {
+        "label": "直接用现成镜像（最省事的正确做法）",
+        "lang": "bash",
+        "code": "# 先查 BioContainers 是否已有该工具，避免自己构建\n# 镜像 tag 一般形式：<工具>:<版本>--<构建号>\ndocker run --rm -v \"$PWD\":/data -w /data \\\n  quay.io/biocontainers/fastp:0.23.4--h5f740d0_0 \\\n  fastp --version\n\n# 关键：固定 digest 而不是 tag（tag 可被覆盖，digest 不会）\ndocker pull quay.io/biocontainers/fastp:0.23.4--h5f740d0_0\ndocker inspect --format='{{index .RepoDigests 0}}' \\\n  quay.io/biocontainers/fastp:0.23.4--h5f740d0_0   # 把结果记进 containers.tsv"
+      },
+      {
+        "label": "HPC 上用 Apptainer（无 root，可直接读宿主机目录）",
+        "lang": "bash",
+        "code": "# 不需要把数据拷进容器：Apptainer 默认能读宿主机文件\napptainer exec \\\n  --bind \"$PWD:/data\" \\\n  --writable-tmpfs \\\n  docker://quay.io/biocontainers/fastp:0.23.4--h5f740d0_0 \\\n  fastp --version\n\n# 转换为本地 SIF 镜像后运行更快，也便于在集群上共享\napptainer build fastp_0.23.4.sif docker://quay.io/biocontainers/fastp:0.23.4--h5f740d0_0"
+      },
+      {
+        "label": "由 conda 环境构建自己的镜像",
+        "lang": "bash",
+        "code": "# 用 conda 环境文件作为镜像配方的基础，避免手工装依赖\n# Dockerfile:\n#   FROM quay.io/condaforge/miniforge3:24.3.0-0\n#   COPY envs/qc.lock.yaml /tmp/env.yaml\n#   RUN mamba env create -f /tmp/env.yaml -n qc && conda clean -afy\n#   ENV PATH=/opt/conda/envs/qc/bin:$PATH\n#   RUN fastp --version && fastqc --version\n\ndocker build -t myproject/qc:0.1.0 .\ndocker run --rm myproject/qc:0.1.0 fastp --version"
+      }
+    ],
+    "recipes": {
+      "bash": "set -euo pipefail\nmkdir -p 10_logs\n\n# 记录本流程用到的所有镜像及其 digest（比 tag 可靠）\n: > 10_logs/containers.tsv\nprintf 'tool\\timage\\tdigest\\n' >> 10_logs/containers.tsv\n\nfor spec in \\\n  \"fastp|quay.io/biocontainers/fastp:0.23.4--h5f740d0_0\" \\\n  \"spades|quay.io/biocontainers/spades:3.15.5--h95f258a_1\" \\\n  \"quast|quay.io/biocontainers/quast:5.2.0--py311pl5321hb0d9c12_3\"\ndo\n  tool=${spec%%|*}; image=${spec##*|}\n  docker pull \"$image\" >/dev/null 2>&1 || { echo \"拉取失败: $image\" >&2; continue; }\n  digest=$(docker inspect --format='{{index .RepoDigests 0}}' \"$image\")\n  printf '%s\\t%s\\t%s\\n' \"$tool\" \"$image\" \"$digest\" >> 10_logs/containers.tsv\ndone\n\ncat 10_logs/containers.tsv\necho \"注意: 容器固定了软件版本，但参考数据库与索引仍需单独记录版本\"",
+      "python": "import subprocess\nfrom pathlib import Path\n\nIMAGES = {\n    \"fastp\": \"quay.io/biocontainers/fastp:0.23.4--h5f740d0_0\",\n    \"spades\": \"quay.io/biocontainers/spades:3.15.5--h95f258a_1\",\n    \"quast\": \"quay.io/biocontainers/quast:5.2.0--py311pl5321hb0d9c12_3\",\n}\n\nrows = [\"tool\\timage\\tdigest\"]\nfor tool, image in IMAGES.items():\n    subprocess.run([\"docker\", \"pull\", image], check=True, capture_output=True)\n    digest = subprocess.run(\n        [\"docker\", \"inspect\", \"--format={{index .RepoDigests 0}}\", image],\n        check=True, capture_output=True, text=True,\n    ).stdout.strip()\n    rows.append(f\"{tool}\\t{image}\\t{digest}\")\n\nout = Path(\"10_logs/containers.tsv\")\nout.parent.mkdir(parents=True, exist_ok=True)\nout.write_text(\"\\n\".join(rows) + \"\\n\", encoding=\"utf-8\")\nprint(f\"已记录 {len(IMAGES)} 个镜像的 digest 到 {out}\")\nprint(\"提醒: digest 是溯源标识，tag 可能被覆盖，不要只记 tag\")"
+    },
+    "params": [
+      {
+        "flag": "镜像引用：tag vs digest",
+        "default": "tag",
+        "note": "**digest 才是不可变的溯源标识**。tag 会被上游覆盖，导致同一条命令在不同时间拉到不同内容"
+      },
+      {
+        "flag": "-v / --bind 挂载",
+        "default": "无",
+        "note": "不挂载时容器看不到宿主机数据；HPC 上要注意挂载点权限与文件系统（GPFS/Lustre 的锁行为可能与本地不同）"
+      },
+      {
+        "flag": "--writable-tmpfs",
+        "default": "关闭",
+        "note": "Apptainer 默认只读，需要写临时文件（很多工具会往 /tmp 写）时必须开启"
+      },
+      {
+        "flag": "docker --user",
+        "default": "root（容器内）",
+        "note": "容器内以 root 运行会生成 root 所有的输出文件，宿主机上无法修改。用 `--user $(id -u):$(id -g)` 避免"
+      },
+      {
+        "flag": "镜像基础层",
+        "default": "—",
+        "note": "用 condaforge/miniforge 作为基础层可以与 conda 环境文件衔接；用 ubuntu 基础层则需手工装依赖"
+      }
+    ],
+    "pitfalls": [
+      "**只记 tag 不记 digest**。tag 是可变的：上游重新构建同一个 tag 会得到不同内容，半年后别人用同样的命令拉到的镜像可能已经不同。溯源必须记 digest。",
+      "容器里以 root 运行，输出文件属主变成 root，宿主机上后续步骤无法写入或删除。用 `--user` 指定宿主机的 uid/gid。",
+      "误以为容器固定了一切。**参考数据库、索引、分类模型都不在镜像里**，它们的版本仍需单独记录与管理。这是容器化最容易被忽略的缺口。",
+      "在集群上用 Docker。多数 HPC 不允许 Docker（需要守护进程与 root），应改用 Apptainer/Singularity，或用 `apptainer exec docker://...` 直接拉取转换。",
+      "把大型数据目录挂载进容器后在容器内做大量 I/O，性能远低于预期（尤其是跨文件系统挂载）。应挂载最终需要的目录，而不是整个家目录。",
+      "自己从零写 Dockerfile 装生信工具，结果花大量时间解决依赖。绝大多数常用工具已有 BioContainers 官方镜像，优先复用。",
+      "不清理镜像层导致镜像体积数十 GB。构建时应在同一 RUN 里完成安装与 `conda clean -afy`，避免缓存被固化进层级。",
+      "在流程中写 `latest` 标签。这等于放弃版本固定，是容器化最没有意义的用法。"
+    ],
+    "related": [
+      {
+        "id": "wf_conda_env",
+        "note": "容器内可用 conda 环境作为基础；两者的锁定思路一致"
+      },
+      {
+        "id": "wf_nextflow",
+        "note": "每 process 声明容器是结合最自然的方式"
+      },
+      {
+        "id": "wf_cluster_submit",
+        "note": "集群上通常需要在提交脚本里用 Apptainer 包装命令"
+      },
+      {
+        "id": "util_download_ref",
+        "note": "容器管不到的参考数据库版本由它负责"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 1 章 环境与工程规范",
+        "path": "docs/guidebook/01-environment-and-conventions.md"
+      },
+      {
+        "label": "第 11 章 工作流引擎与可重复性",
+        "path": "docs/guidebook/11-workflow-reproducibility.md"
+      }
+    ]
+  },
+  {
+    "id": "wf_reproducibility",
+    "name": "结果可追溯与版本记录",
+    "category": "workflow",
+    "layer": "engine",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics",
+      "phylogenetics"
+    ],
+    "tags": [
+      "可重复",
+      "溯源",
+      "版本",
+      "记录",
+      "规范"
+    ],
+    "summary": "让每个结果都能回答「是用什么算出来的」",
+    "what": [
+      "可重复性的最低要求不是「别人能复现你的结果」，而是**「你自己半年后能说清这个结果是怎么来的」**。达到这个标准需要记录三件事：输入数据的标识（校验和）、软件与数据库的版本、以及实际执行的命令与参数。这三者齐了，结果才成为可追溯的产物而不是一次性输出。",
+      "这三件事都有低成本实现：`checksum` 记录输入哈希、环境导出与 `--version` 记录软件版本、工作流引擎的日志或 shell 历史记录命令。把它们汇总成一份随结果一起归档的清单（通常叫 provenance 或 run manifest），成本只有几行脚本。",
+      "需要强调的是**数据库版本的权重往往高于软件版本**。同一个 Kraken 2 版本配不同的数据库会给出不同的物种组成；同一个 GTDB-Tk 版本配不同版本的 GTDB 会给出不同的分类。软件版本记录得再仔细，数据库版本缺失一样无法复现。"
+    ],
+    "inputs": [
+      {
+        "type": "log-report",
+        "name": "各步骤日志与报告",
+        "required": true,
+        "note": "工作流引擎的日志、工具输出日志"
+      },
+      {
+        "type": "csv-table",
+        "name": "结果表",
+        "required": false,
+        "note": "需要一并记录校验和与来源的结果表"
+      },
+      {
+        "type": "figure-vector",
+        "name": "图表",
+        "required": false,
+        "note": "需要记录生成方式的图件"
+      },
+      {
+        "type": "script",
+        "name": "环境与容器定义",
+        "required": true,
+        "note": "conda 锁文件、镜像 digest 清单"
+      },
+      {
+        "type": "tsv-table",
+        "name": "参考数据库信息",
+        "required": false,
+        "note": "数据库名称、版本、下载日期与校验和"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "log-report",
+        "name": "运行溯源清单",
+        "ext": "run_manifest.tsv",
+        "note": "输入校验和、软件版本、数据库版本、命令与参数、执行时间"
+      },
+      {
+        "type": "report",
+        "name": "项目记录文档",
+        "ext": "README_run.md",
+        "note": "面向人阅读的说明：做了什么、依据什么、如何重跑"
+      },
+      {
+        "type": "log-report",
+        "name": "输入文件校验和",
+        "ext": "checksums.sha256",
+        "note": "输入数据的唯一标识；比对校验和可以回答「用的是不是同一批数据」"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "SHA256 / md5sum",
+        "version": "coreutils",
+        "access": "cli",
+        "install": "builtin",
+        "note": "计算输入数据校验和"
+      },
+      {
+        "tool": "Git",
+        "version": "2.4x",
+        "access": "cli",
+        "install": "binary",
+        "note": "脚本与配置的版本管理；记录 commit 即可定位代码版本"
+      },
+      {
+        "tool": "Snakemake / Nextflow 报告",
+        "version": "引擎自带",
+        "access": "cli",
+        "install": "conda",
+        "note": "自动记录每步命令与资源用量，是溯源素材的主要来源"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "py_export_report",
+        "viaType": "log-report",
+        "note": "溯源清单作为报告的一部分交付"
+      },
+      {
+        "target": "r_export_table",
+        "viaType": "log-report",
+        "note": "R 侧分析同样需要记录包版本"
+      },
+      {
+        "target": "util_checksum",
+        "viaType": "log-report",
+        "note": "校验和计算的具体操作"
+      }
+    ],
+    "usage": [
+      {
+        "label": "一份可用的溯源清单生成脚本",
+        "lang": "bash",
+        "code": "#!/usr/bin/env bash\n# 在流程结束时运行，产出 run_manifest.tsv\nset -euo pipefail\nOUT=10_logs/run_manifest.tsv\n\n{\n  printf 'key\\tvalue\\n'\n  printf 'generated_at\\t%s\\n'  \"$(date -Iseconds)\"\n  printf 'hostname\\t%s\\n'      \"$(hostname)\"\n  printf 'working_dir\\t%s\\n'   \"$PWD\"\n\n  # 输入数据的校验和：回答「用的是不是同一批数据」\n  if [ -d 00_raw ]; then\n    printf 'input_checksums\\t%s\\n' \"$(find 00_raw -type f -name '*.fq.gz' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)\"\n  fi\n\n  # 软件版本\n  for pair in \"fastp:fastp --version\" \"spades:spades.py --version\" \"quast:quast.py --version\"; do\n    name=${pair%%:*}; cmd=${pair#*:}\n    ver=$($cmd 2>&1 | head -1 || echo 'not found')\n    printf 'tool_%s\\t%s\\n' \"$name\" \"$ver\"\n  done\n\n  # 数据库版本（权重常高于软件版本，不要漏）\n  [ -n \"${KRAKEN_DB:-}\" ] && printf 'db_kraken\\t%s\\n' \"$(basename \"$KRAKEN_DB\")\"\n  [ -f gtdbtk_db_release.txt ] && printf 'db_gtdbtk\\t%s\\n' \"$(cat gtdbtk_db_release.txt)\"\n\n  # 代码版本（若用 git 管理脚本）\n  command -v git >/dev/null && printf 'git_commit\\t%s\\n' \"$(git rev-parse HEAD 2>/dev/null || echo 'not a repo')\"\n} > \"$OUT\"\n\ncat \"$OUT\""
+      },
+      {
+        "label": "数据库与参考文件的版本记录（最常被遗漏）",
+        "lang": "bash",
+        "code": "# 下载数据库时同时记录来源、日期与校验和，写成随数据一起存放的说明文件\nDL_DIR=refs/kraken2_standard\nmkdir -p \"$DL_DIR\"\n\ncat > \"$DL_DIR/VERSION.txt\" <<EOF\nname: Kraken2 standard database\nsource: https://benlangmead.github.io/aws-indexes/k2\ndownloaded: $(date -Iseconds)\nmd5_declared: <官方页面公布的 md5>\nnotes: 用于 read 级物种分类；换库会使物种组成结果不可比\nEOF\n\n# 计算并记录实际校验和，与官方值核对\nfind \"$DL_DIR\" -type f -name '*.k2d' -exec sha256sum {} + > \"$DL_DIR/checksums.sha256\"\necho \"已记录 $(wc -l < \"$DL_DIR/checksums.sha256\") 个文件的校验和\""
+      },
+      {
+        "label": "面向人的项目记录（README_run.md 的骨架）",
+        "lang": "bash",
+        "code": "cat > README_run.md <<'EOF'\n# 运行记录\n\n## 数据来源\n- 测序平台 / 文库类型 / 批次\n- 原始数据存放位置与校验和文件\n\n## 使用的版本\n- 软件：见 10_logs/env_versions.txt 与 envs/*.lock.yaml\n- 容器：见 10_logs/containers.tsv（含 digest）\n- 数据库：见 refs/*/VERSION.txt\n\n## 如何重跑\n1. 创建环境：mamba env create -f envs/*.yaml\n2. 干跑检查：snakemake -n -r\n3. 执行：snakemake --cores 16 --use-conda\n\n## 已知限制\n- （样本量、数据质量、方法假设等）\nEOF\necho \"README_run.md 已生成\""
+      }
+    ],
+    "recipes": {
+      "bash": "set -euo pipefail\nmkdir -p 10_logs\n\n{\n  printf 'key\\tvalue\\n'\n  printf 'generated_at\\t%s\\n' \"$(date -Iseconds)\"\n  printf 'hostname\\t%s\\n' \"$(hostname)\"\n  printf 'user\\t%s\\n' \"$(whoami)\"\n  printf 'working_dir\\t%s\\n' \"$PWD\"\n} > 10_logs/run_manifest.tsv\n\n# 1. 输入校验和（回答「是不是同一批数据」）\nif [ -d 00_raw ]; then\n  find 00_raw -type f | sort | xargs sha256sum > 10_logs/checksums.sha256 2>/dev/null || true\n  printf 'input_file_count\\t%s\\n' \"$(wc -l < 10_logs/checksums.sha256)\" >> 10_logs/run_manifest.tsv\nfi\n\n# 2. 软件版本\nfor c in \"fastp --version\" \"fastqc --version\" \"spades.py --version\" \"quast.py --version\"; do\n  name=$(echo \"$c\" | awk '{print $1}')\n  printf 'tool_%s\\t%s\\n' \"$name\" \"$($c 2>&1 | head -1 || echo 'not found')\" >> 10_logs/run_manifest.tsv\ndone\n\n# 3. 代码版本\ncommand -v git >/dev/null 2>&1 && printf 'git_commit\\t%s\\n' \"$(git rev-parse --short HEAD 2>/dev/null || echo 'n/a')\" >> 10_logs/run_manifest.tsv\n\ncat 10_logs/run_manifest.tsv\necho \"\"\necho \"提醒: 参考数据库版本的权重常高于软件版本，务必一并记录\"",
+      "python": "import datetime as dt\nimport hashlib\nimport platform\nimport subprocess\nfrom pathlib import Path\n\nLOG = Path(\"10_logs/run_manifest.tsv\")\nLOG.parent.mkdir(parents=True, exist_ok=True)\n\n\ndef digest_of_dir(root: Path) -> tuple[int, str]:\n    \"\"\"把目录下所有文件的内容汇总成一个哈希，作为输入数据的唯一标识。\"\"\"\n    combined = hashlib.sha256()\n    count = 0\n    for path in sorted(p for p in root.rglob(\"*\") if p.is_file()):\n        combined.update(path.name.encode())\n        with open(path, \"rb\") as fh:\n            for chunk in iter(lambda: fh.read(1 << 20), b\"\"):\n                combined.update(chunk)\n        count += 1\n    return count, combined.hexdigest()\n\n\nrows = [(\"generated_at\", dt.datetime.now().isoformat(timespec=\"seconds\")),\n        (\"hostname\", platform.node()),\n        (\"platform\", f\"{platform.system()} {platform.release()}\"),\n        (\"python\", platform.python_version())]\n\nraw = Path(\"00_raw\")\nif raw.is_dir():\n    n, h = digest_of_dir(raw)\n    rows.append((\"input_files\", str(n)))\n    rows.append((\"input_digest_sha256\", h))\n\nfor tool in (\"fastp\", \"fastqc\", \"spades.py\", \"quast.py\"):\n    try:\n        out = subprocess.run([tool, \"--version\"], capture_output=True, text=True, timeout=20)\n        version = (out.stdout or out.stderr).splitlines()[0].strip()\n    except (FileNotFoundError, subprocess.SubprocessError):\n        version = \"not found\"\n    rows.append((f\"tool_{tool}\", version))\n\nLOG.write_text(\"key\\tvalue\\n\" + \"\\n\".join(f\"{k}\\t{v}\" for k, v in rows) + \"\\n\", encoding=\"utf-8\")\nprint(LOG.read_text(encoding=\"utf-8\"))"
+    },
+    "params": [
+      {
+        "flag": "校验和算法",
+        "default": "md5",
+        "note": "md5 足够用于「是否同一份文件」的比对且更快；sha256 更抗碰撞，适合长期归档。数据库官方常公布 md5，核对时以官方算法为准"
+      },
+      {
+        "flag": "哈希对象：文件 vs 内容",
+        "default": "文件",
+        "note": "记录单个文件的校验和比汇总哈希更有用——能定位具体哪个文件变了"
+      },
+      {
+        "flag": "记录时机",
+        "default": "流程结束时",
+        "note": "应在**每次运行**都生成，而不是只做一次。否则无法区分不同批次的结果"
+      },
+      {
+        "flag": "版本粒度",
+        "default": "完整版本号",
+        "note": "工具的 --version 输出常含多行（如 samtools 会列 htslib 版本），应完整记录而不是只取第一行数字"
+      }
+    ],
+    "pitfalls": [
+      "**只记录软件版本，不记录数据库版本**。这是生信复现失败最常见的单一原因：物种分类、功能注释、进化树的结果对数据库版本极其敏感。数据库的下载日期、来源 URL 与校验和都必须记录。",
+      "校验和只算一次。每次运行都应重新生成，否则无法区分「同一份数据跑了两次」与「数据换了但没人注意」。",
+      "把版本信息记在聊天记录或本地笔记里。它必须作为**文件**与结果一起存放，否则等于没记录。",
+      "只记主版本号（fastp 0.23），而依赖版本差异会影响结果。环境锁文件必须记录完整依赖树，工具版本应到修订号粒度。",
+      "脚本放在个人目录且不进版本管理，无法回答「当时用的是哪个版本的脚本」。脚本与配置应与结果一起归档（或用 git 记录 commit）。",
+      "手工拼凑溯源信息。手工维护的清单会随流程变化而迅速过期；应在流程末尾自动生成，机制化才能持续。",
+      "忽略参考基因组版本。同一物种不同版本的参考基因组有数万个位点差异，比对与变异结果都会不同。参考基因组的来源与版本必须与结果一并记录。",
+      "把溯源清单写在结果目录里却不说明字段含义。清单应带表头与注释行（说明每个 key 的含义与来源），否则半年后自己也要猜。"
+    ],
+    "related": [
+      {
+        "id": "util_checksum",
+        "note": "校验和计算与核对的日常操作"
+      },
+      {
+        "id": "util_download_ref",
+        "note": "参考数据库下载与版本管理"
+      },
+      {
+        "id": "wf_conda_env",
+        "note": "软件版本锁定的具体做法"
+      },
+      {
+        "id": "wf_container",
+        "note": "镜像 digest 是比版本号更可靠的软件标识"
+      },
+      {
+        "id": "wf_snakemake",
+        "note": "工作流引擎自动产出大量溯源素材"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 11 章 工作流引擎与可重复性",
+        "path": "docs/guidebook/11-workflow-reproducibility.md"
+      }
+    ]
+  },
+  {
+    "id": "wf_flexible_join",
+    "name": "通用数据流适配器（格式/接口转换）",
+    "category": "workflow",
+    "layer": "engine",
+    "kind": "adapter",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics",
+      "phylogenetics"
+    ],
+    "tags": [
+      "适配器",
+      "格式转换",
+      "接口",
+      "粘合",
+      "adapter"
+    ],
+    "summary": "把上下游对不上的数据显式转换成可连接的格式",
+    "what": [
+      "在拼流程时总会遇到「上游产出与下游输入差一点」的情况：上游给的是多个样本各自的文件、下游只吃合并后的矩阵；上游产出 FASTA、下游要 FASTA 索引；上游给 BAM、下游要覆盖度表。这类转换如果藏在流程的某个角落，会成为最难排查的错误来源——因为它不做生物学判断，却能让所有下游结果错。",
+      "本模块的定位是**显式的适配器**：它本身不做分析，只负责格式与接口层面的搬运，并在转换过程中做校验（行数是否一致、样本名是否匹配、坐标体系是否改变）。把它作为一个独立模块接入，好处是数据流在图上可见，而不是假装「直接连上了」。",
+      "接入这类模块时最重要的习惯是**每次转换后立刻验证**：打印转换前后的形状/行数、抽样对照几条记录、检查关键列的类型。格式转换是「静默数据损坏」的高发环节——BED 与 VCF 的坐标体系不同、PHYLIP 会截断过长的序列名、Excel 会把基因名转成日期，这些都不会报错。"
+    ],
+    "inputs": [
+      {
+        "type": "any",
+        "name": "上游任意产物",
+        "required": true,
+        "note": "适配器的输入故意声明为 any：它接受任意内容，但**接入后必须明确写出实际的转换逻辑与校验**"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "tsv-table",
+        "name": "转换后的规范表",
+        "ext": ".converted.tsv",
+        "note": "统一列名、分隔符与缺失值表示的中间表"
+      },
+      {
+        "type": "log-report",
+        "name": "转换校验报告",
+        "ext": ".convert_check.txt",
+        "note": "记录转换前后的形状、关键列类型与抽样对照结果"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "Python (pandas)",
+        "version": "2.2.x",
+        "access": "python-api",
+        "install": "pip",
+        "note": "表格类转换与校验"
+      },
+      {
+        "tool": "seqkit",
+        "version": "2.9.x",
+        "access": "cli",
+        "install": "conda",
+        "note": "序列格式转换与统计"
+      },
+      {
+        "tool": "awk / sort / join",
+        "version": "coreutils",
+        "access": "cli",
+        "install": "builtin",
+        "note": "轻量文本级转换；无需额外依赖"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "py_pandas_io",
+        "viaType": "tsv-table",
+        "note": "转换后的表进入常规数据处理"
+      },
+      {
+        "target": "r_read_import",
+        "viaType": "tsv-table",
+        "note": "交给 R 侧分析"
+      },
+      {
+        "target": "util_args_validate",
+        "viaType": "log-report",
+        "note": "转换校验报告与输入检查配合，构成流程的守卫"
+      },
+      {
+        "target": "io_gff_convert",
+        "viaType": "tsv-table",
+        "note": "注释格式的专门转换模块"
+      }
+    ],
+    "usage": [
+      {
+        "label": "多样本单文件 → 合并矩阵（最常见的适配任务）",
+        "lang": "python",
+        "code": "from pathlib import Path\n\nimport pandas as pd\n\nframes = {}\nfor path in sorted(Path(\"04_quant\").glob(\"*.tsv\")):\n    frame = pd.read_csv(path, sep=\"\\t\", index_col=0, dtype={0: str})\n    frames[path.stem] = frame.iloc[:, 0]        # 取每个样本的计数列\n\nmatrix = pd.DataFrame(frames).fillna(0).astype(int)\n\n# 转换后必须校验，而不是直接交给下游\nassert matrix.shape[1] == len(frames), f\"样本数不符: {matrix.shape[1]} vs {len(frames)}\"\nassert not matrix.index.has_duplicates, \"特征 id 有重复，合并会造成歧义\"\nassert (matrix >= 0).all().all(), \"出现负值，说明取错了列\"\n\nmatrix.to_csv(\"09_results/counts_matrix.tsv\", sep=\"\\t\")\nprint(f\"合并 {matrix.shape[0]} 特征 x {matrix.shape[1]} 样本\")"
+      },
+      {
+        "label": "序列级转换 + 校验（seqkit）",
+        "lang": "bash",
+        "code": "# 转换前记录基线，转换后必须能对上\nseqkit stats -T -a input.fasta > before.tsv\n\nseqkit seq --rna2dna --remove-gaps input.fasta -o output.fasta\n\nseqkit stats -T -a output.fasta > after.tsv\n\n# 校验：序列条数必须一致，总长度按预期变化\necho \"--- 转换前 ---\"; cat before.tsv\necho \"--- 转换后 ---\"; cat after.tsv\necho \"注意: 条数不一致说明有序列被静默丢弃\""
+      },
+      {
+        "label": "坐标体系转换（最容易静默出错的一类）",
+        "lang": "python",
+        "code": "import pandas as pd\n\n# GFF 是 1-based 闭区间；BED 是 0-based 半开区间。\n# 直接改扩展名不会转换坐标系——这是最常见的静默错误。\ngff = pd.read_csv(\"annotation.gff\", sep=\"\\t\", comment=\"#\",\n                  names=[\"seqid\", \"source\", \"type\", \"start\", \"end\",\n                         \"score\", \"strand\", \"phase\", \"attrs\"])\n\nbed = pd.DataFrame({\n    \"chrom\": gff[\"seqid\"],\n    \"start0\": gff[\"start\"] - 1,      # 1-based -> 0-based\n    \"end\": gff[\"end\"],               # 闭区间 -> 半开区间：end 保持不变\n    \"name\": gff[\"attrs\"].str.extract(r\"ID=([^;]+)\")[0],\n    \"score\": 0,\n    \"strand\": gff[\"strand\"],\n})\n\n# 校验：BED 长度应等于 GFF 长度\nassert ((bed[\"end\"] - bed[\"start0\"]) == (gff[\"end\"] - gff[\"start\"] + 1)).all(), \"坐标转换有误\"\nbed.to_csv(\"annotation.bed\", sep=\"\\t\", header=False, index=False)\nprint(f\"转换 {len(bed)} 条特征，坐标体系已由 1-based 闭区间转为 0-based 半开区间\")"
+      }
+    ],
+    "recipes": {
+      "bash": "set -euo pipefail\nmkdir -p 09_results 10_logs\n\nIN=\"${1:?用法: join_adapter.sh <输入表> <输出表>}\"\nOUT=\"${2:?}\"\nREPORT=10_logs/convert_check.txt\n\n{\n  echo \"# 转换校验报告  $(date -Iseconds)\"\n  echo \"输入: $IN\"\n  echo \"输出: $OUT\"\n  echo \"输入行数: $(wc -l < \"$IN\")\"\n  echo \"输入列数: $(head -1 \"$IN\" | awk -F'\\t' '{print NF}')\"\n} > \"$REPORT\"\n\n# 规范化：统一为制表符、剔除空行、去重表头\nawk -F'\\t' 'NF>0' \"$IN\" | awk '!seen[$0]++ || NR==1' > \"$OUT\"\n\n{\n  echo \"输出行数: $(wc -l < \"$OUT\")\"\n  echo \"输出列数: $(head -1 \"$OUT\" | awk -F'\\t' '{print NF}')\"\n  echo \"--- 抽样对照（前 2 行）---\"\n  head -2 \"$IN\"\n  echo \"---\"\n  head -2 \"$OUT\"\n} >> \"$REPORT\"\n\ncat \"$REPORT\"\necho \"\"\necho \"提醒: 格式转换是静默数据损坏的高发环节，每次都要做前后对照\"",
+      "python": "from pathlib import Path\n\nimport pandas as pd\n\nIN_DIR = Path(\"04_quant\")\nOUT = Path(\"09_results/merged.tsv\")\nREPORT = Path(\"10_logs/convert_check.txt\")\nREPORT.parent.mkdir(parents=True, exist_ok=True)\n\nseries = {}\nfor path in sorted(IN_DIR.glob(\"*.tsv\")):\n    frame = pd.read_csv(path, sep=\"\\t\", index_col=0)\n    series[path.stem] = frame.iloc[:, 0]\n\nmerged = pd.DataFrame(series).fillna(0)\n\nlines = [\"# 转换校验报告\", f\"输入文件数: {len(series)}\", f\"输出形状: {merged.shape[0]} x {merged.shape[1]}\"]\n\nchecks = {\n    \"样本数一致\": merged.shape[1] == len(series),\n    \"特征 id 唯一\": not merged.index.has_duplicates,\n    \"无负值\": bool((merged >= 0).all().all()),\n    \"样本名无空值\": all(isinstance(c, str) and c for c in merged.columns),\n}\nfor name, passed in checks.items():\n    lines.append(f\"{'OK  ' if passed else 'FAIL'} {name}\")\n\nmerged.to_csv(OUT, sep=\"\\t\")\nREPORT.write_text(\"\\n\".join(lines) + \"\\n\", encoding=\"utf-8\")\nprint(\"\\n\".join(lines))\nif not all(checks.values()):\n    raise SystemExit(\"转换校验未通过，请先处理再进入下游\")"
+    },
+    "params": [
+      {
+        "flag": "输入端口声明为 any",
+        "default": "—",
+        "note": "这是本模块的设计取舍：它接受任意内容，因此类型检查无法替代人工核对。**接入后必须显式写出实际转换逻辑**，不能因为连线不报错就以为对了"
+      },
+      {
+        "flag": "坐标体系（1-based vs 0-based）",
+        "default": "—",
+        "note": "GFF/VCF 是 1-based 闭区间，BED 是 0-based 半开区间。转换时必须显式加减 1，并写出断言校验"
+      },
+      {
+        "flag": "缺失值表示",
+        "default": "各自不同",
+        "note": "统一成空字符串或 NA 之一；混用会让下游出现诡异的 '-' 或 'NA' 分组"
+      },
+      {
+        "flag": "特征 id 唯一性",
+        "default": "不检查",
+        "note": "合并前必须断言 id 唯一。重复 id 会让 pivot/merge 产生歧义或静默聚合"
+      }
+    ],
+    "pitfalls": [
+      "**把连线成功当成转换正确**。本模块的输入是 any，因此任何连线都不会报类型错误。它的正确性完全依赖接入后写的校验断言与人工核对——这一点必须在流程评审时特别检查。",
+      "坐标体系静默错位。GFF→BED 忘记减 1，所有区间偏移一个碱基；这类错误不会报错，只会在下游表现为「某些特征边界略有偏差」，极难发现。",
+      "序列名长度限制导致数据丢失。PHYLIP 的经典格式限制名称长度（约 10 字符），超长名会被截断，造成同名冲突或序列被丢弃。转换到 PHYLIP/Nexus 前后必须核对序列条数。",
+      "合并多个样本时用默认的行索引对齐，而不是按特征 id 对齐。行顺序不同的表会被按位置拼接，得到看似正常但完全错配的矩阵。始终显式指定 `index_col` 并按索引连接。",
+      "缺失值处理随意：fillna(0) 在计数数据上可能合理，在 log 变换后的数据上则代表「最小值」的误表示。转换时应明确记录缺失如何被处理。",
+      "转换后不保留中间文件，导致无法回答「这个矩阵是从哪几个文件、以什么顺序合并来的」。转换前后都应落盘并记录文件清单。",
+      "用 awk/sed 做复杂格式转换（例如解析嵌套的 GFF 属性字段）。文本流工具在简单列操作上很快，但遇到转义、嵌套结构时极易出错；这类任务应改用专门解析器。",
+      "忽略编码问题。含中文或特殊字符的表在转换后可能变成乱码，而校验只比较了行数因此通过。关键字段应抽样打印确认可读。"
+    ],
+    "related": [
+      {
+        "id": "io_gff_convert",
+        "note": "注释格式转换的专门模块，含坐标体系处理"
+      },
+      {
+        "id": "io_bam_to_bed",
+        "note": "比对文件到区间格式的转换"
+      },
+      {
+        "id": "io_table_to_phylip",
+        "note": "表格到建树输入格式的转换，同样有名称长度陷阱"
+      },
+      {
+        "id": "util_args_validate",
+        "note": "输入检查与转换校验配合，构成流程的守卫层"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 10 章 下游分析与可视化",
+        "path": "docs/guidebook/10-downstream-analysis-visualization.md"
+      },
+      {
+        "label": "第 11 章 工作流引擎与可重复性",
+        "path": "docs/guidebook/11-workflow-reproducibility.md"
+      }
+    ]
+  },
+  {
+    "id": "wf_checkpoint_pipeline",
+    "name": "断点续跑与缓存复用",
+    "category": "workflow",
+    "layer": "engine",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics",
+      "phylogenetics"
+    ],
+    "tags": [
+      "断点续跑",
+      "缓存",
+      "重跑",
+      "工程",
+      "效率"
+    ],
+    "summary": "让流程失败后从断点继续，而不是从头再跑",
+    "what": [
+      "一个真实的分析流程会跑数小时到数天。中间某步因内存不足失败、集群节点故障、或只是发现某个参数写错，都需要重新运行。如果每次都要从头开始，迭代成本会高到让人放弃改进——最终结果是没人愿意重跑，于是流程只跑一次，参数也不再改。",
+      "断点续跑的实现依赖两件事：**产出物可判定**（每个步骤的输出文件能唯一标识该步骤是否已完成）与**依赖关系明确**（能判断哪些下游步骤会因为上游变化而失效）。工作流引擎（Snakemake 的 `--rerun-incomplete`、Nextflow 的 `-resume`）自动处理这两件事，前提是你的输入输出声明是准确的。",
+      "手工脚本也能做到版本，代价是要自己维护「已完成」标记。更实用的折中做法是**按步骤分段落盘**：每一步都写出有明确命名的中间文件，并让下一步先检查文件是否存在且非空。这种做法不如图引擎优雅，但比「从头再跑」好得多。"
+    ],
+    "inputs": [
+      {
+        "type": "any",
+        "name": "上游产物（用于完整性判定）",
+        "required": false,
+        "note": "断点判据针对的是任意中间产物：上游任何输出都可以作为「这一步是否已完成」的依据"
+      },
+      {
+        "type": "log-report",
+        "name": "上次运行的日志",
+        "required": false,
+        "note": "用于判断失败发生在哪一步"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "script",
+        "name": "带断点逻辑的流程脚本",
+        "ext": ".sh / Snakefile",
+        "note": "每步产出独立落盘，并在下一步开头检查存在性"
+      },
+      {
+        "type": "log-report",
+        "name": "完成标记与重跑记录",
+        "ext": ".done / .snakemake/",
+        "note": "标记哪些步骤已完成，以及本次实际执行了哪些步骤"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "Snakemake",
+        "version": "8.x",
+        "access": "cli",
+        "install": "conda",
+        "note": "--rerun-incomplete / --forcerun / --keep-going 提供完整断点能力"
+      },
+      {
+        "tool": "Nextflow",
+        "version": "24.x",
+        "access": "cli",
+        "install": "conda",
+        "note": "-resume 基于 work/ 缓存判断复用"
+      },
+      {
+        "tool": "make",
+        "version": "4.4",
+        "access": "cli",
+        "install": "builtin",
+        "note": "最朴素的文件依赖驱动；适合简单流程"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "wf_reproducibility",
+        "viaType": "log-report",
+        "note": "重跑记录说明本次结果实际执行了哪些步骤"
+      },
+      {
+        "target": "wf_batch_loop",
+        "viaType": "script",
+        "note": "带断点逻辑的批处理脚本；下次运行时它按状态表只处理失败或未完成的样本"
+      }
+    ],
+    "usage": [
+      {
+        "label": "手工脚本的断点模式（每步先查产出）",
+        "lang": "bash",
+        "code": "#!/usr/bin/env bash\nset -euo pipefail\n\nmkdir -p 01_clean 02_assembly 10_logs\n\n# 每个可独立完成的步骤包成一个函数：先查产出，已存在就跳过\nstep() {\n  local name=$1 output=$2\n  shift 2\n  if [ -s \"$output\" ]; then\n    echo \"[跳过] $name  (已存在 $output)\"\n    return 0\n  fi\n  echo \"[执行] $name\"\n  \"$@\"\n  if [ ! -s \"$output\" ]; then\n    echo \"[失败] $name 未产出 $output\" >&2\n    return 1\n  fi\n}\n\ndo_qc()  { fastp -i 00_raw/S1_R1.fq.gz -I 00_raw/S1_R2.fq.gz \\\n             -o 01_clean/S1_R1.fq.gz -O 01_clean/S1_R2.fq.gz -w 8; }\ndo_asm() { spades.py --careful -t 16 -1 01_clean/S1_R1.fq.gz -2 01_clean/S1_R2.fq.gz -o 02_assembly/S1; }\n\nstep \"质控\"  01_clean/S1_R1.fq.gz    do_qc\nstep \"组装\"  02_assembly/S1/contigs.fasta do_asm\n\necho \"全部步骤完成\""
+      },
+      {
+        "label": "Snakemake：让引擎处理一切",
+        "lang": "bash",
+        "code": "# 失败后修好直接重跑：已完成步骤自动跳过\nsnakemake --cores 16 --use-conda\n\n# 上次中断留下了不完整输出\nsnakemake --cores 16 --rerun-incomplete\n\n# 改了某个参数，强制重跑该规则及其下游\nsnakemake --cores 16 --forcerun qc_fastp\n\n# 某个样本失败时继续跑其它样本\nsnakemake --cores 16 --keep-going\n\n# 只看会执行什么（重跑判定的最直接检查）\nsnakemake -n -r"
+      },
+      {
+        "label": "Nextflow：-resume 的注意事项",
+        "lang": "bash",
+        "code": "# 复用 work/ 缓存中已完成任务\nnextflow run main.nf -resume\n\n# 重要：删除 work/ 会让 resume 失效（全部重跑）\n# 清理时用 nextflow clean 而不是直接删目录\nnextflow clean -f -k          # 保留最近一次的缓存\n\n# 注意：即使加了 -resume，改了 script 内容也会导致该任务重跑\n# （缓存键包含脚本哈希），这是预期行为"
+      }
+    ],
+    "recipes": {
+      "bash": "#!/usr/bin/env bash\n# 手工脚本的通用断点骨架：每个步骤产出独立落盘，可单独重跑\nset -euo pipefail\n\nSAMPLE=\"${1:?用法: run_pipeline.sh <sample>}\"\nmkdir -p 01_clean 02_assembly 10_logs\n\nrun_step() {\n  local name=$1 output=$2; shift 2\n  if [ -s \"$output\" ]; then\n    echo \"[跳过] $name\"\n    return 0\n  fi\n  echo \"[执行] $name -> $output\"\n  if ! \"$@\" 2>&1 | tee \"10_logs/${SAMPLE}.${name}.log\"; then\n    echo \"[失败] $name，详见 10_logs/${SAMPLE}.${name}.log\" >&2\n    return 1\n  fi\n  [ -s \"$output\" ] || { echo \"[失败] $name 未产出 $output\" >&2; return 1; }\n  echo \"[完成] $name\"\n}\n\nrun_step qc   \"01_clean/${SAMPLE}_R1.fq.gz\" \\\n  fastp -i \"00_raw/${SAMPLE}_R1.fq.gz\" -I \"00_raw/${SAMPLE}_R2.fq.gz\" \\\n        -o \"01_clean/${SAMPLE}_R1.fq.gz\" -O \"01_clean/${SAMPLE}_R2.fq.gz\" -w 8\n\nrun_step asm \"02_assembly/${SAMPLE}/contigs.fasta\" \\\n  spades.py --careful -t 16 -1 \"01_clean/${SAMPLE}_R1.fq.gz\" -2 \"01_clean/${SAMPLE}_R2.fq.gz\" \\\n           -o \"02_assembly/${SAMPLE}\"\n\necho \"=== $SAMPLE 全部完成 ===\"\nls -lh \"02_assembly/${SAMPLE}/contigs.fasta\"",
+      "python": "import subprocess\nfrom pathlib import Path\n\nSTEPS = [\n    (\"qc\",  Path(\"01_clean/S1_R1.fq.gz\"),\n     [\"fastp\", \"-i\", \"00_raw/S1_R1.fq.gz\", \"-I\", \"00_raw/S1_R2.fq.gz\",\n      \"-o\", \"01_clean/S1_R1.fq.gz\", \"-O\", \"01_clean/S1_R2.fq.gz\", \"-w\", \"8\"]),\n    (\"asm\", Path(\"02_assembly/S1/contigs.fasta\"),\n     [\"spades.py\", \"--careful\", \"-t\", \"16\",\n      \"-1\", \"01_clean/S1_R1.fq.gz\", \"-2\", \"01_clean/S1_R2.fq.gz\",\n      \"-o\", \"02_assembly/S1\"]),\n]\n\nLOG = Path(\"10_logs\")\nLOG.mkdir(parents=True, exist_ok=True)\n\nfor name, output, cmd in STEPS:\n    if output.exists() and output.stat().st_size > 0:\n        print(f\"[跳过] {name}  (已存在 {output})\")\n        continue\n\n    print(f\"[执行] {name}\")\n    with open(LOG / f\"{name}.log\", \"a\", encoding=\"utf-8\") as fh:\n        subprocess.run(cmd, check=True, stdout=fh, stderr=subprocess.STDOUT)\n\n    # 关键守卫：命令成功返回但没产出文件，说明声明与实际不符\n    if not (output.exists() and output.stat().st_size > 0):\n        raise SystemExit(f\"[失败] {name} 未产出 {output}，中止以免下游拿到空数据\")\n    print(f\"[完成] {name}\")\n\nprint(\"全部步骤完成\")"
+    },
+    "params": [
+      {
+        "flag": "完整性判据：文件存在 vs 非空",
+        "default": "存在",
+        "note": "**应该用「存在且非空」**。被中断的任务常留下 0 字节文件，只判断存在会导致下游拿到空数据并产生看似成功的错误结果"
+      },
+      {
+        "flag": "--rerun-incomplete",
+        "default": "关闭",
+        "note": "Snakemake 清理中断产生的残缺输出；不开启时会因「文件存在但无效」而卡住"
+      },
+      {
+        "flag": "--forcerun / -R",
+        "default": "无",
+        "note": "改了工具版本或环境后必须显式强制重跑。引擎不会自动检测工具变化"
+      },
+      {
+        "flag": "Nextflow work/ 目录",
+        "default": "保留",
+        "note": "-resume 完全依赖它。清理磁盘时用 `nextflow clean` 而不是 rm，否则缓存全失效"
+      },
+      {
+        "flag": "重跑粒度",
+        "default": "整条流程",
+        "note": "步骤划分越细，重跑成本越低。把「质控+组装+注释」写成一个脚本的做法会让任一步失败都需全部重跑"
+      }
+    ],
+    "pitfalls": [
+      "**用「文件存在」作为完成判据而不检查非空**。被中断或失败的任务常留下 0 字节输出，下游会把它当有效输入，产生空结果或报错位置远离真正原因。判据必须是「存在且大小 > 0」，必要时再加内容校验（如行数）。",
+      "把整条流程写成一个长脚本，没有步骤边界。任一环节失败都只能从头再跑，迭代成本极高。步骤边界是断点能力的前提。",
+      "手工删除中间文件来「清理空间」，破坏了续跑能力。清理前应确认哪些中间产物是重跑所必需的，或改用引擎提供的清理命令。",
+      "误以为改了参数会自动触发重跑。Snakemake 依据文件时间戳与内容判断，Nextflow 依据脚本哈希；**工具或环境升级不会被检测**。改环境后必须显式强制重跑相关步骤。",
+      "缓存目录与结果目录混在一起，清理输出时误删缓存，导致 resume 失效。两者应物理分开（`work/` vs `results/`）。",
+      "失败后不看日志直接重跑。如果失败原因是内存不足或数据问题，重跑会再次失败，浪费时间。先读日志定位原因再重跑。",
+      "多次重跑的结果混在同一目录里，无法判断最终结果来自哪一次运行。每次运行应有独立的结果目录或明确的覆盖策略，并在溯源清单里记录运行标识。",
+      "断点逻辑本身有 bug（例如判据写错），导致步骤被错误跳过，结果用的是旧数据。断点逻辑应写进单元测试或至少用「故意删掉中间文件」来验证它能正确重跑。"
+    ],
+    "related": [
+      {
+        "id": "wf_snakemake",
+        "note": "引擎级断点能力的完整用法"
+      },
+      {
+        "id": "wf_nextflow",
+        "note": "-resume 与 work/ 缓存的机制"
+      },
+      {
+        "id": "wf_batch_loop",
+        "note": "批量任务中逐样本的断点判断"
+      },
+      {
+        "id": "wf_reproducibility",
+        "note": "重跑记录本身也是溯源信息"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 11 章 工作流引擎与可重复性",
+        "path": "docs/guidebook/11-workflow-reproducibility.md"
+      }
+    ]
+  },
+  {
+    "id": "wf_batch_loop",
+    "name": "多样本批量循环处理",
+    "category": "workflow",
+    "layer": "engine",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics"
+    ],
+    "tags": [
+      "批量",
+      "循环",
+      "并行",
+      "样本清单",
+      "xargs"
+    ],
+    "summary": "用样本清单驱动大批量样本的重复处理",
+    "what": [
+      "微生物项目动辄几十到几百个样本，每个样本要跑同一套步骤。批量的正确做法是**样本清单驱动**：用一张表（samples.tsv）描述所有样本及其属性，循环遍历这张表并生成对应的命令。这样增加样本只需改表，不需要改代码。",
+      "并行的度需要把握。常见做法是两种并行维度的组合：样本间并行（同时跑多个样本）与步骤内并行（每个样本内的工具用多线程）。两者相乘容易超配——例如 16 个样本 × 每样本 8 线程 = 128 线程，远超机器容量反而拖慢速度。正确的划分是让「样本并行数 × 每样本线程数 ≈ 总核数」。",
+      "批量处理还必须处理**部分失败**：某个样本因数据质量差而失败，不应该让整批中断。做法是记录每个样本的状态（成功/失败/跳过），失败时继续处理其余样本，最后汇总失败清单让人工决定。此外一次运行只处理失败样本的能力（断点续跑）能大幅节省时间。"
+    ],
+    "inputs": [
+      {
+        "type": "tsv-table",
+        "name": "样本清单",
+        "required": true,
+        "note": "每行一个样本及其文件路径与属性；这是批量的驱动源"
+      },
+      {
+        "type": "script",
+        "name": "批处理脚本",
+        "required": false,
+        "note": "已固化的批量脚本；接入它意味着把「重跑」交给它，本模块负责驱动与状态记录"
+      },
+      {
+        "type": "log-report",
+        "name": "上次的批量状态表",
+        "required": false,
+        "note": "驱动「只重跑失败样本」"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "log-report",
+        "name": "逐样本执行状态表",
+        "ext": ".batch_status.tsv",
+        "note": "记录每个样本的成功/失败/跳过与实际耗时"
+      },
+      {
+        "type": "report",
+        "name": "批量运行汇总",
+        "ext": ".batch_summary.txt",
+        "note": "成功数、失败清单与失败原因摘要"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "GNU parallel",
+        "version": "2024xxxx",
+        "access": "cli",
+        "install": "conda",
+        "note": "比 xargs 更好用：日志分离、失败重试、进度显示"
+      },
+      {
+        "tool": "xargs -P",
+        "version": "coreutils",
+        "access": "cli",
+        "install": "builtin",
+        "note": "通用的并行执行；无需额外依赖"
+      },
+      {
+        "tool": "Snakemake",
+        "version": "8.x",
+        "access": "cli",
+        "install": "conda",
+        "note": "由通配符自动生成所有样本的任务，是更结构化的方案"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "wf_checkpoint_pipeline",
+        "viaType": "log-report",
+        "note": "逐样本状态表驱动「只重跑失败样本」"
+      },
+      {
+        "target": "wf_reproducibility",
+        "viaType": "log-report",
+        "note": "批量状态与溯源清单一起归档"
+      },
+      {
+        "target": "qc_multi_qc",
+        "viaType": "report",
+        "note": "批量运行汇总可作为项目级报告的一节"
+      }
+    ],
+    "usage": [
+      {
+        "label": "样本清单驱动的循环（含部分失败处理）",
+        "lang": "bash",
+        "code": "#!/usr/bin/env bash\nset -uo pipefail            # 注意：不用 -e，否则首个失败就会中断整批\n\nSTATUS=10_logs/batch_status.tsv\nprintf 'sample\\tstatus\\tseconds\\tnote\\n' > \"$STATUS\"\n\n# samples.tsv: sample  r1  r2  group\nwhile IFS=$'\\t' read -r sample r1 r2 group; do\n  [ \"$sample\" = \"sample\" ] && continue          # 跳过表头\n\n  out=\"01_clean/${sample}_R1.fq.gz\"\n  if [ -s \"$out\" ]; then\n    printf '%s\\tskipped\\t0\\t已存在\\n' \"$sample\" >> \"$STATUS\"\n    continue\n  fi\n\n  start=$SECONDS\n  if fastp -i \"$r1\" -I \"$r2\" -o \"$out\" -O \"01_clean/${sample}_R2.fq.gz\" \\\n           -w 8 -j \"10_logs/${sample}.fastp.json\" >> \"10_logs/${sample}.fastp.log\" 2>&1; then\n    printf '%s\\tok\\t%d\\t\\n' \"$sample\" \"$((SECONDS - start))\" >> \"$STATUS\"\n  else\n    printf '%s\\tFAILED\\t%d\\t见 10_logs/%s.fastp.log\\n' \"$sample\" \"$((SECONDS - start))\" \"$sample\" >> \"$STATUS\"\n  fi\ndone < samples.tsv\n\necho \"--- 汇总 ---\"\nawk -F'\\t' 'NR>1 {c[$2]++} END {for (k in c) printf \"%s: %d\\n\", k, c[k]}' \"$STATUS\"\necho \"失败样本:\"\nawk -F'\\t' 'NR>1 && $2==\"FAILED\" {print \"  \" $1}' \"$STATUS\""
+      },
+      {
+        "label": "GNU parallel：样本间并行且日志分离",
+        "lang": "bash",
+        "code": "# 每个样本一个日志文件，失败时不影响其它样本\n# --eta 显示预计剩余时间，--progress 显示进度\ngrep -v '^sample' samples.tsv | cut -f1 | \\\n  parallel --jobs 4 --eta --progress --joblog 10_logs/parallel.joblog \\\n    'fastp -i 00_raw/{}_R1.fq.gz -I 00_raw/{}_R2.fq.gz \\\n            -o 01_clean/{}_R1.fq.gz -O 01_clean/{}_R2.fq.gz \\\n            -w 4 -j 10_logs/{}.fastp.json > 10_logs/{}.fastp.log 2>&1'\n\n# 只重跑失败的样本（joblog 里退出码非 0 的行）\nawk -F'\\t' 'NR>1 && $7!=0 {print $9}' 10_logs/parallel.joblog | \\\n  parallel --jobs 4 'echo 重跑 {}'\n\n# 重要：--jobs 4 表示同时 4 个样本，每个用 4 线程 => 共 16 核"
+      },
+      {
+        "label": "并行度计算：别把核数乘爆",
+        "lang": "bash",
+        "code": "TOTAL_CORES=$(nproc)\nPER_SAMPLE_THREADS=4\n\n# 样本并行数 × 每样本线程数 ≈ 总核数\nJOBS=$(( TOTAL_CORES / PER_SAMPLE_THREADS ))\n[ \"$JOBS\" -lt 1 ] && JOBS=1\n\ncat <<EOF\n总核数:        $TOTAL_CORES\n每样本线程:    $PER_SAMPLE_THREADS\n样本并行数:    $JOBS\n合计占用:      $((JOBS * PER_SAMPLE_THREADS)) 核\nEOF\n\n# 常见错误：写 --jobs 16 而每个任务内部又开 -w 8，实际申请 128 线程，\n# 结果是大量上下文切换，整体比串行还慢。"
+      }
+    ],
+    "recipes": {
+      "bash": "#!/usr/bin/env bash\n# 多样本批量处理骨架：清单驱动 + 部分失败容忍 + 状态记录\nset -uo pipefail\nmkdir -p 01_clean 10_logs\n\nLIST=\"${1:-samples.tsv}\"\nTHREADS_PER_SAMPLE=4\nJOBS=$(( $(nproc) / THREADS_PER_SAMPLE ))\n[ \"$JOBS\" -lt 1 ] && JOBS=1\n\nSTATUS=10_logs/batch_status.tsv\nprintf 'sample\\tstatus\\tseconds\\n' > \"$STATUS\"\n\necho \"样本数: $(( $(wc -l < \"$LIST\") - 1 ))  并行: $JOBS  每样本线程: $THREADS_PER_SAMPLE\"\n\nprocess_one() {\n  local sample=$1\n  local out=\"01_clean/${sample}_R1.fq.gz\"\n  local start=$SECONDS\n\n  if [ -s \"$out\" ]; then\n    printf '%s\\tskipped\\t0\\n' \"$sample\"\n    return 0\n  fi\n\n  if fastp -i \"00_raw/${sample}_R1.fq.gz\" -I \"00_raw/${sample}_R2.fq.gz\" \\\n           -o \"$out\" -O \"01_clean/${sample}_R2.fq.gz\" \\\n           -w \"$THREADS_PER_SAMPLE\" -j \"10_logs/${sample}.fastp.json\" \\\n           > \"10_logs/${sample}.fastp.log\" 2>&1; then\n    printf '%s\\tok\\t%d\\n' \"$sample\" \"$((SECONDS - start))\"\n  else\n    printf '%s\\tFAILED\\t%d\\n' \"$sample\" \"$((SECONDS - start))\"\n  fi\n}\nexport -f process_one\nexport THREADS_PER_SAMPLE\n\ngrep -v '^sample' \"$LIST\" | cut -f1 | \\\n  xargs -P \"$JOBS\" -I{} bash -c 'process_one \"$@\"' _ {} >> \"$STATUS\"\n\necho \"\"\necho \"--- 汇总 ---\"\nawk -F'\\t' 'NR>1 {c[$2]++} END {for (k in c) printf \"%s: %d\\n\", k, c[k]}' \"$STATUS\"\nFAILED=$(awk -F'\\t' 'NR>1 && $2==\"FAILED\" {print $1}' \"$STATUS\")\n[ -n \"$FAILED\" ] && { echo \"失败样本:\"; echo \"$FAILED\"; }\nexit 0",
+      "python": "import subprocess\nimport time\nfrom concurrent.futures import ProcessPoolExecutor, as_completed\nfrom pathlib import Path\n\nTHREADS_PER_SAMPLE = 4\nJOBS = max(1, (__import__('os').cpu_count() or 4) // THREADS_PER_SAMPLE)\n\nLOG = Path(\"10_logs\")\nLOG.mkdir(parents=True, exist_ok=True)\n\nsamples = [line.split(\"\\t\")[0] for line in Path(\"samples.tsv\").read_text(encoding=\"utf-8\").splitlines()[1:] if line.strip()]\n\ndef process(sample: str) -> tuple[str, str, int]:\n    out = Path(f\"01_clean/{sample}_R1.fq.gz\")\n    if out.exists() and out.stat().st_size > 0:\n        return sample, \"skipped\", 0\n\n    started = time.time()\n    with open(LOG / f\"{sample}.fastp.log\", \"w\", encoding=\"utf-8\") as fh:\n        result = subprocess.run(\n            [\"fastp\", \"-i\", f\"00_raw/{sample}_R1.fq.gz\", \"-I\", f\"00_raw/{sample}_R2.fq.gz\",\n             \"-o\", str(out), \"-O\", f\"01_clean/{sample}_R2.fq.gz\",\n             \"-w\", str(THREADS_PER_SAMPLE), \"-j\", str(LOG / f\"{sample}.fastp.json\")],\n            stdout=fh, stderr=subprocess.STDOUT,\n        )\n    elapsed = int(time.time() - started)\n    status = \"ok\" if result.returncode == 0 and out.exists() and out.stat().st_size > 0 else \"FAILED\"\n    return sample, status, elapsed\n\nrows = [(\"sample\", \"status\", \"seconds\")]\nwith ProcessPoolExecutor(max_workers=JOBS) as pool:\n    futures = {pool.submit(process, s): s for s in samples}\n    for future in as_completed(futures):\n        rows.append(future.result())\n\nstatus_file = LOG / \"batch_status.tsv\"\nstatus_file.write_text(\"\\n\".join(\"\\t\".join(map(str, r)) for r in rows) + \"\\n\", encoding=\"utf-8\")\n\ncounts: dict[str, int] = {}\nfor _, status, _ in rows[1:]:\n    counts[status] = counts.get(status, 0) + 1\nprint(\"汇总:\", counts)\nprint(\"失败样本:\", [r[0] for r in rows[1:] if r[1] == \"FAILED\"])"
+    },
+    "params": [
+      {
+        "flag": "set -e vs set -uo pipefail",
+        "default": "set -e",
+        "note": "批量循环**不要用 -e**：首个样本失败会中断整批。改用显式 if 判断并记录状态"
+      },
+      {
+        "flag": "xargs -P / parallel --jobs",
+        "default": "1（串行）",
+        "note": "并行度应按「总核数 ÷ 每样本线程数」计算。盲目增大并行度会因超配而变慢"
+      },
+      {
+        "flag": "parallel --joblog",
+        "default": "无",
+        "note": "记录每个任务的退出码与耗时，是「只重跑失败样本」的依据"
+      },
+      {
+        "flag": "while read 的 IFS",
+        "default": "默认空白",
+        "note": "读 TSV 必须 `IFS=$'\\t'`，否则含空格的字段会被拆开；同时要处理表头行与最后一行无换行的情况"
+      },
+      {
+        "flag": "GNU parallel 的引号处理",
+        "default": "—",
+        "note": "路径含空格时用 {} 与 --quote 相关选项很容易出错；样本名统一不含空格是更省事的做法"
+      }
+    ],
+    "pitfalls": [
+      "**在批量循环里用 `set -e`**。首个样本失败会中断整批，导致后面几十个样本没跑，而日志只显示第一批的错误。批量脚本应容忍部分失败并逐个记录状态。",
+      "并行度超配。`--jobs 16` 配合每样本 `-w 8` 会申请 128 线程，结果大量时间花在上下文切换上，比串行更慢。总是让「样本并行数 × 每样本线程数 ≈ 总核数」。",
+      "读 TSV 不设 `IFS=$'\\t'`，字段含空格时被拆开，导致样本名错位、路径拼错。样本名尽量不含空格，读表时显式指定分隔符。",
+      "所有样本的日志写到同一个文件，并行时互相穿插，无法排查单个样本的问题。每个样本一个日志文件是底线。",
+      "失败样本直接重跑整批。应该有「只处理失败样本」的能力（依据状态表或 joblog），否则一次小失败要付出整批的时间成本。",
+      "不记录逐样本状态，只有终端输出。跑到一半断开后无法知道哪些完成了。状态表应实时追加写入。",
+      "最后一个样本被漏掉。while read 在文件末尾无换行时会丢掉最后一行；用 `while IFS= read -r line || [ -n \"$line\" ]` 处理。",
+      "样本名作为变量直接拼进命令而不加引号，含特殊字符时命令注入或路径错误。所有变量引用都应加双引号。",
+      "在批量脚本里硬编码样本列表而不是读清单文件。增加样本就必须改代码，也失去了「清单即数据」的可追溯性。"
+    ],
+    "related": [
+      {
+        "id": "util_gnu_parallel",
+        "note": "并行执行的专门工具与参数细节"
+      },
+      {
+        "id": "wf_snakemake",
+        "note": "样本数很多时更结构化的方案；由通配符自动展开"
+      },
+      {
+        "id": "wf_checkpoint_pipeline",
+        "note": "状态表驱动只重跑失败样本"
+      },
+      {
+        "id": "util_rename_manifest",
+        "note": "样本清单的整理与命名规范"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 1 章 环境与工程规范",
+        "path": "docs/guidebook/01-environment-and-conventions.md"
+      },
+      {
+        "label": "第 11 章 工作流引擎与可重复性",
+        "path": "docs/guidebook/11-workflow-reproducibility.md"
+      }
+    ]
+  },
+  {
+    "id": "wf_dag_rule",
+    "name": "流程结构与依赖声明 (DAG / rule)",
+    "category": "workflow",
+    "layer": "engine",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics",
+      "phylogenetics"
+    ],
+    "tags": [
+      "DAG",
+      "依赖",
+      "规则",
+      "流程设计",
+      "结构"
+    ],
+    "summary": "把分析计划表达成有向无环图并检查其结构",
+    "what": [
+      "任何多步骤分析本质上是一张有向无环图（DAG）：节点是步骤，边是数据依赖。把这张图显式画出来（哪怕是写在纸上）能暴露三类问题：缺失的步骤（某个中间产物没人生产）、冗余的步骤（两个步骤其实在做同一件事）、以及非法依赖（A 需要 B 的输出，B 又需要 A 的输出，形成环）。",
+      "在实际流程里，DAG 的价值主要体现在**验证可行性**：拓扑排序能给出一个合法的执行顺序；环的存在说明设计有矛盾，必须回到分析设计层面解决而不是靠调参数。工作流引擎会强制这一点（Snakemake 直接报错），手写脚本时则需要自己留意。",
+      "设计 DAG 时有两个反复出现的决策：**条件是分支还是并入**（「如果有长读长就走混合组装，否则只走短读长」——这类分支在工作流引擎里有专门语法，手写脚本靠 if 判断），以及**哪些步骤可以并行**（互不依赖的步骤可以同时跑，这决定了流程的最短完成时间）。"
+    ],
+    "inputs": [
+      {
+        "type": "script",
+        "name": "分析计划与步骤清单",
+        "required": true,
+        "note": "每个步骤的输入、输出与依赖关系"
+      },
+      {
+        "type": "script",
+        "name": "流程定义文件",
+        "required": false,
+        "note": "Snakefile / Nextflow 定义，用于自动导出 DAG"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "report",
+        "name": "依赖图（可视化）",
+        "ext": "dag.pdf",
+        "note": "步骤与依赖的可视化，适合在项目文档与评审中使用"
+      },
+      {
+        "type": "log-report",
+        "name": "拓扑顺序与并行分组",
+        "ext": ".dag.tsv",
+        "note": "合法的执行顺序，以及可并行的步骤分组"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "Graphviz",
+        "version": "9.x",
+        "access": "cli",
+        "install": "conda",
+        "note": "dot 命令把 DAG 渲染成图"
+      },
+      {
+        "tool": "Snakemake",
+        "version": "8.x",
+        "access": "cli",
+        "install": "conda",
+        "note": "`--dag` 可直接导出流程的依赖图"
+      },
+      {
+        "tool": "Python (networkx)",
+        "version": "3.3.x",
+        "access": "python-api",
+        "install": "pip",
+        "note": "环检测与拓扑排序的通用实现"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "py_export_report",
+        "viaType": "report",
+        "note": "依赖图是说明「分析如何组织」的最直观材料，应进报告"
+      },
+      {
+        "target": "wf_reproducibility",
+        "viaType": "report",
+        "note": "DAG 与实际命令一起构成溯源材料"
+      }
+    ],
+    "usage": [
+      {
+        "label": "从流程定义导出依赖图（Snakemake）",
+        "lang": "bash",
+        "code": "# 导出流程的 DAG 并渲染成 PDF\nsnakemake --dag | dot -Tpdf > 09_results/dag.pdf\n\n# 只看会执行哪些步骤（不执行）\nsnakemake -n -r\n\n# 若流程有环或依赖缺失，这两个命令会直接报错\n# 这是「设计是否可行」的最快检查"
+      },
+      {
+        "label": "用 Python 检查自制流程的依赖结构",
+        "lang": "python",
+        "code": "import networkx as nx\n\n# 用步骤名与依赖关系描述流程\nsteps = {\n    \"qc\":          [],\n    \"assembly\":    [\"qc\"],\n    \"asm_qc\":      [\"assembly\"],\n    \"annotation\":  [\"assembly\"],\n    \"pangenome\":   [\"annotation\"],\n    \"tree\":        [\"pangenome\"],\n    \"report\":      [\"asm_qc\", \"annotation\", \"tree\"],\n}\n\ng = nx.DiGraph()\nfor node, deps in steps.items():\n    g.add_node(node)\n    for dep in deps:\n        g.add_edge(dep, node)          # 边方向：依赖 -> 依赖者\n\n# 检查是否有环（环会让拓扑排序失败）\nif not nx.is_directed_acyclic_graph(g):\n    raise SystemExit(f\"流程存在环: {list(nx.simple_cycles(g))}\")\n\n# 拓扑顺序 = 一个合法的执行顺序\norder = list(nx.topological_sort(g))\nprint(\"执行顺序:\")\nfor i, name in enumerate(order, 1):\n    print(f\"  {i:>2}. {name:<12} 依赖于 {steps[name] or '无'}\")\n\n# 并行分组：同一步骤中的节点彼此不依赖，可以同时跑\nlayers = list(nx.topological_generations(g))\nprint(\"\\n可并行分组:\")\nfor i, layer in enumerate(layers, 1):\n    print(f\"  第 {i} 轮: {sorted(layer)}\")\n\nprint(f\"\\n最短完成轮数（假设每轮等长）: {len(layers)}\")"
+      },
+      {
+        "label": "画出 DAG（不依赖工作流引擎）",
+        "lang": "python",
+        "code": "import networkx as nx\nimport matplotlib\nmatplotlib.use(\"Agg\")\nimport matplotlib.pyplot as plt\n\ng = nx.DiGraph()\ng.add_edges_from([\n    (\"qc\", \"assembly\"), (\"assembly\", \"asm_qc\"), (\"assembly\", \"annotation\"),\n    (\"annotation\", \"pangenome\"), (\"pangenome\", \"tree\"),\n    (\"asm_qc\", \"report\"), (\"annotation\", \"report\"), (\"tree\", \"report\"),\n])\n\nfor i, layer in enumerate(nx.topological_generations(g)):\n    for j, node in enumerate(sorted(layer)):\n        g.nodes[node][\"pos\"] = (i, j)\n\npos = nx.get_node_attributes(g, \"pos\")\nfig, ax = plt.subplots(figsize=(8, 4.5))\nnx.draw_networkx(g, pos, ax=ax, node_size=2200, node_color=\"#DCE9F7\",\n                 edge_color=\"#4C72B0\", arrowsize=14, font_size=9)\nax.set_axis_off()\nfig.tight_layout()\nfig.savefig(\"09_results/dag.pdf\", dpi=300)\nprint(\"已导出 dag.pdf\")"
+      }
+    ],
+    "recipes": {
+      "bash": "#!/usr/bin/env bash\n# 若流程用 Snakemake 描述，导出 DAG 一步完成：\n#   snakemake --dag | dot -Tpdf > 09_results/dag.pdf\n#   snakemake -n -r          # 干跑，顺便验证依赖是否完整\n\n# 手工脚本没有自动的 DAG 导出，建议用 Python + networkx 检查依赖结构（见 python 示例）\necho \"手工流程请用 tools 里的 networkx 检查脚本核对依赖结构\"",
+      "python": "from pathlib import Path\n\nimport networkx as nx\n\nSTEPS = {\n    \"qc\":         [],\n    \"assembly\":   [\"qc\"],\n    \"asm_qc\":     [\"assembly\"],\n    \"annotation\": [\"assembly\"],\n    \"pangenome\":  [\"annotation\"],\n    \"tree\":       [\"pangenome\"],\n    \"report\":     [\"asm_qc\", \"annotation\", \"tree\"],\n}\n\ng = nx.DiGraph()\nfor node, deps in STEPS.items():\n    for dep in deps:\n        if dep not in STEPS:\n            raise SystemExit(f\"步骤 {node} 依赖了未定义的步骤 {dep}\")\n        g.add_edge(dep, node)\n\nif not nx.is_directed_acyclic_graph(g):\n    raise SystemExit(f\"检测到环: {list(nx.simple_cycles(g))}\")\n\norder = list(nx.topological_sort(g))\nlines = [\"step\\torder\\tdepends_on\\tparallel_group\"]\nfor group_index, layer in enumerate(nx.topological_generations(g), 1):\n    for node in sorted(layer):\n        deps = \",\".join(STEPS[node]) or \"-\"\n        lines.append(f\"{node}\\t{order.index(node) + 1}\\t{deps}\\t{group_index}\")\n\nout = Path(\"10_logs/dag.tsv\")\nout.parent.mkdir(parents=True, exist_ok=True)\nout.write_text(\"\\n\".join(lines) + \"\\n\", encoding=\"utf-8\")\n\nprint(\"步骤数:\", len(STEPS))\nprint(\"拓扑顺序:\", \" -> \".join(order))\nprint(\"已写出\", out)"
+    },
+    "params": [
+      {
+        "flag": "--dag（Snakemake）",
+        "default": "—",
+        "note": "导出完整依赖图；配合 dot 渲染。图会包含所有规则，规则很多时会非常大，可先用 `--rulegraph` 只看规则间的依赖"
+      },
+      {
+        "flag": "-n / --dry-run",
+        "default": "关闭",
+        "note": "不执行只打印计划。这是验证「依赖是否完整」的最快方式：缺输入会立刻报错"
+      },
+      {
+        "flag": "边的方向约定",
+        "default": "—",
+        "note": "本模块约定「依赖 → 依赖者」，与拓扑排序方向一致。图里方向反了会导致所有人对执行顺序的讨论都错位"
+      },
+      {
+        "flag": "并行分组",
+        "default": "—",
+        "note": "同一轮内的步骤互不依赖，可并行；轮数给出了流程的最短完成时间下界"
+      }
+    ],
+    "pitfalls": [
+      "**流程里存在环却不自知**。手写脚本时 A 依赖 B、B 又依赖 A 的情况通常以「某步用的数据其实来自上一次运行」的形式出现，难以察觉。应显式做环检测。",
+      "把「数据依赖」与「执行顺序」混为一谈。DAG 表达的是数据依赖，执行顺序只是它的一种合法线性化。同一张 DAG 可以有多种执行顺序，其中一些并行度更高。",
+      "DAG 图上节点粒度过细（每个命令一个节点），导致图无法阅读。应在「分析步骤」的粒度上画图；细粒度的执行细节交给工作流引擎。",
+      "不记录分支条件。含条件分支的流程（有长读长走混合组装 / 没有则只走短读长）在图上是两条路径，必须标注条件，否则读图的人会以为两条路径都会执行。",
+      "以为 DAG 无环就等于流程正确。DAG 只保证可行，不保证合理：多了一步冗余的转换、少了一步质控，图上看不出来。DAG 检查结构与依赖，语义正确性仍需人工评审。",
+      "在评审或论文里只放 DAG 图而不给文本版的步骤清单。图难以精确阅读也不便搜索，应同时提供步骤表（步骤名、输入、输出、工具与版本）。",
+      "DAG 与实际的流程定义不一致（改了脚本没更新图）。这类图会误导读者；应尽量从流程定义自动导出（`snakemake --dag`），而不是手工维护。"
+    ],
+    "related": [
+      {
+        "id": "wf_snakemake",
+        "note": "由规则自动导出 DAG，无需手工维护"
+      },
+      {
+        "id": "wf_nextflow",
+        "note": "由 process 与 channel 构成数据流图"
+      },
+      {
+        "id": "wf_flexible_join",
+        "note": "DAG 评审中发现的接口不匹配由适配器补齐"
+      },
+      {
+        "id": "wf_checkpoint_pipeline",
+        "note": "DAG 的拓扑层次决定了断点与重跑的最小粒度"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 11 章 工作流引擎与可重复性",
+        "path": "docs/guidebook/11-workflow-reproducibility.md"
+      }
+    ]
+  },
+  {
+    "id": "wf_cluster_submit",
+    "name": "集群提交与资源申请 (Slurm / PBS)",
+    "category": "workflow",
+    "layer": "engine",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics",
+      "phylogenetics"
+    ],
+    "tags": [
+      "slurm",
+      "pbs",
+      "集群",
+      "资源",
+      "调度"
+    ],
+    "summary": "把分析步骤提交到集群并合理申请资源",
+    "what": [
+      "集群（Slurm、PBS/Torque、SGE）把计算资源集中管理，通过队列调度任务。与本地运行最大的差异是：你不再直接执行命令，而是**描述任务需要多少资源**（CPU、内存、时间、是否 GPU）并提交，由调度器决定何时在哪台节点上运行。",
+      "申请资源需要经验判断，多了浪费排队时间与配额，少了会因内存不足被杀死（OOM kill）且往往在跑了几小时之后才发生。实践中的做法是先按工具的已知内存需求估计（例如 metagenome 组装常需 100~250 GB，而 fastp 只要几 GB），首次运行时略微宽裕，看实际用量后再收紧。",
+      "**资源用量记录**是这一层最容易被忽略却最有价值的部分：Slurm 的 `sacct` 与 Nextflow 的 trace 都能给出每个任务的实际峰值内存与 CPU 利用率。据此调整下一次申请值，比凭感觉猜测可靠得多，也能发现「申请了 64 核但实际只用 3 核」这类浪费。"
+    ],
+    "inputs": [
+      {
+        "type": "script",
+        "name": "待执行的命令或流程",
+        "required": true,
+        "note": "本地验证过的命令；集群上运行前应确保相同参数能跑通"
+      },
+      {
+        "type": "log-report",
+        "name": "历史资源用量",
+        "required": false,
+        "note": "上一次执行的峰值内存与 CPU 用量，用于调整申请值"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "script",
+        "name": "提交脚本",
+        "ext": ".slurm / .pbs",
+        "note": "含资源申请、环境加载与实际命令"
+      },
+      {
+        "type": "log-report",
+        "name": "作业日志与资源用量",
+        "ext": ".slurm.out / sacct.txt",
+        "note": "标准输出/错误与 sacct 的资源统计"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "Slurm",
+        "version": "23.x",
+        "access": "cli",
+        "install": "binary",
+        "note": "sbatch/squeue/sacct；最常见的调度器"
+      },
+      {
+        "tool": "PBS / Torque",
+        "version": "22.x",
+        "access": "cli",
+        "install": "binary",
+        "note": "qsub/qstat；部分机构仍在用"
+      },
+      {
+        "tool": "Snakemake / Nextflow",
+        "version": "引擎自带",
+        "access": "cli",
+        "install": "conda",
+        "note": "通过 profile/executor 自动生成与提交作业，是更推荐的做法"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "wf_snakemake",
+        "viaType": "script",
+        "note": "用 profile 让引擎自动为每条规则提交作业"
+      },
+      {
+        "target": "wf_nextflow",
+        "viaType": "script",
+        "note": "用 executor 配置接入调度器"
+      },
+      {
+        "target": "wf_container",
+        "viaType": "script",
+        "note": "集群上通常需要 Apptainer 而非 Docker"
+      },
+      {
+        "target": "wf_reproducibility",
+        "viaType": "log-report",
+        "note": "sacct 记录的资源用量与实际命令是溯源材料"
+      }
+    ],
+    "usage": [
+      {
+        "label": "Slurm 提交脚本（含资源申请与日志）",
+        "lang": "bash",
+        "code": "#!/usr/bin/env bash\n#SBATCH --job-name=spades_S1\n#SBATCH --partition=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=16\n#SBATCH --mem=120G\n#SBATCH --time=12:00:00\n#SBATCH --output=10_logs/slurm/%x.%j.out\n#SBATCH --error=10_logs/slurm/%x.%j.err\n#SBATCH --mail-type=FAIL\n\nset -euo pipefail\nmkdir -p 10_logs/slurm 02_assembly/S1\n\n# 集群上模块/环境加载方式因机构而异，务必用你所在集群的做法\nmodule load miniforge/24.3 2>/dev/null || true\neval \"$(conda shell.bash hook)\"\nconda activate ./envs/assembly\n\n# 记录实际分配到的资源，便于事后核对申请是否合理\necho \"nodes:       $SLURM_JOB_NODELIST\"\necho \"cpus:        $SLURM_CPUS_PER_TASK\"\necho \"mem limit:   ${SLURM_MEM_PER_NODE:-未设置}\"\n\n# 重要：把工具线程数与申请的 CPU 对齐，而不是写死\nspades.py --careful -t \"$SLURM_CPUS_PER_TASK\" \\\n  -1 01_clean/S1_R1.fq.gz -2 01_clean/S1_R2.fq.gz \\\n  -o 02_assembly/S1"
+      },
+      {
+        "label": "提交、监控、查看资源用量",
+        "lang": "bash",
+        "code": "mkdir -p 10_logs/slurm\nsbatch scripts/spades_S1.slurm\n\nsqueue -u \"$USER\"                     # 看排队与运行状态\nsqueue -u \"$USER\" -o '%.10i %.9P %.20j %.8T %.10M %.6D %R'   # 自定义输出\n\n# 作业结束后查实际资源用量——这是调整下一次申请值的依据\nsacct -j <jobid> --format=JobID,JobName,Elapsed,MaxRSS,ReqMem,AllocCPUS,State\n\n# 时间格式便于统计\nsacct -u \"$USER\" --starttime today \\\n  --format=JobID,JobName,State,Elapsed,MaxRSS,AllocCPUS"
+      },
+      {
+        "label": "作业数组：同一命令处理多个样本",
+        "lang": "bash",
+        "code": "#!/usr/bin/env bash\n#SBATCH --job-name=qc_array\n#SBATCH --array=1-48                 # 48 个样本各一个作业\n#SBATCH --cpus-per-task=4\n#SBATCH --mem=8G\n#SBATCH --time=02:00:00\n#SBATCH --output=10_logs/slurm/qc_%A_%a.out\n\nset -euo pipefail\n\n# 用数组索引从样本清单里取本作业负责的样本\nSAMPLE=$(sed -n \"${SLURM_ARRAY_TASK_ID}p\" 10_logs/sample_list.txt)\necho \"本作业负责样本: $SAMPLE\"\n\nfastp -i \"00_raw/${SAMPLE}_R1.fq.gz\" -I \"00_raw/${SAMPLE}_R2.fq.gz\" \\\n      -o \"01_clean/${SAMPLE}_R1.fq.gz\" -O \"01_clean/${SAMPLE}_R2.fq.gz\" \\\n      -w \"$SLURM_CPUS_PER_TASK\"\n\n# 提示：数组作业的失败是逐元素的。用 --array=1-48%8 限制同时运行数量（8 个），\n# 避免一次占满集群队列。"
+      }
+    ],
+    "recipes": {
+      "bash": "#!/usr/bin/env bash\n# 通用的作业提交与资源用量回收骨架\nset -euo pipefail\nmkdir -p 10_logs/slurm scripts\n\nSCRIPT=\"${1:?用法: submit.sh <slurm脚本>}\"\n\nJOBID=$(sbatch --parsable \"$SCRIPT\")\necho \"已提交作业 $JOBID\"\n\n# 等待结束（不要用 sleep 轮询太多，会占满登录节点）\nwhile squeue -j \"$JOBID\" 2>/dev/null | grep -q \"$JOBID\"; do\n  sleep 30\ndone\n\nSTATE=$(sacct -j \"$JOBID\" --format=State --noheader | head -1 | tr -d ' ')\necho \"作业结束状态: $STATE\"\n\necho \"--- 资源用量（用于调整下次申请值）---\"\nsacct -j \"$JOBID\" --format=JobID,JobName,Elapsed,MaxRSS,ReqMem,AllocCPUS,State\n\nif [ \"$STATE\" != \"COMPLETED\" ]; then\n  echo \"作业未成功完成，请查看 10_logs/slurm/ 下的 stderr\" >&2\nfi",
+      "python": "import csv\nimport re\nimport subprocess\nfrom pathlib import Path\n\nLOG = Path(\"10_logs\")\nLOG.mkdir(parents=True, exist_ok=True)\n\n\ndef submit(script: Path) -> str:\n    out = subprocess.run([\"sbatch\", \"--parsable\", str(script)], check=True,\n                         capture_output=True, text=True).stdout.strip()\n    return out\n\n\ndef usage(jobid: str) -> list[dict]:\n    out = subprocess.run(\n        [\"sacct\", \"-j\", jobid, \"--parsable2\", \"--noheader\",\n         \"--format=JobID,JobName,Elapsed,MaxRSS,ReqMem,AllocCPUS,State\"],\n        check=True, capture_output=True, text=True,\n    ).stdout\n    reader = csv.DictReader(out.splitlines(),\n                            fieldnames=[\"JobID\", \"JobName\", \"Elapsed\", \"MaxRSS\", \"ReqMem\", \"AllocCPUS\", \"State\"],\n                            delimiter=\"|\")\n    return [row for row in reader if row.get(\"JobID\")]\n\n\njob = submit(Path(\"scripts/spades_S1.slurm\"))\nprint(f\"已提交作业 {job}\")\n\n# 实际用量写入溯源清单，供下次调整资源申请\nrows = usage(job)\nreport = LOG / f\"resources_{job}.tsv\"\nwith open(report, \"w\", encoding=\"utf-8\", newline=\"\") as fh:\n    writer = csv.writer(fh, delimiter=\"\\t\")\n    writer.writerow([\"JobID\", \"JobName\", \"Elapsed\", \"MaxRSS\", \"ReqMem\", \"AllocCPUS\", \"State\"])\n    for row in rows:\n        writer.writerow([row.get(k, \"\") for k in\n                         (\"JobID\", \"JobName\", \"Elapsed\", \"MaxRSS\", \"ReqMem\", \"AllocCPUS\", \"State\")])\n\nprint(f\"资源用量已写入 {report}\")\nprint(\"提醒: 用 MaxRSS 与 ReqMem 对比，收紧下次的内存申请\")"
+    },
+    "params": [
+      {
+        "flag": "--cpus-per-task",
+        "default": "1",
+        "note": "必须与工具实际使用的线程数一致。申请 16 核但工具只跑 1 线程是纯浪费配额；反之会被限流拖慢"
+      },
+      {
+        "flag": "--mem",
+        "default": "按队列默认",
+        "note": "元基因组组装常需 100~250 GB。申请不足会在数小时后被 OOM 杀死，损失最大"
+      },
+      {
+        "flag": "--time",
+        "default": "队列默认",
+        "note": "超时会被强制杀死。设得比预期长一些，但过长会降低排队优先级"
+      },
+      {
+        "flag": "--array=1-N%M",
+        "default": "无",
+        "note": "%M 限制同时运行的元素数，避免一次占满队列；批量任务的必备参数"
+      },
+      {
+        "flag": "--output / --error",
+        "default": "slurm-%j.out",
+        "note": "**必须显式指定**到项目日志目录，否则作业输出散落在提交目录，批量时无法对应"
+      },
+      {
+        "flag": "eval \"$(conda shell.bash hook)\"",
+        "default": "—",
+        "note": "非交互式集群作业里 conda 默认未初始化，不 source 会导致 conda activate 找不到命令"
+      }
+    ],
+    "pitfalls": [
+      "**内存申请不足导致 OOM kill**，而且往往在运行数小时后才发生。生信工具的内存需求差异极大（fastp 几 GB、宏基因组组装上百 GB），必须按工具特性估计，并保留余量。",
+      "申请了多核但工具没用上。例如申请 `--cpus-per-task=32` 而命令里没传 `-t $SLURM_CPUS_PER_TASK`，实际单线程运行。必须把工具线程参数与申请值绑定。",
+      "**作业输出散落在提交目录**。不显式指定 `--output`/`--error`，批量作业的错误日志会混在几十个 `slurm-*.out` 里，无法与样本对应。日志路径应含作业名与样本标识。",
+      "在登录节点上跑重计算任务。这会影响所有用户，管理员通常会直接杀掉。所有重任务都应提交到计算节点。",
+      "用 sleep 轮询作业状态过频，占满登录节点或被限制。轮询间隔至少 30 秒，或改用作业依赖（`--dependency=afterok:<jobid>`）让调度器串起多步。",
+      "在集群上直接跑 Docker。多数集群不允许，应改用 Apptainer/Singularity，或使用集群提供的容器运行方式。",
+      "conda 环境在非交互式作业里未初始化，导致 `conda activate` 报 `CommandNotFoundError`。必须在脚本里 source conda 的初始化脚本，或直接调用环境的绝对路径。",
+      "不查看 sacct 的实际资源用量，于是每次申请都沿用初次估计。很多人会发现申请的 64 核实际只用了 4 核，或内存申请是实际用量的五倍——白白增加了排队时间。",
+      "作业数组用文件行号索引样本，而样本清单被修改过（增删行）。这会导致部分样本被跳过或重复处理。清单与作业数组必须同时冻结，或用稳定的样本名而非行号做索引。"
+    ],
+    "related": [
+      {
+        "id": "wf_snakemake",
+        "note": "通过 profile 自动生成并提交作业，避免手写提交脚本"
+      },
+      {
+        "id": "wf_nextflow",
+        "note": "通过 executor 配置接入调度器，自动处理依赖与重试"
+      },
+      {
+        "id": "wf_container",
+        "note": "集群上以 Apptainer 运行容器"
+      },
+      {
+        "id": "wf_batch_loop",
+        "note": "本地批量循环的并行度与集群资源申请是同类问题"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 11 章 工作流引擎与可重复性",
+        "path": "docs/guidebook/11-workflow-reproducibility.md"
+      }
+    ]
+  }
+]

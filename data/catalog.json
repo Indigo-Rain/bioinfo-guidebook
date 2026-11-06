@@ -1,0 +1,168 @@
+{
+  "version": "1.0.0",
+  "title": "微生物生物信息学 Pipeline 知识系统",
+  "description": "模块注册表（single source of truth）。本文件定义分类、分析层与数据类型；data/modules/*.json 定义模块；data/presets.json 定义预设流程。index.html 与 docs/ 均由本注册表派生。",
+  "domains": [
+    {
+      "id": "genomics",
+      "label": "微生物基因组学",
+      "labelEn": "Microbial Genomics",
+      "summary": "单菌基因组：从原始读长到组装、注释、比较基因组与泛基因组。",
+      "guide": "docs/guidebook/03-genome-assembly.md"
+    },
+    {
+      "id": "metagenomics",
+      "label": "宏基因组 / 微生物组",
+      "labelEn": "Metagenomics & Microbiome",
+      "summary": "群落层面：16S 扩增子、鸟枪法分类与功能谱、MAG 分箱。",
+      "guide": "docs/guidebook/08-metagenome-microbiome.md"
+    },
+    {
+      "id": "transcriptomics",
+      "label": "转录组 / 表达谱",
+      "labelEn": "Transcriptomics",
+      "summary": "细菌 RNA-seq：比对计数或定量，差异表达与富集分析。",
+      "guide": "docs/guidebook/09-transcriptome-differential-expression.md"
+    },
+    {
+      "id": "phylogenetics",
+      "label": "系统发育与进化",
+      "labelEn": "Phylogenetics & Evolution",
+      "summary": "多序列比对、建树、树的评估与可视化，ANI 聚类与菌株分型。",
+      "guide": "docs/guidebook/07-comparative-pangenome.md"
+    }
+  ],
+  "layers": [
+    {
+      "id": "upstream",
+      "label": "上游分析",
+      "labelEn": "Upstream",
+      "order": 1,
+      "summary": "原始数据的质控、清理、组装与标准化，决定后续结果的天花板。"
+    },
+    {
+      "id": "core",
+      "label": "核心分析",
+      "labelEn": "Core Analysis",
+      "order": 2,
+      "summary": "注释、分类、定量、比对、建树等把序列变成生物学结论的步骤。"
+    },
+    {
+      "id": "downstream",
+      "label": "数据处理",
+      "labelEn": "Data Processing",
+      "order": 3,
+      "summary": "用 Python / R / 命令行把结果表整理成可分析的矩阵与统计量。"
+    },
+    {
+      "id": "viz",
+      "label": "下游可视化",
+      "labelEn": "Visualization",
+      "order": 4,
+      "summary": "把矩阵与统计量变成可读的图：组成、差异、结构、网络、进化。"
+    },
+    {
+      "id": "engine",
+      "label": "流程引擎与工具",
+      "labelEn": "Engine & Utility",
+      "order": 5,
+      "summary": "把上面所有步骤粘合成可重复运行的流水线：调度、容器、粘合模块。"
+    }
+  ],
+  "categories": [
+    { "id": "quality-control", "label": "质控与去宿主", "labelEn": "QC & Host Removal", "file": "modules/quality-control.json", "order": 101 },
+    { "id": "assembly", "label": "基因组组装", "labelEn": "Assembly", "file": "modules/assembly.json", "order": 102 },
+    { "id": "assembly-qc", "label": "组装质量与污染评估", "labelEn": "Assembly QC", "file": "modules/assembly-qc.json", "order": 103 },
+    { "id": "taxonomy", "label": "分类鉴定与物种注释", "labelEn": "Taxonomy & Identification", "file": "modules/taxonomy.json", "order": 201 },
+    { "id": "variant-calling", "label": "变异检测与分型", "labelEn": "Variant Calling", "file": "modules/variant-calling.json", "order": 202 },
+    { "id": "annotation-functional", "label": "功能注释", "labelEn": "Functional Annotation", "file": "modules/annotation-functional.json", "order": 203 },
+    { "id": "annotation-resistance", "label": "耐药与毒力", "labelEn": "Resistance & Virulence", "file": "modules/annotation-resistance.json", "order": 204 },
+    { "id": "annotation-phage", "label": "噬菌体与可移动元件", "labelEn": "Phage & Mobile Elements", "file": "modules/annotation-phage.json", "order": 205 },
+    { "id": "pangenome", "label": "泛基因组", "labelEn": "Pangenome", "file": "modules/pangenome.json", "order": 206 },
+    { "id": "comparative", "label": "比较基因组", "labelEn": "Comparative Genomics", "file": "modules/comparative.json", "order": 207 },
+    { "id": "amplicon", "label": "扩增子与微生物组", "labelEn": "Amplicon & Microbiome", "file": "modules/amplicon.json", "order": 208 },
+    { "id": "metagenome", "label": "宏基因组分类与功能", "labelEn": "Metagenomics", "file": "modules/metagenome.json", "order": 209 },
+    { "id": "transcriptome", "label": "转录组定量与差异表达", "labelEn": "Transcriptome", "file": "modules/transcriptome.json", "order": 210 },
+    { "id": "phylogeny", "label": "系统发育与建树", "labelEn": "Phylogenetics", "file": "modules/phylogeny.json", "order": 211 },
+    { "id": "downstream-python", "label": "Python 数据处理", "labelEn": "Python Data Processing", "file": "modules/downstream-python.json", "order": 301 },
+    { "id": "downstream-r", "label": "R 数据处理与统计", "labelEn": "R Data Processing", "file": "modules/downstream-r.json", "order": 302 },
+    { "id": "visualization", "label": "可视化与图表", "labelEn": "Visualization", "file": "modules/visualization.json", "order": 401 },
+    { "id": "workflow", "label": "流程引擎与调度", "labelEn": "Workflow Engines", "file": "modules/workflow.json", "order": 501 },
+    { "id": "utility", "label": "工具与数据操作", "labelEn": "Utilities", "file": "modules/utility.json", "order": 502 },
+    { "id": "io-formats", "label": "数据格式与互转", "labelEn": "Formats & Conversion", "file": "modules/io-formats.json", "order": 503 }
+  ],
+  "dataTypes": [
+    { "id": "any", "label": "任意输入", "labelEn": "Any", "glyph": "?", "shape": "any", "description": "接受任意类型，由模块内部自行判断处理方式。" },
+    { "id": "raw-reads", "label": "原始测序读长", "labelEn": "Raw Reads", "glyph": "FASTQ", "shape": "sequence", "ext": ".fq.gz", "description": "未经处理的 Illumina / Nanopore / PacBio 测序读长。" },
+    { "id": "clean-reads", "label": "清理后读长", "labelEn": "Clean Reads", "glyph": "FASTQ", "shape": "sequence", "ext": ".clean.fq.gz", "description": "已去除接头、低质量碱基、宿主污染的读长，可直接进入组装或比对。" },
+    { "id": "long-reads", "label": "长读长", "labelEn": "Long Reads", "glyph": "FASTQ", "shape": "sequence", "ext": ".fastq.gz", "description": "Nanopore / PacBio 长读长，用于补全重复区与完成图。" },
+    { "id": "hic-reads", "label": "Hi-C 读长", "labelEn": "Hi-C Reads", "glyph": "FASTQ", "shape": "sequence", "ext": ".hic.fq.gz", "description": "染色质构象捕获读长，用于 scaffold 到染色体级别。" },
+    { "id": "contigs", "label": "组装 contig", "labelEn": "Contigs", "glyph": "FASTA", "shape": "sequence", "ext": ".contigs.fasta", "description": "组装得到的连续序列，基因组分析的核心中间产物。" },
+    { "id": "scaffolds", "label": "Scaffold / 染色体", "labelEn": "Scaffolds", "glyph": "FASTA", "shape": "sequence", "ext": ".scaffolds.fasta", "description": "已排序定向、含 gap 的更长结构单元。" },
+    { "id": "bins", "label": "MAG bins", "labelEn": "MAG Bins", "glyph": "FASTA×N", "shape": "sequence-set", "ext": "_bins/", "description": "宏基因组分箱得到的多个基因组草图集合，通常一个 bin 一个文件。" },
+    { "id": "genome-fasta", "label": "基因组序列", "labelEn": "Genome FASTA", "glyph": "FASTA", "shape": "sequence", "ext": ".fna", "description": "单菌完整/草图基因组核酸序列，常作为参考或查询序列输入。" },
+    { "id": "reference-genome", "label": "参考基因组", "labelEn": "Reference Genome", "glyph": "FASTA", "shape": "sequence", "ext": ".fna", "description": "作为比对/建树基准的参考序列集合。" },
+    { "id": "cds-fasta", "label": "CDS 核酸序列", "labelEn": "CDS FASTA", "glyph": "FASTA", "shape": "sequence", "ext": ".ffn", "description": "编码区核酸序列，用于比对或建树。" },
+    { "id": "protein-faa", "label": "蛋白序列", "labelEn": "Protein FASTA", "glyph": "FAA", "shape": "sequence", "ext": ".faa", "description": "基因预测得到的蛋白序列，是功能注释与同源搜索的输入。" },
+    { "id": "gff", "label": "基因注释表", "labelEn": "GFF3", "glyph": "GFF3", "shape": "table", "ext": ".gff", "description": "基因结构注释的坐标表，常与 FASTA 配套使用。" },
+    { "id": "vcf", "label": "变异位点", "labelEn": "VCF", "glyph": "VCF", "shape": "table", "ext": ".vcf.gz", "description": "SNP/INDEL 位点集合，用于分型与进化距离。" },
+    { "id": "bam", "label": "比对结果", "labelEn": "Alignment", "glyph": "BAM", "shape": "alignment", "ext": ".sorted.bam", "description": "已排序的读长比对文件，可继续做计数、变异与覆盖度分析。" },
+    { "id": "alignment-fasta", "label": "多序列比对", "labelEn": "MSA", "glyph": "FASTA", "shape": "alignment", "ext": ".aln.fasta", "description": "长度对齐的序列集合，建树与保守性分析的输入。" },
+    { "id": "tree", "label": "系统发育树", "labelEn": "Tree", "glyph": "Newick", "shape": "tree", "ext": ".treefile", "description": "带分支长度的系统发育树，可继续做可视化与拓扑比较。" },
+    { "id": "abundance-table", "label": "丰度表", "labelEn": "Abundance Table", "glyph": "TSV", "shape": "table", "ext": ".abundance.tsv", "description": "物种/功能 × 样本的丰度或计数矩阵。" },
+    { "id": "count-matrix", "label": "计数矩阵", "labelEn": "Count Matrix", "glyph": "TSV", "shape": "table", "ext": ".counts.tsv", "description": "特征 × 样本的整数计数矩阵，差异表达分析的输入。" },
+    { "id": "feature-table", "label": "特征表（ASV/OTU）", "labelEn": "Feature Table", "glyph": "BIOM/TSV", "shape": "table", "ext": ".feature-table.tsv", "description": "扩增子分析产生的 ASV/OTU × 样本表。" },
+    { "id": "tsv-table", "label": "通用表格", "labelEn": "TSV Table", "glyph": "TSV", "shape": "table", "ext": ".tsv", "description": "制表符分隔的通用结果表，是下游处理的常规入口。" },
+    { "id": "csv-table", "label": "CSV 表格", "labelEn": "CSV Table", "glyph": "CSV", "shape": "table", "ext": ".csv", "description": "逗号分隔的结果表，便于 Excel 与 pandas 交换。" },
+    { "id": "dataframe", "label": "数据框", "labelEn": "DataFrame", "glyph": "DF", "shape": "table", "ext": "(内存对象)", "description": "Python / R 中的表格对象，可在同一语言内连续串联多个处理步骤。" },
+    { "id": "stats-result", "label": "统计结果", "labelEn": "Stats Result", "glyph": "TSV", "shape": "table", "ext": ".stats.tsv", "description": "差异倍数、p 值、校正后 q 值等统计量表格。" },
+    { "id": "gene-list", "label": "基因/特征列表", "labelEn": "Gene List", "glyph": "TXT", "shape": "list", "ext": ".txt", "description": "筛选后的基因 ID 列表，用于富集分析或取子集。" },
+    { "id": "enrich-result", "label": "富集结果", "labelEn": "Enrichment Result", "glyph": "TSV", "shape": "table", "ext": ".enrich.tsv", "description": "通路/GO 富集分析输出，含通路与显著性。" },
+    { "id": "cluster-dist", "label": "聚类与距离", "labelEn": "Cluster & Distance", "glyph": "TSV", "shape": "table", "ext": ".dist.tsv", "description": "样本或基因组的距离矩阵、聚类分组与聚类树。" },
+    { "id": "report", "label": "报告/图表", "labelEn": "Report & Figure", "glyph": "HTML/PDF", "shape": "figure", "ext": ".html", "description": "整合后的 HTML/PDF 报告或图形文件，是面向读者的终产物。" },
+    { "id": "figure-png", "label": "图片文件", "labelEn": "Figure File", "glyph": "PNG", "shape": "figure", "ext": ".png", "description": "可出版位图，适合论文与汇报使用。" },
+    { "id": "figure-vector", "label": "矢量图", "labelEn": "Vector Figure", "glyph": "PDF/SVG", "shape": "figure", "ext": ".pdf", "description": "可无损缩放的矢量图，投稿首选格式。" },
+    { "id": "script", "label": "脚本", "labelEn": "Script", "glyph": "SH/PY", "shape": "code", "ext": ".sh / .py", "description": "可执行的流程脚本，用于把步骤固化为可重复的代码。" },
+    { "id": "log-report", "label": "日志与统计报告", "labelEn": "Log & Stats Report", "glyph": "TXT", "shape": "figure", "ext": ".log", "description": "运行日志与汇总统计，用于质控判断与问题排查。" },
+    { "id": "sqlite-db", "label": "本地数据库", "labelEn": "Local Database", "glyph": "DB", "shape": "sequence-set", "ext": ".db", "description": "工具自建索引数据库（比对库、分类库等），通常一次构建多次复用。" }
+  ],
+  "providesAccess": [
+    { "id": "cli", "label": "命令行", "labelEn": "CLI" },
+    { "id": "python-api", "label": "Python API", "labelEn": "Python API" },
+    { "id": "r-api", "label": "R API", "labelEn": "R API" },
+    { "id": "bundled", "label": "自带封装", "labelEn": "Bundled" }
+  ],
+  "installMethods": [
+    { "id": "conda", "label": "conda / mamba" },
+    { "id": "container", "label": "Docker / Singularity" },
+    { "id": "source", "label": "源码编译" },
+    { "id": "pip", "label": "pip" },
+    { "id": "cran", "label": "CRAN / Bioconductor" },
+    { "id": "binary", "label": "官方二进制" },
+    { "id": "builtin", "label": "语言内置" }
+  ],
+  "interfaceKinds": [
+    { "id": "standard", "label": "常规", "description": "常规模块，可与上下游任意组合。" },
+    { "id": "template", "label": "模板", "description": "需按项目改写的起步骨架，接入后必须人工修改。" },
+    { "id": "adapter", "label": "适配器", "description": "本身不做生物学分析，用于把不匹配的输出接到输入上，并显式承担格式转换。" },
+    { "id": "database", "label": "数据库", "description": "产出可复用索引数据库的模块，通常只需构建一次（如建库、建索引）。" },
+    { "id": "reference-data", "label": "参考数据", "description": "不产生计算结果，只提供参考序列/注释等外部知识资源。" }
+  ],
+  "maturityLevels": [
+    { "id": "stable", "label": "成熟稳定" },
+    { "id": "active", "label": "活跃维护" },
+    { "id": "legacy", "label": "经典但停更", "description": "仍在大量文献中使用，但不再更新，新项目建议评估替代方案。" },
+    { "id": "emerging", "label": "新兴工具", "description": "方法较新，使用者需自行核对结果的稳健性。" }
+  ],
+  "validation": {
+    "idPattern": "^[a-z][a-z0-9_-]{2,40}$",
+    "maxSummaryLength": 60,
+    "minDescriptions": 2,
+    "maxUsageExamples": 4,
+    "coordinateBounds": [-2000, 6000],
+    "requiredModuleFields": ["id", "name", "category", "layer", "summary", "what", "inputs", "outputs", "provides", "feeds"],
+    "requiredProvidesFields": ["tool", "version", "access"],
+    "requiredFeedsFields": ["target", "viaType"],
+    "requiredPresetFields": ["id", "name", "tags", "difficulty", "summary", "nodes", "edges"]
+  }
+}

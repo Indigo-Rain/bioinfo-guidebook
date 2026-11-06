@@ -1,0 +1,1310 @@
+[
+  {
+    "id": "qc_fastp",
+    "name": "读长质控与去接头 (fastp)",
+    "category": "quality-control",
+    "layer": "upstream",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics"
+    ],
+    "tags": [
+      "质控",
+      "去接头",
+      "修剪",
+      "fastq",
+      "双端"
+    ],
+    "summary": "一步完成接头识别、质量修剪与质控报告",
+    "what": [
+      "fastp 把 Illumina 双端读长的接头去除、低质量碱基修剪、滑窗质量过滤和 polyG/polyX 修剪合并成一次运行，同时产出 HTML 与 JSON 质控报告。相比先跑 FastQC 再用 Trimmomatic 修剪的两步法，它的参数更少、速度更快，是目前短读长质控的默认起点。",
+      "它的核心判断是「自动检测接头」：默认会从 read pair 的重叠区推断接头序列，因此大多数项目不需要手工指定 adapter。但接头自动检测依赖足够多的重叠读长，覆盖度很低或插入片段很长时会失效，此时必须用 --adapter_sequence 显式指定。",
+      "质量修剪会改变读长长度与碱基组成，因此修剪后必须重新评估：如果平均读长掉到 90 bp 以下，或者某样本的读长数远低于其他样本，通常说明质量阈值或接头判断有问题，而不是「数据变干净了」。"
+    ],
+    "inputs": [
+      {
+        "type": "raw-reads",
+        "name": "原始双端读长 (R1/R2)",
+        "required": true,
+        "note": "gzip 压缩的 FASTQ；单端数据只需 -i"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "clean-reads",
+        "name": "清理后双端读长",
+        "ext": ".clean.fq.gz",
+        "note": "可直接进入组装、比对或分箱"
+      },
+      {
+        "type": "report",
+        "name": "质控 HTML 报告",
+        "ext": ".fastp.html",
+        "note": "每个样本一份，适合逐个人工确认"
+      },
+      {
+        "type": "log-report",
+        "name": "质控 JSON 指标",
+        "ext": ".fastp.json",
+        "note": "机器可读；MultiQC 读这个，不要解析 HTML"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "fastp",
+        "version": "0.23.x",
+        "access": "cli",
+        "install": "conda",
+        "note": "C++ 实现，多线程，单文件依赖"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "qc_multi_qc",
+        "viaType": "log-report",
+        "note": "把 JSON 报告汇总成项目级质控总览"
+      },
+      {
+        "target": "asm_spades",
+        "viaType": "clean-reads",
+        "note": "细菌基因组的默认组装路线"
+      },
+      {
+        "target": "meta_kraken2",
+        "viaType": "clean-reads",
+        "note": "宏基因组分类前先清理读长可降低假阳性"
+      },
+      {
+        "target": "tran_hisat_align",
+        "viaType": "clean-reads",
+        "note": "转录组比对前去除低质量碱基"
+      }
+    ],
+    "usage": [
+      {
+        "label": "双端基本用法（最常用）",
+        "lang": "bash",
+        "code": "fastp -i raw_R1.fq.gz -I raw_R2.fq.gz -o clean_R1.fq.gz -O clean_R2.fq.gz -w 8 -j sample.fastp.json -h sample.fastp.html"
+      },
+      {
+        "label": "严格模式：覆盖度较高、希望更保守地过滤",
+        "lang": "bash",
+        "code": "fastp -i raw_R1.fq.gz -I raw_R2.fq.gz -o clean_R1.fq.gz -O clean_R2.fq.gz --detect_adapter_for_pe -q 20 -u 10 -n 5 -l 50 --cut_tail -w 8"
+      },
+      {
+        "label": "对接 MultiQC：批量 + 汇总",
+        "lang": "bash",
+        "code": "for s in $(cat samples.txt); do\n  fastp -i raw/${s}_R1.fq.gz -I raw/${s}_R2.fq.gz \\\n        -o clean/${s}_R1.fq.gz -O clean/${s}_R2.fq.gz \\\n        -j qc/${s}.fastp.json -h qc/${s}.fastp.html -w 8\ndone\nmultiqc qc -o qc/multiqc"
+      }
+    ],
+    "recipes": {
+      "bash": "mkdir -p 01_clean 10_logs\nfastp -i 00_raw/${SAMPLE}_R1.fq.gz -I 00_raw/${SAMPLE}_R2.fq.gz \\\n      -o 01_clean/${SAMPLE}_R1.fq.gz -O 01_clean/${SAMPLE}_R2.fq.gz \\\n      -w ${THREADS} -j 10_logs/${SAMPLE}.fastp.json -h 10_logs/${SAMPLE}.fastp.html",
+      "python": "run([\n    \"fastp\",\n    \"-i\", str(RAW_DIR / f\"{sample}_R1.fq.gz\"),\n    \"-I\", str(RAW_DIR / f\"{sample}_R2.fq.gz\"),\n    \"-o\", str(QC_DIR / f\"{sample}_R1.fq.gz\"),\n    \"-O\", str(QC_DIR / f\"{sample}_R2.fq.gz\"),\n    \"-w\", str(THREADS),\n    \"-j\", str(LOG_DIR / f\"{sample}.fastp.json\"),\n    \"-h\", str(LOG_DIR / f\"{sample}.fastp.html\"),\n])"
+    },
+    "params": [
+      {
+        "flag": "-q",
+        "default": "15",
+        "note": "碱基质量阈值；低于它的碱基被判为 low quality。30 更严格，适合高覆盖度"
+      },
+      {
+        "flag": "-u",
+        "default": "40",
+        "note": "允许的低质量碱基比例上限；越严格的模式可以调到 10–15"
+      },
+      {
+        "flag": "-l",
+        "default": "15",
+        "note": "丢弃短于此长度的读长。细菌基因组组装建议提到 50，避免产生碎片 contig"
+      },
+      {
+        "flag": "-n",
+        "default": "5",
+        "note": "允许的 N 碱基数量上限；超过则整条读长被丢弃"
+      },
+      {
+        "flag": "--cut_tail",
+        "default": "关闭",
+        "note": "从 3' 端滑窗切除低质量区；对质量下降明显的 Illumina 批次很有用"
+      },
+      {
+        "flag": "--detect_adapter_for_pe",
+        "default": "自动",
+        "note": "显式开启双端接头检测；低覆盖度样本一定要加，否则可能漏检接头"
+      },
+      {
+        "flag": "--adapter_sequence",
+        "default": "自动推断",
+        "note": "自动检测失效时显式指定；Illumina TruSeq 常见为 AGATCGGAAGAGC"
+      },
+      {
+        "flag": "-w / --thread",
+        "default": "3",
+        "note": "线程数。fastp 默认只有 3，务必按机器核数显式设置，否则会严重拖慢流程"
+      }
+    ],
+    "pitfalls": [
+      "默认线程数只有 3。这是最常见的性能坑——批量运行时如果不显式给 -w，会看着 CPU 大量闲置却以为流程已经很快。",
+      "自动接头检测需要足够的 read pair 重叠。低覆盖度（< 20x）或插入片段很长的样本会检测不到接头，此时必须加 --detect_adapter_for_pe 或手工指定 --adapter_sequence。",
+      "不要同时用 fastp 和 Trimmomatic 做同一件事。串行跑两个修剪工具会过度修剪，让读长变短、比对率下降，而且难以判断是谁造成的。",
+      "修剪后必须回看读长分布。如果 clean 数据平均长度明显缩短（例如从 150 bp 掉到 110 bp 以下），说明阈值过严，应先放宽 -q 再比较组装结果。",
+      "fastp 的 HTML 报告是给人看的，别让下游脚本依赖它。要程序化汇总请用 -j 产出的 JSON（MultiQC 也是读这个）。",
+      "宏基因组数据里，宿主污染和 rRNA 占比高会让 fastp 报告显得「质量很好」却解决不了真正的问题。质控指标正常不等于数据可用，必要时先做污染筛查。"
+    ],
+    "related": [
+      {
+        "id": "qc_trimmomatic",
+        "note": "经典两步法中的修剪环节，需要与 FastQC 配合；参数更繁琐但控制更细"
+      },
+      {
+        "id": "qc_fastqc",
+        "note": "看原始数据质量分布；与 fastp 互补而非替代"
+      },
+      {
+        "id": "qc_quality_trim_long",
+        "note": "Nanopore/PacBio 长读长请用长读长质控模块，不要把 fastp 用于长读长"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 2 章 上游数据质控",
+        "path": "docs/guidebook/02-upstream-qc.md"
+      }
+    ]
+  },
+  {
+    "id": "qc_fastqc",
+    "name": "原始读长质量报告 (FastQC)",
+    "category": "quality-control",
+    "layer": "upstream",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics"
+    ],
+    "tags": [
+      "质控",
+      "报告",
+      "fastq",
+      "可视化",
+      "fastqc"
+    ],
+    "summary": "逐碱基质量分布与污染初筛的经典报告工具",
+    "what": [
+      "FastQC 对 FASTQ 做一组固定检查（逐碱基质量、GC 分布、接头含量、重复序列、过度代表序列等），输出一份带图的 HTML 报告。它的价值不在「过滤」，而在于给出数据的整体画像，让人在动手处理前就知道这批数据有没有系统性问题。",
+      "它的检查项里最值得看的三个是：per-base quality（是否在某个位置断崖式下跌，通常是测序批次问题）、per-sequence GC distribution（是否双峰，双峰往往意味着混入其他物种）、overrepresented sequences（接头或 rRNA 的典型信号）。",
+      "FastQC 本身不修改数据。它常与 Trimmomatic 组成「报告—修剪—再报告」的两步法，或与 fastp + MultiQC 组成「一次性质控 + 汇总」的现代流程。两种路线都合理：前者控制更细、可解释性强，后者步骤更少、更快。"
+    ],
+    "inputs": [
+      {
+        "type": "raw-reads",
+        "name": "原始读长",
+        "required": true,
+        "note": "支持 FASTQ 及 gzip/bzip2 压缩格式"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "report",
+        "name": "单样本 HTML 报告",
+        "ext": "_fastqc.html",
+        "note": "每文件一份；批量时通常会汇总"
+      },
+      {
+        "type": "log-report",
+        "name": "机器可读的摘要数据",
+        "ext": "_fastqc.zip",
+        "note": "解压后含 fastqc_data.txt，可脚本解析"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "FastQC",
+        "version": "0.12.x",
+        "access": "cli",
+        "install": "conda",
+        "note": "Java 实现；需确认 Java 版本满足要求"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "qc_multi_qc",
+        "viaType": "log-report",
+        "note": "FastQC 的 .zip 是 MultiQC 直接识别的输入"
+      },
+      {
+        "target": "wf_reproducibility",
+        "viaType": "log-report",
+        "note": "质控报告是结果可追溯链条上的必要一环"
+      }
+    ],
+    "usage": [
+      {
+        "label": "单样本",
+        "lang": "bash",
+        "code": "fastqc -t 4 -o qc/fastqc raw_R1.fq.gz"
+      },
+      {
+        "label": "批量 + 汇总",
+        "lang": "bash",
+        "code": "fastqc -t 8 -o qc/fastqc 00_raw/*.fq.gz\nmultiqc qc/fastqc -o qc/fastqc_summary"
+      },
+      {
+        "label": "只看数据不画图，供脚本解析",
+        "lang": "bash",
+        "code": "fastqc --extract --nogroup -o qc/fastqc raw_R1.fq.gz\ngrep -A2 'Per base sequence quality' qc/fastqc/raw_R1_fastqc/fastqc_data.txt"
+      }
+    ],
+    "recipes": {
+      "bash": "fastqc -t ${THREADS} -o 10_logs/fastqc 00_raw/${SAMPLE}_R1.fq.gz 00_raw/${SAMPLE}_R2.fq.gz",
+      "python": "run([\"fastqc\", \"-t\", str(THREADS), \"-o\", str(LOG_DIR / \"fastqc\"),\n     str(RAW_DIR / f\"{sample}_R1.fq.gz\"), str(RAW_DIR / f\"{sample}_R2.fq.gz\")])"
+    },
+    "params": [
+      {
+        "flag": "-t",
+        "default": "1",
+        "note": "线程数；每个文件独立处理，批量时可显著加速"
+      },
+      {
+        "flag": "--extract",
+        "default": "关闭",
+        "note": "额外解压出 fastqc_data.txt，脚本解析时必须加"
+      },
+      {
+        "flag": "--nogroup",
+        "default": "关闭",
+        "note": "不按 10 碱基分组显示碱基位置；排查末端质量异常时更精确"
+      },
+      {
+        "flag": "-k",
+        "default": "7",
+        "note": "overrepresented 序列的 k-mer 长度；怀疑污染时可调到 9–11 提高敏感度"
+      },
+      {
+        "flag": "--contaminants",
+        "default": "内置",
+        "note": "指定污染参考文件；默认内置列表已过时，自建更有意义"
+      }
+    ],
+    "pitfalls": [
+      "不要因为 FastQC 全绿就认为数据没问题。它检测不出批次效应、样本串扰、宿主污染比例过高这类「单样本看起来正常、整体比较才有问题」的缺陷。",
+      "在修剪过的数据上跑 FastQC，per-base quality 几乎必然变漂亮——因为你已经把坏的碱基删掉了。这是同义反复，不能用来证明修剪合理。",
+      "内置的污染数据库较陈旧。想靠它发现载体或常见污染物，建议自己准备 --contaminants 文件（例如把载体、rRNA、宿主序列放进去）。",
+      "HTML 报告不适合做批量对比。样本一多就必须靠 MultiQC 汇总，否则没人会真的逐个点开看。",
+      "FastQC 是 Java 程序，conda 安装时若 Java 版本不匹配会报错；在容器里跑更省心。"
+    ],
+    "related": [
+      {
+        "id": "qc_fastp",
+        "note": "一站式替代方案，报告能力弱一些但不必人工解读每个图"
+      },
+      {
+        "id": "qc_multi_qc",
+        "note": "几乎总与 FastQC 一起出现"
+      },
+      {
+        "id": "qc_contamination_screen",
+        "note": "FastQC 的污染检测只是初筛，要准确定性污染来源还得靠分类工具"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 2 章 上游数据质控",
+        "path": "docs/guidebook/02-upstream-qc.md"
+      }
+    ]
+  },
+  {
+    "id": "qc_trimmomatic",
+    "name": "读长修剪 (Trimmomatic)",
+    "category": "quality-control",
+    "layer": "upstream",
+    "kind": "standard",
+    "maturity": "legacy",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics"
+    ],
+    "tags": [
+      "质控",
+      "修剪",
+      "去接头",
+      "trimmomatic",
+      "经典"
+    ],
+    "summary": "参数可精细控制的经典读长修剪工具",
+    "what": [
+      "Trimmomatic 用一串按顺序执行的操作来修剪读长：ILLUMINACLIP 去接头、SLIDINGWINDOW 滑窗切尾、LEADING/TRAILING 切两端、MINLEN 丢弃过短读长。每个操作都能单独调参，因此它比 fastp 更适合需要精确复现某套既有参数的场景（例如沿用实验室既定流程或复现旧论文）。",
+      "它与 fastp 最实质的区别在于自己的定位：Trimmomatic 只管修剪，不产报告。因此标准做法是 FastQC → Trimmomatic → FastQC 组成闭环，用前后对比来判断修剪是否合理。少了后一个 FastQC，你其实不知道自己的参数做了什么事。",
+      "它已被作者标为停止积极维护，但并未过时：大量已发表流程仍在使用，参数语义稳定、行为可预测。新项目用 fastp 起步没问题；要复现既有结果，或需要 ILLUMINACLIP 那种按接头文件精确匹配的行为，Trimmomatic 仍是合适选择。"
+    ],
+    "inputs": [
+      {
+        "type": "raw-reads",
+        "name": "原始双端读长 (R1/R2)",
+        "required": true,
+        "note": "PE 模式需同时给两个文件；SE 模式给一个"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "clean-reads",
+        "name": "配对通过的清理后读长",
+        "ext": "_R1.paired.fq.gz",
+        "note": "两个 mate 都存活才进入 paired；这是下游应该用的文件"
+      },
+      {
+        "type": "clean-reads",
+        "name": "未配对的清理读长",
+        "ext": "_R1.unpaired.fq.gz",
+        "note": "通常单独归档；组装时一般不使用"
+      },
+      {
+        "type": "log-report",
+        "name": "修剪统计日志",
+        "ext": ".trimmomatic.log",
+        "note": "含输入与输出读长数，可核对修剪损失是否合理"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "Trimmomatic",
+        "version": "0.39",
+        "access": "cli",
+        "install": "conda",
+        "note": "Java 实现，需自备 Java 运行环境"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "qc_fastqc",
+        "viaType": "clean-reads",
+        "note": "修剪后必须再跑一次报告，否则无法判断参数效果"
+      },
+      {
+        "target": "qc_multi_qc",
+        "viaType": "log-report",
+        "note": "把修剪前后的读长数变化放进总览"
+      },
+      {
+        "target": "asm_spades",
+        "viaType": "clean-reads",
+        "note": "用 paired 输出进入组装"
+      },
+      {
+        "target": "var_bwa_map",
+        "viaType": "clean-reads",
+        "note": "用 paired 输出做比对"
+      }
+    ],
+    "usage": [
+      {
+        "label": "双端标准用法",
+        "lang": "bash",
+        "code": "trimmomatic PE -threads 8 -phred33 \\\n  raw_R1.fq.gz raw_R2.fq.gz \\\n  clean_R1.paired.fq.gz clean_R1.unpaired.fq.gz \\\n  clean_R2.paired.fq.gz clean_R2.unpaired.fq.gz \\\n  ILLUMINACLIP:TruSeq3-PE.fa:2:30:10 \\\n  LEADING:3 TRAILING:3 SLIDINGWINDOW:4:20 MINLEN:50"
+      },
+      {
+        "label": "确认操作顺序语义",
+        "lang": "bash",
+        "code": "trimmomatic PE -help   # 注意：各操作按命令行给出顺序依次执行，顺序会影响结果"
+      }
+    ],
+    "recipes": {
+      "bash": "trimmomatic PE -threads ${THREADS} -phred33 \\\n  00_raw/${SAMPLE}_R1.fq.gz 00_raw/${SAMPLE}_R2.fq.gz \\\n  01_clean/${SAMPLE}_R1.paired.fq.gz 01_clean/${SAMPLE}_R1.unpaired.fq.gz \\\n  01_clean/${SAMPLE}_R2.paired.fq.gz 01_clean/${SAMPLE}_R2.unpaired.fq.gz \\\n  ILLUMINACLIP:${ADAPTERS}:2:30:10 LEADING:3 TRAILING:3 SLIDINGWINDOW:4:20 MINLEN:50",
+      "python": "run([\n    \"trimmomatic\", \"PE\", \"-threads\", str(THREADS), \"-phred33\",\n    str(RAW_DIR / f\"{sample}_R1.fq.gz\"), str(RAW_DIR / f\"{sample}_R2.fq.gz\"),\n    str(QC_DIR / f\"{sample}_R1.paired.fq.gz\"), str(QC_DIR / f\"{sample}_R1.unpaired.fq.gz\"),\n    str(QC_DIR / f\"{sample}_R2.paired.fq.gz\"), str(QC_DIR / f\"{sample}_R2.unpaired.fq.gz\"),\n    \"ILLUMINACLIP:adapters.fa:2:30:10\",\n    \"LEADING:3\", \"TRAILING:3\", \"SLIDINGWINDOW:4:20\", \"MINLEN:50\",\n])"
+    },
+    "params": [
+      {
+        "flag": "ILLUMINACLIP:file:seedMismatches:palindromeClipThreshold:simpleClipThreshold",
+        "default": "2:30:10",
+        "note": "接头匹配的三档严格度；seed 越小匹配越宽松，容易误切真实序列"
+      },
+      {
+        "flag": "SLIDINGWINDOW:window:requiredQuality",
+        "default": "4:20",
+        "note": "滑窗平均质量低于阈值就切掉该位置之后的所有碱基；最影响最终读长的参数"
+      },
+      {
+        "flag": "LEADING / TRAILING",
+        "default": "3",
+        "note": "切掉读长首尾质量低于阈值的碱基；对 5' 端质量差的批次有效"
+      },
+      {
+        "flag": "MINLEN",
+        "default": "36",
+        "note": "短于此长度丢弃；组装建议 50，否则容易产生碎片 contig"
+      },
+      {
+        "flag": "-phred33 / -phred64",
+        "default": "自动",
+        "note": "现代 Illumina 一律 33；老数据可能不一样，写错会让整批数据质量判断错误"
+      }
+    ],
+    "pitfalls": [
+      "各操作**按命令行顺序依次执行**。把 MINLEN 放在最后和放在最前面，结果完全不同——这是最容易出错也最难察觉的一点。",
+      "unpaired 输出不要直接丢掉。里面往往还有可用的单端读长；如果最终读长数明显低于预期，先看看是不是 unpaired 占比过高。",
+      "ILLUMINACLIP 的接头文件必须与测序文库匹配。用错 TruSeq 版本的接头文件会去不掉接头却切掉真实序列。",
+      "它对长读长（Nanopore/PacBio）不适用。用错工具会得到看起来能跑但毫无意义的结果。",
+      "单独跑 Trimmomatic 而不做修剪后的 FastQC，等于在盲改参数。前后对比是这个工具正确用法的组成部分。"
+    ],
+    "related": [
+      {
+        "id": "qc_fastp",
+        "note": "更少参数、自带报告；新项目一般优先"
+      },
+      {
+        "id": "qc_fastqc",
+        "note": "两步法的必要搭档"
+      },
+      {
+        "id": "qc_quality_trim_long",
+        "note": "长读长请换成 NanoFilt / Filtlong"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 2 章 上游数据质控",
+        "path": "docs/guidebook/02-upstream-qc.md"
+      }
+    ]
+  },
+  {
+    "id": "qc_multi_qc",
+    "name": "多步骤质控汇总 (MultiQC)",
+    "category": "quality-control",
+    "layer": "upstream",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics"
+    ],
+    "tags": [
+      "质控",
+      "汇总",
+      "报告",
+      "multiqc",
+      "可重复"
+    ],
+    "summary": "把各工具日志聚合成项目级质控总览",
+    "what": [
+      "MultiQC 递归扫描一个目录，自动识别 FastQC、fastp、QUAST、BUSCO、STAR、Salmon、Snakemake 等几十种工具的输出日志或 JSON，把它们的指标抽出来聚合成一份带交互热图的 HTML 报告。它不产生新数据，只负责让人一次看到所有样本的所有指标。",
+      "它的真正用途是**发现异常样本**。单样本报告看不出批次效应，但把 200 个样本的读长数、GC 含量、重复率并排放在一张热图里，离群样本会立刻自己跳出来。因此它应该放在每个流程的末端，而不是质控环节的一次性动作。",
+      "它还支持自定义内容：通过 multiqc_config.yml 可以把指标的「可接受区间」写成阈值，超标的样本在报告里会被标红。对需要交付给合作方的项目，这比让人自己看图判断要可靠得多。"
+    ],
+    "inputs": [
+      {
+        "type": "report",
+        "name": "各工具的日志与报告目录",
+        "required": true,
+        "note": "例如同时含 fastp 的 .json 与 FastQC 的 .zip 的目录"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "report",
+        "name": "项目级质控总览报告",
+        "ext": ".html",
+        "note": "含样本级热图与逐工具分区"
+      },
+      {
+        "type": "log-report",
+        "name": "汇总指标表",
+        "ext": "multiqc_data/",
+        "note": "含 multiqc_data.json 与表格，可脚本解析做阈值判断"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "MultiQC",
+        "version": "1.2x",
+        "access": "cli",
+        "install": "conda",
+        "note": "Python 实现；对已识别工具的日志格式有版本敏感性"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "viz_pub_style",
+        "viaType": "report",
+        "note": "把关键指标重绘成投稿用的图，而不是直接截图报告"
+      },
+      {
+        "target": "py_export_report",
+        "viaType": "log-report",
+        "note": "解析 multiqc_data.json 做自定义阈值判定与汇总表"
+      },
+      {
+        "target": "wf_reproducibility",
+        "viaType": "report",
+        "note": "质控报告是结果可追溯链条上的必要一环"
+      }
+    ],
+    "usage": [
+      {
+        "label": "汇总一个项目的所有质控输出",
+        "lang": "bash",
+        "code": "multiqc 10_logs -o 10_logs/multiqc -n project_qc"
+      },
+      {
+        "label": "只做机器可读输出，便于脚本判定",
+        "lang": "bash",
+        "code": "multiqc 10_logs -o 10_logs/multiqc --data-format json --force"
+      },
+      {
+        "label": "用配置文件设置阈值（超标样本标红）",
+        "lang": "bash",
+        "code": "# 先在 multiqc_config.yml 写明 thresholds，再：\nmultiqc 10_logs -o 10_logs/multiqc -c multiqc_config.yml"
+      }
+    ],
+    "recipes": {
+      "bash": "multiqc 10_logs -o 10_logs/multiqc -n project_qc --force",
+      "python": "run([\"multiqc\", str(LOG_DIR), \"-o\", str(LOG_DIR / \"multiqc\"), \"-n\", \"project_qc\", \"--force\"])"
+    },
+    "params": [
+      {
+        "flag": "-o",
+        "default": "multiqc_data",
+        "note": "输出目录；建议固定成 10_logs/multiqc，便于定位"
+      },
+      {
+        "flag": "-n",
+        "default": "multiqc_report",
+        "note": "报告文件名；按项目命名可避免多项目互相覆盖"
+      },
+      {
+        "flag": "-c",
+        "default": "无",
+        "note": "配置文件；用 thresholds 定义可接受区间，是把它当验收工具的关键"
+      },
+      {
+        "flag": "--ignore",
+        "default": "无",
+        "note": "排除某些目录；中间文件目录里常混有同名日志，会造成重复统计"
+      },
+      {
+        "flag": "--force",
+        "default": "关闭",
+        "note": "覆盖已有输出；重复运行时必须加"
+      }
+    ],
+    "pitfalls": [
+      "扫描范围给太大（例如直接在项目根目录跑）会把中间文件里的旧报告也统计进来，同一个样本出现两次。要明确指向日志目录。",
+      "MultiQC 识别日志靠格式匹配。上游工具大版本升级后日志格式变化，MultiQC 版本过旧会静默漏掉整个模块——报告看起来正常，只是少了内容。升级工具时要一起升级 MultiQC。",
+      "不要把 MultiQC 的 HTML 当作交付报告的最终形态。它适合内部判断；对外交付通常要重绘关键指标图。",
+      "它不做任何阈值判断（除非配了 config）。报告里指标难看但没标红，不代表没问题。",
+      "HTML 报告体积随样本数增长很快，上千样本时会变得难以打开，此时应主要使用其数据输出。"
+    ],
+    "related": [
+      {
+        "id": "qc_fastp",
+        "note": "产出 MultiQC 最常读取的 JSON 报告"
+      },
+      {
+        "id": "qc_fastqc",
+        "note": "另一个主要数据来源"
+      },
+      {
+        "id": "asmqc_quast",
+        "note": "组装阶段的指标同样可被汇总进来"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 2 章 上游数据质控",
+        "path": "docs/guidebook/02-upstream-qc.md"
+      }
+    ]
+  },
+  {
+    "id": "qc_remove_host",
+    "name": "去除宿主污染序列 (Bowtie2 / minimap2)",
+    "category": "quality-control",
+    "layer": "upstream",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "metagenomics",
+      "transcriptomics"
+    ],
+    "tags": [
+      "去宿主",
+      "污染",
+      "比对",
+      "bowtie2",
+      "minimap2"
+    ],
+    "summary": "把比对到宿主基因组的读长剔除后再分析",
+    "what": [
+      "微生物样本（临床拭子、组织、呼吸道与肠道样本、培养物）里常混有大量宿主 DNA/RNA。宿主读长不仅占用算力，还会在宏基因组分类里制造假阳性、在转录组定量里挤占有效数据，因此必须先比对到宿主参考基因组并把命中的读长丢掉。",
+      "做法是两步：先用 bowtie2-build 或 minimap2 建立宿主基因组索引（一次即可复用），再把读长比对上去，用 samtools 把未比对的读长（`-f 4`）导回 FASTQ。这一步通常与质控串行：先修剪再比对，能提高去宿主效率。",
+      "关键判断在「怎么算命中」。默认比对阈值会保留与宿主有局部相似的微生物读长，去得太狠会丢真数据；阈值放太松又会残留宿主。因此必须在去宿主前后各做一次物种分类（例如 Kraken 2），用「宿主占比」这个数字来确认效果，而不是凭感觉调参数。"
+    ],
+    "inputs": [
+      {
+        "type": "clean-reads",
+        "name": "清理后读长",
+        "required": true,
+        "note": "先修剪再去宿主，顺序反了会降低比对效率"
+      },
+      {
+        "type": "reference-genome",
+        "name": "宿主参考基因组",
+        "required": true,
+        "note": "与实验物种一致的版本，并记录版本号"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "clean-reads",
+        "name": "去宿主后的读长",
+        "ext": ".nohost.fq.gz",
+        "note": "后续所有分析都应该用这个"
+      },
+      {
+        "type": "log-report",
+        "name": "去宿主比例统计",
+        "ext": ".host_stats.txt",
+        "note": "含总读长、比对上的读长与占比，是判断样本可用性的关键数字"
+      },
+      {
+        "type": "bam",
+        "name": "比对到宿主的读长",
+        "ext": ".host.bam",
+        "note": "通常只保留用于质控核查，不必长期留存"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "Bowtie2",
+        "version": "2.5.x",
+        "access": "cli",
+        "install": "conda",
+        "note": "短读长比对；需要先建索引"
+      },
+      {
+        "tool": "minimap2",
+        "version": "2.2x",
+        "access": "cli",
+        "install": "conda",
+        "note": "长读长与跨物种比对；可直接用 FASTA，不必单独建索引"
+      },
+      {
+        "tool": "SAMtools",
+        "version": "1.1x",
+        "access": "cli",
+        "install": "conda",
+        "note": "按比对标志拆分读长"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "qc_multi_qc",
+        "viaType": "log-report",
+        "note": "把去宿主比例纳入项目级质控总览"
+      },
+      {
+        "target": "meta_kraken2",
+        "viaType": "clean-reads",
+        "note": "去宿主后重新分类，确认宿主占比已降到可接受范围"
+      },
+      {
+        "target": "tran_hisat_align",
+        "viaType": "clean-reads",
+        "note": "转录组去宿主后比对到目标物种"
+      },
+      {
+        "target": "meta_megahit",
+        "viaType": "clean-reads",
+        "note": "宏基因组组装前去除宿主序列，避免把宿主基因拼进来"
+      }
+    ],
+    "usage": [
+      {
+        "label": "短读长：建索引 → 比对 → 取未命中读长",
+        "lang": "bash",
+        "code": "# 一次建索引，长期复用\nbowtie2-build host.fna host_index/host\n\n# 比对并把未比对的读长导回 FASTQ\nbowtie2 -x host_index/host -1 clean_R1.fq.gz -2 clean_R2.fq.gz \\\n        -p 8 --very-sensitive 2> host.log | \\\n  samtools sort -@ 8 -o host.bam -\n\nsamtools view -b -f 4 host.bam | samtools fastq -1 nohost_R1.fq.gz -2 nohost_R2.fq.gz -"
+      },
+      {
+        "label": "长读长：minimap2 直接比对",
+        "lang": "bash",
+        "code": "minimap2 -ax map-ont -t 8 host.fna clean.fq.gz 2> host.log | \\\n  samtools view -b -f 4 - | samtools fastq - > nohost.fq.gz"
+      }
+    ],
+    "recipes": {
+      "bash": "bowtie2 -x ${HOST_INDEX} -1 01_clean/${SAMPLE}_R1.fq.gz -2 01_clean/${SAMPLE}_R2.fq.gz \\\n        -p ${THREADS} --very-sensitive 2> 10_logs/${SAMPLE}.host.log | \\\n  samtools sort -@ ${THREADS} -o 10_logs/${SAMPLE}.host.bam -\nsamtools view -b -f 4 10_logs/${SAMPLE}.host.bam | \\\n  samtools fastq -1 01_clean/${SAMPLE}_R1.nohost.fq.gz -2 01_clean/${SAMPLE}_R2.nohost.fq.gz -",
+      "python": "run(f\"bowtie2 -x {host_index} -1 {QC_DIR}/{sample}_R1.fq.gz -2 {QC_DIR}/{sample}_R2.fq.gz \"\n    f\"-p {THREADS} --very-sensitive 2> {LOG_DIR}/{sample}.host.log | \"\n    f\"samtools sort -@ {THREADS} -o {LOG_DIR}/{sample}.host.bam -\")\nrun(f\"samtools view -b -f 4 {LOG_DIR}/{sample}.host.bam | \"\n    f\"samtools fastq -1 {QC_DIR}/{sample}_R1.nohost.fq.gz \"\n    f\"-2 {QC_DIR}/{sample}_R2.nohost.fq.gz -\")"
+    },
+    "params": [
+      {
+        "flag": "--very-sensitive",
+        "default": "关闭",
+        "note": "提高比对敏感度以捕获更多宿主读长；代价是慢一些，但去宿主宁多勿少"
+      },
+      {
+        "flag": "-f 4",
+        "default": "—",
+        "note": "只取未比对的读长；这是导出去宿主数据的关键标志位，写成 -F 4 会反过来只保留宿主读长"
+      },
+      {
+        "flag": "--un-conc",
+        "default": "关闭",
+        "note": "bowtie2 直接输出未比对读长，可省掉 samtools 一步；但格式控制不如 samtools 灵活"
+      },
+      {
+        "flag": "-N / -L",
+        "default": "0 / 20",
+        "note": "允许的错配数与最小种子长度；调松会把微生物读长也判成宿主"
+      }
+    ],
+    "pitfalls": [
+      "`-f 4` 与 `-F 4` 的含义正好相反，写错会保留宿主、丢掉真实数据，而且从读长数上不容易立刻发现。导完 FASTQ 后务必核实读长数与预期趋势一致。",
+      "宿主参考基因组的版本必须记录。不同版本的同一物种会有数万个位点差异，换版本会让去宿主比例明显变化，结果无法复现。",
+      "去得太狠是常见失败模式：与宿主存在同源区的微生物基因（例如保守的 rRNA、管家基因）会被一起丢掉，导致下游某些功能基因系统性缺失。用去宿主前后的分类结果对比来确认损失可接受。",
+      "先做去宿主再修剪是错的顺序：未修剪的低质量碱基会造成大量假比对，让比对率虚高。正确顺序是 修剪 → 去宿主。",
+      "长读长的宿主去除要用 minimap2 的 map-ont / map-pb 预设，用适合短读长的参数会得到很低的比对率，让人误以为样本里没有宿主。",
+      "建索引很耗时（人类基因组约几十 GB 内存、数十分钟）。把索引放在共享目录复用，不要每个样本重建一次。"
+    ],
+    "related": [
+      {
+        "id": "qc_fastp",
+        "note": "应作为本模块的前一步"
+      },
+      {
+        "id": "qc_contamination_screen",
+        "note": "用于量化去宿主效果与发现其他污染"
+      },
+      {
+        "id": "var_bwa_map",
+        "note": "同样是读长比对，但目标是变异检出而非过滤"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 2 章 上游数据质控",
+        "path": "docs/guidebook/02-upstream-qc.md"
+      },
+      {
+        "label": "第 8 章 宏基因组与微生物组",
+        "path": "docs/guidebook/08-metagenome-microbiome.md"
+      }
+    ]
+  },
+  {
+    "id": "qc_dedup_reads",
+    "name": "读长去重与格式精简 (seqkit / clumpify)",
+    "category": "quality-control",
+    "layer": "upstream",
+    "kind": "standard",
+    "maturity": "active",
+    "domains": [
+      "genomics",
+      "metagenomics"
+    ],
+    "tags": [
+      "去重",
+      "PCR 重复",
+      "优化",
+      "seqkit",
+      "clumpify"
+    ],
+    "summary": "去掉 PCR 重复与冗余读长，降低数据量",
+    "what": [
+      "PCR 扩增会产生大量序列完全相同的读长（PCR duplicates）。这些重复读长不代表更高的真实覆盖度，却会让变异检出误判证据强度、让定量结果偏高，还会拖慢组装。clumpify 用按序列分组压缩的方式同时实现去重与文件体积缩小，是 BBMap 套件里最常被单独拿来用的工具。",
+      "seqkit 则偏「格式层操作」：读写各种压缩格式、按长度或 GC 或 ID 过滤、取子集、统计、在 FASTA 与 FASTQ 之间转换。它几乎不消耗内存、支持流式处理，是把零散的格式整理工作串起来的常用工具。",
+      "判断是否需要去重，取决于研究目的：宏基因组通常不建议做 PCR 去重（真实丰度信息会丢失，且「相同序列」可能是不同物种的同源区）；全基因组重测序做变异检出时去重是标准步骤；扩增子数据完全不该在这里去重，重复读长本身就是丰度信号。"
+    ],
+    "inputs": [
+      {
+        "type": "clean-reads",
+        "name": "清理后读长",
+        "required": true
+      }
+    ],
+    "outputs": [
+      {
+        "type": "clean-reads",
+        "name": "去重后读长",
+        "ext": ".dedup.fq.gz",
+        "note": "文件常能小很多，但信息量取舍取决于研究目的"
+      },
+      {
+        "type": "log-report",
+        "name": "去重与过滤统计",
+        "ext": ".stats.txt",
+        "note": "含读长数、长度分布、去重比例"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "clumpify",
+        "version": "39.x",
+        "access": "cli",
+        "install": "conda",
+        "note": "BBMap 套件；去重与分组压缩"
+      },
+      {
+        "tool": "seqkit",
+        "version": "2.9.x",
+        "access": "cli",
+        "install": "conda",
+        "note": "Go 实现，流式、低内存"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "var_bwa_map",
+        "viaType": "clean-reads",
+        "note": "变异检出前的标准步骤"
+      },
+      {
+        "target": "asm_spades",
+        "viaType": "clean-reads",
+        "note": "高覆盖度数据去重可明显降低组装耗时"
+      },
+      {
+        "target": "util_seqkit",
+        "viaType": "clean-reads",
+        "note": "去重后常接着做长度过滤与统计"
+      }
+    ],
+    "usage": [
+      {
+        "label": "clumpify 去重并压缩优化",
+        "lang": "bash",
+        "code": "clumpify.sh in=clean_R1.fq.gz in2=clean_R2.fq.gz \\\n  out=dedup_R1.fq.gz out2=dedup_R2.fq.gz dedupe=t dupesubs=1 2> clumpify.log"
+      },
+      {
+        "label": "seqkit：按长度过滤并统一为 gzip",
+        "lang": "bash",
+        "code": "seqkit seq -m 100 -M 300 --remove-gaps clean.fq.gz -o filtered.fq.gz"
+      },
+      {
+        "label": "seqkit：快速统计（判断数据量是否符合预期）",
+        "lang": "bash",
+        "code": "seqkit stats -a -T *.fq.gz > read_stats.tsv"
+      }
+    ],
+    "recipes": {
+      "bash": "seqkit seq -m 100 01_clean/${SAMPLE}_R1.fq.gz -o 01_clean/${SAMPLE}_R1.filt.fq.gz\nseqkit stats -a -T 01_clean/${SAMPLE}_R1.filt.fq.gz > 10_logs/${SAMPLE}.read_stats.tsv",
+      "python": "run([\"seqkit\", \"seq\", \"-m\", \"100\",\n     str(QC_DIR / f\"{sample}_R1.fq.gz\"),\n     \"-o\", str(QC_DIR / f\"{sample}_R1.filt.fq.gz\")])\nwith open(LOG_DIR / f\"{sample}.read_stats.tsv\", \"w\", encoding=\"utf-8\") as fh:\n    subprocess.run([\"seqkit\", \"stats\", \"-a\", \"-T\", str(QC_DIR / f\"{sample}_R1.filt.fq.gz\")],\n                   check=True, stdout=fh)"
+    },
+    "params": [
+      {
+        "flag": "clumpify dedupe=t",
+        "default": "f",
+        "note": "开启去重；必须显式给出，否则只是压缩优化"
+      },
+      {
+        "flag": "clumpify dupesubs=1",
+        "default": "0",
+        "note": "每条重复读长保留 1 条；设 0 会全部删掉，通常不是你想要的"
+      },
+      {
+        "flag": "seqkit -m / -M",
+        "default": "0 / 0",
+        "note": "最小与最大长度过滤；短读长会造成碎片 contig，过长读长常是嵌合体"
+      },
+      {
+        "flag": "seqkit -T",
+        "default": "关闭",
+        "note": "表格输出（制表符分隔）；要写进下游脚本就必须加"
+      },
+      {
+        "flag": "seqkit -a",
+        "default": "关闭",
+        "note": "统计额外信息（GC、N50、质量）；排查是否混入异常数据时有用"
+      }
+    ],
+    "pitfalls": [
+      "**宏基因组不要默认去重**。序列完全相同不代表来自同一个基因组，去重会抹掉真实的丰度信号，还可能删掉低丰度物种的全部证据。",
+      "扩增子（16S/ITS）数据绝不能在这里去重：重复读长就是丰度，去重等于把定量结果废掉。ASV 去噪是另一回事，由 DADA2 / Deblur 负责。",
+      "clumpify 的 dedupe 默认是关闭的。只写 in/out 不会去重，只会重排与压缩——很多人以为跑了去重其实没有。",
+      "去重会让读长数明显下降，不要把它和「质控把数据删坏了」混为一谈。要配合去重前后的覆盖度与比对率一起看。",
+      "seqkit 的 -m/-M 过滤是无损的（只按长度判断）。但把长读长当嵌合体筛掉是有风险的：真实的长读长在长读长平台很常见。"
+    ],
+    "related": [
+      {
+        "id": "qc_fastp",
+        "note": "上游的修剪步骤"
+      },
+      {
+        "id": "util_seqkit",
+        "note": "更全面的序列文件操作模块"
+      },
+      {
+        "id": "var_snippy",
+        "note": "变异流程内部通常已包含去重"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 2 章 上游数据质控",
+        "path": "docs/guidebook/02-upstream-qc.md"
+      }
+    ]
+  },
+  {
+    "id": "qc_quality_trim_long",
+    "name": "长读长质量控制 (NanoFilt / Filtlong)",
+    "category": "quality-control",
+    "layer": "upstream",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics"
+    ],
+    "tags": [
+      "长读长",
+      "nanopore",
+      "pacbio",
+      "质控",
+      "过滤"
+    ],
+    "summary": "按长度与质量过滤 Nanopore / PacBio 读长",
+    "what": [
+      "长读长的质量分布与短读长完全不同：错误率更高且沿读长方向不均匀（Nanopore 两端质量通常更差），但读长本身是核心价值，因此不能像短读长那样按碱基质量大量修剪。正确处理方式是整体过滤——把太短、平均质量太低的读长整条丢掉，而不是修剪读长内部。",
+      "Filtlong 的做法更聪明：它不只按长度和质量过滤，还会优先保留对组装最有价值的读长（长读长、能覆盖其他读长 k-mer 的读长），可以在给定目标数据量下保留信息量最大的一组。当数据量过剩需要削减时，Filtlong 明显优于按长度简单截断。",
+      "判断标准应回到组装需求：细菌基因组用 30–50x 长读长覆盖度通常足够，太短（< 1000 bp）的读长对组装贡献很小。但不要过滤过狠——长读长组装依赖少数超长读长跨越重复区，如果砍掉长尾，组装会变成大量碎片。"
+    ],
+    "inputs": [
+      {
+        "type": "long-reads",
+        "name": "原始长读长",
+        "required": true,
+        "note": "Nanopore 的 fastq，或 PacBio 的 HiFi reads"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "long-reads",
+        "name": "过滤后长读长",
+        "ext": ".filtlong.fq.gz",
+        "note": "进入长读长组装或抛光"
+      },
+      {
+        "type": "log-report",
+        "name": "长度与质量分布统计",
+        "ext": ".readstats.txt",
+        "note": "用于确认过滤没有砍掉长尾"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "Filtlong",
+        "version": "0.2.x",
+        "access": "cli",
+        "install": "conda",
+        "note": "按质量与长度加权保留最优读长"
+      },
+      {
+        "tool": "NanoFilt",
+        "version": "2.8.x",
+        "access": "cli",
+        "install": "conda",
+        "note": "按长度与质量阈值简单过滤"
+      },
+      {
+        "tool": "NanoPlot",
+        "version": "1.4x",
+        "access": "cli",
+        "install": "conda",
+        "note": "长读长质量分布可视化"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "asm_flye",
+        "viaType": "long-reads",
+        "note": "过滤后的长读长进入组装"
+      },
+      {
+        "target": "asm_medaka_polish",
+        "viaType": "long-reads",
+        "note": "抛光需要原始长读长，不能用过滤后的子集替代"
+      },
+      {
+        "target": "asm_unicycler",
+        "viaType": "long-reads",
+        "note": "混合组装的长读长输入"
+      },
+      {
+        "target": "qc_contamination_screen",
+        "viaType": "long-reads",
+        "note": "确认长读长数据里没有混入其他物种"
+      }
+    ],
+    "usage": [
+      {
+        "label": "NanoFilt：按长度与质量过滤",
+        "lang": "bash",
+        "code": "gunzip -c raw.fastq.gz | NanoFilt -q 10 -l 1000 --headcrop 50 --tailcrop 50 | gzip > filt.fastq.gz"
+      },
+      {
+        "label": "Filtlong：保留对组装最有价值的一部分数据",
+        "lang": "bash",
+        "code": "filtlong --min_length 1000 --keep_percent 90 --target_bases 500000000 raw.fastq.gz | gzip > filt.fastq.gz"
+      },
+      {
+        "label": "先看分布再定阈值",
+        "lang": "bash",
+        "code": "NanoPlot --fastq raw.fastq.gz -o nanoplot_raw --plots hex\n# 看读长分布的长尾与质量分布，再决定 -l 与 -q 的阈值"
+      }
+    ],
+    "recipes": {
+      "bash": "filtlong --min_length 1000 --keep_percent 90 \\\n  ${LONG_RAW} | gzip > 01_clean/${SAMPLE}.filtlong.fq.gz\nNanoPlot --fastq 01_clean/${SAMPLE}.filtlong.fq.gz -o 10_logs/${SAMPLE}_nanoplot --plots hex",
+      "python": "with open(QC_DIR / f\"{sample}.filtlong.fq.gz\", \"wb\") as out_fh:\n    p1 = subprocess.Popen([\"filtlong\", \"--min_length\", \"1000\", \"--keep_percent\", \"90\",\n                           str(RAW_DIR / f\"{sample}.fastq.gz\")], stdout=subprocess.PIPE)\n    subprocess.run([\"gzip\"], stdin=p1.stdout, stdout=out_fh, check=True)\n    p1.wait()"
+    },
+    "params": [
+      {
+        "flag": "NanoFilt -l / Filtlong --min_length",
+        "default": "1000",
+        "note": "最小读长；低于此值对组装的贡献很小，但也不要设太高以免丢掉长尾"
+      },
+      {
+        "flag": "NanoFilt -q",
+        "default": "10",
+        "note": "平均质量阈值；Nanopore 的 Q10 约等于 90% 准确率，是常用下限"
+      },
+      {
+        "flag": "NanoFilt --headcrop / --tailcrop",
+        "default": "0",
+        "note": "切掉读长两端碱基；Nanopore 两端质量常明显偏低，各切 50 很常见"
+      },
+      {
+        "flag": "Filtlong --keep_percent",
+        "default": "无",
+        "note": "保留最优的百分之多少数据；数据过剩时用它削减而不是简单截断"
+      },
+      {
+        "flag": "Filtlong --target_bases",
+        "default": "无",
+        "note": "目标总碱基数；比 --keep_percent 更直观地按覆盖度设定"
+      }
+    ],
+    "pitfalls": [
+      "不要把 fastp / Trimmomatic 用于长读长。它们按短读长模型修剪，会破坏读长的长度优势，得到的「干净数据」组装起来更差。",
+      "过滤太狠会丢掉超长读长——而跨越重复区、补全闭环恰恰依赖这些读长。过滤后一定要看读长分布的长尾还在不在。",
+      "抛光（polish）时要用未过滤或轻度过滤的读长。如果用大幅削减后的子集，抛光效果会不如预期。",
+      "Nanopore 的质量值随试剂与 basecalling 版本变化很大。老数据的 Q10 与新数据的 Q10 不是一回事，阈值不能照搬。",
+      "长读长的覆盖度是按碱基数算的，不是按读长条数。用条数判断覆盖度会低估很多。"
+    ],
+    "related": [
+      {
+        "id": "qc_fastp",
+        "note": "短读长质控；不要与长读长混用"
+      },
+      {
+        "id": "asm_flye",
+        "note": "长读长组装的典型下游"
+      },
+      {
+        "id": "qc_contamination_screen",
+        "note": "长读长样本同样需要污染筛查"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 2 章 上游数据质控",
+        "path": "docs/guidebook/02-upstream-qc.md"
+      },
+      {
+        "label": "第 3 章 基因组组装",
+        "path": "docs/guidebook/03-genome-assembly.md"
+      }
+    ]
+  },
+  {
+    "id": "qc_contamination_screen",
+    "name": "原始数据污染筛查 (Kraken 2 / FastQ Screen)",
+    "category": "quality-control",
+    "layer": "upstream",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics"
+    ],
+    "tags": [
+      "污染",
+      "筛查",
+      "kraken2",
+      "质控",
+      "物种组成"
+    ],
+    "summary": "用分类比对快速看出数据里混了什么",
+    "what": [
+      "污染筛查回答的是一个很早但极其关键的问题：这批数据里到底有什么？培养物被其他菌株污染、试剂带入常见污染物（如水与试剂中常见的 Ralstonia、Bradyrhizobium）、样本交叉串扰，都会在分类结果里表现为「不该出现的物种占了可观比例」。这类问题越早发现越便宜。",
+      "Kraken 2 用精确 k-mer 匹配把每条读长分配到分类节点，速度快到可以在几分钟内跑完整个测序批次，因此适合当作常设的第一道筛查。FastQ Screen 更进一步：它把读长同时比到多个参考库（宿主、载体、rRNA、其他物种），给出「这些读长到底像谁」的比例表，因此更适合定性地定位污染物来源。",
+      "关键判断是阈值而不是有无。任何分类器都会给出少量误分类读长，几个百分点以下的杂音通常可以忽略；但如果某个非目标物种稳定占用 10% 以上，就必须查清原因——可能是真污染，也可能是数据库里缺少目标物种的近缘基因组导致读长被就近分配。"
+    ],
+    "inputs": [
+      {
+        "type": "clean-reads",
+        "name": "清理后读长",
+        "required": false,
+        "note": "推荐输入；建议先去接头再做筛查，接头序列会产生无意义的分类结果"
+      },
+      {
+        "type": "any",
+        "name": "组装产物（可选）",
+        "required": false,
+        "note": "Kraken 2 也能直接对 contigs 或基因组 FASTA 做分类。用在组装之后是另一种用法：能发现「多个菌株被拼到一起」这类嵌合污染，与读长级筛查考察的是不同问题。注意此时读长级指标（如 unclassified 比例）的解读方式与读长输入不同"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "abundance-table",
+        "name": "物种组成报告",
+        "ext": ".kraken.report",
+        "note": "分层级的物种占比，最重要的是前几行"
+      },
+      {
+        "type": "tsv-table",
+        "name": "读长级分类结果",
+        "ext": ".kraken.out",
+        "note": "可用来提取特定污染物的读长做进一步确认"
+      },
+      {
+        "type": "report",
+        "name": "污染筛查可视化",
+        "ext": ".krona.html",
+        "note": "Krona 或 Pavian 的交互式组成图"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "Kraken 2",
+        "version": "2.1.x",
+        "access": "cli",
+        "install": "conda",
+        "note": "需要预建索引数据库，体积很大（标准库 > 50 GB）"
+      },
+      {
+        "tool": "Bracken",
+        "version": "2.9",
+        "access": "cli",
+        "install": "conda",
+        "note": "把 Kraken 2 结果重估为更准的物种丰度"
+      },
+      {
+        "tool": "FastQ Screen",
+        "version": "0.15.x",
+        "access": "cli",
+        "install": "conda",
+        "note": "多样本库同时比对，用于定位污染来源"
+      },
+      {
+        "tool": "Krona",
+        "version": "2.8.x",
+        "access": "cli",
+        "install": "conda",
+        "note": "把层级组成转成交互式饼图"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "meta_bracken",
+        "viaType": "abundance-table",
+        "note": "需要更准的丰度估计时接 Bracken 重估"
+      },
+      {
+        "target": "viz_composition_bar",
+        "viaType": "abundance-table",
+        "note": "把污染构成画成组成图便于汇报"
+      },
+      {
+        "target": "qc_multi_qc",
+        "viaType": "report",
+        "note": "把污染比例纳入项目级质控总览"
+      }
+    ],
+    "usage": [
+      {
+        "label": "Kraken 2 快速筛查（单样本）",
+        "lang": "bash",
+        "code": "kraken2 --db $KRAKEN_DB --threads 8 --report sample.kraken.report \\\n  --output sample.kraken.out --use-names clean_R1.fq.gz clean_R2.fq.gz\nhead -30 sample.kraken.report"
+      },
+      {
+        "label": "报告各列的含义",
+        "lang": "bash",
+        "code": "# 列：百分比 / 该节点读长数 / 直接命中数 / 分类层级 / 分类单元 id / 名称\n# 关注三件事：目标物种占比、出现的不相关物种、unclassified 比例"
+      },
+      {
+        "label": "Bracken 重估丰度 + Krona 可视化",
+        "lang": "bash",
+        "code": "bracken -d $KRAKEN_DB -i sample.kraken.report -o sample.bracken.tsv -r 150 -l S\nktImportTaxonomy sample.kraken.out -o sample.krona.html"
+      }
+    ],
+    "recipes": {
+      "bash": "kraken2 --db ${KRAKEN_DB} --threads ${THREADS} --use-names \\\n  --report 10_logs/${SAMPLE}.kraken.report \\\n  --output 10_logs/${SAMPLE}.kraken.out \\\n  01_clean/${SAMPLE}_R1.fq.gz 01_clean/${SAMPLE}_R2.fq.gz\nhead -30 10_logs/${SAMPLE}.kraken.report > 10_logs/${SAMPLE}.kraken.top30.txt",
+      "python": "run([\"kraken2\", \"--db\", str(kraken_db), \"--threads\", str(THREADS), \"--use-names\",\n     \"--report\", str(LOG_DIR / f\"{sample}.kraken.report\"),\n     \"--output\", str(LOG_DIR / f\"{sample}.kraken.out\"),\n     str(QC_DIR / f\"{sample}_R1.fq.gz\"), str(QC_DIR / f\"{sample}_R2.fq.gz\")])"
+    },
+    "params": [
+      {
+        "flag": "--db",
+        "default": "无",
+        "note": "Kraken 索引库；必须记录用的是标准库还是 plusPF 还是自定义库及其日期，不同库结果不可比"
+      },
+      {
+        "flag": "--confidence",
+        "default": "0.0",
+        "note": "分类置信度阈值；筛查杂音多时提到 0.1–0.5，会显著减少假阳性但增加 unclassified"
+      },
+      {
+        "flag": "--minimum-hit-groups",
+        "default": "2",
+        "note": "至少几个独立 k-mer 命中组才算分类；降低误分类，是控制假阳性的实用参数"
+      },
+      {
+        "flag": "--use-names",
+        "default": "关闭",
+        "note": "报告里显示物种名而非仅 taxonomy id；人工阅读必须加"
+      },
+      {
+        "flag": "bracken -r / -l",
+        "default": "150 / S",
+        "note": "读长长度与分类层级；-r 必须与实际读长接近，否则丰度估计会偏"
+      }
+    ],
+    "pitfalls": [
+      "结果不可比却没意识到：换一个 Kraken 数据库（版次、是否含真核与病毒）会让物种占比明显变化。数据库版本必须和结果一起记录。",
+      "「出现非目标物种」不等于污染。培养物样本里常见的是数据库覆盖不全导致读长被就近分配；判断污染要看该物种是否有稳定、成比例的读长支持（例如覆盖多个保守基因而非集中在少数区域）。",
+      "标准数据库体积巨大（> 50 GB，plusPF 更大）。磁盘与内存规划要在项目开始前做好，别等跑到一半才发现放不下。",
+      "unclassified 比例高不一定是数据差。缺参考基因组的环境样本、或病毒与新物种占比高的样本，unclassified 高是正常的。",
+      "别用 FastQ Screen 的结果直接下结论。它是「像谁」的比例表，用于定位来源；确认污染还需要看具体比对区域与基因组覆盖度。"
+    ],
+    "related": [
+      {
+        "id": "meta_kraken2",
+        "note": "同一个工具在宏基因组分析中的正式用法"
+      },
+      {
+        "id": "qc_remove_host",
+        "note": "筛查发现宿主占比高时，下一步就是去宿主"
+      },
+      {
+        "id": "asmqc_gunc",
+        "note": "组装完成后还有更严格的污染检验"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 2 章 上游数据质控",
+        "path": "docs/guidebook/02-upstream-qc.md"
+      },
+      {
+        "label": "第 4 章 组装质量与污染评估",
+        "path": "docs/guidebook/04-assembly-qc.md"
+      }
+    ]
+  }
+]

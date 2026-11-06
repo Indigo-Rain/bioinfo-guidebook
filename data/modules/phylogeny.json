@@ -1,0 +1,819 @@
+[
+  {
+    "id": "phy_mafft",
+    "name": "多序列比对 (MAFFT)",
+    "category": "phylogeny",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["phylogenetics", "genomics"],
+    "tags": ["多序列比对", "mafft", "msa", "ins-i", "系统发育", "建树"],
+    "summary": "按数据规模选择算法档位的多序列比对",
+    "what": [
+      "这一步在做什么：MAFFT 把一组未比对的同源序列排成等长比对，是所有下游系统发育分析的第一步。它的核心不是「一个算法」，而是一组按精度/速度权衡排列的档位：渐进式方法（FFT-NS-1/FFT-NS-2）先算 guide tree 再按树逐条加入序列，快但早期错误会被固定下来；迭代精修方法（FFT-NS-i、L-INS-i、G-INS-i、E-INS-i、F-INS-i）在初步比对后反复重新估计比对，精度更高，代价随序列数与长度迅速上升。--auto 让 MAFFT 根据序列数量与相似度自动在「足够快」与「足够准」之间选择，大致在 FFT-NS-2 与 L-INS-i 之间切换。",
+      "档位怎么选，取决于数据的两个属性：序列数量与序列之间的同源模式。FFT-NS-2（--retree 2）是上千条以上序列的默认选择；FFT-NS-i（--retree 2 --maxiterate 1000）是几百条、序列较相似时的折中档；L-INS-i（--localpair --maxiterate 1000）假定序列全长同源并做局部精修，精度最高，适合几十到几百条的核心基因序列；G-INS-i（--globalpair --maxiterate 1000）做全局一致性优化，适合全长同源、长度相近、覆盖完整的序列集；E-INS-i（--genafpair --maxiterate 1000）允许序列之间存在大段不参与比对的区域，适合含长插入或结构域镶嵌的序列；F-INS-i（--localpair --maxiterate 1000 --leavegappyregion）在局部精修时对 gap 区不做惩罚，适合「部分区域可信、部分区域不可比」的数据。参数写法以官方文档为准，但档位背后的假设差异才是选择的依据。",
+      "为什么「精确模式」在几千条序列时会慢到不可用：L-INS-i / G-INS-i 每一轮迭代都要重建 guide tree，并对序列两两做带仿射 gap 罚分的动态规划比对，时间与内存随序列数量增长得很快（要保存成对信息，内存同时随序列数与长度上升）。几百条 × 一千多列时通常只要几分钟与几 GB 内存；序列数上一两千条、长度上千列时，内存需求会涨到几十 GB 级别，结果是进程被操作系统的 OOM killer 杀掉，而不是给出清晰的错误提示。实践中的应对：先用 FFT-NS-2 得到比对，再用增量模式把新序列加入已有比对（--add，片段序列用 --addfragments），或者先去冗余、选代表序列，把序列数降到精确模式可承受的范围。"
+    ],
+    "inputs": [
+      { "type": "cds-fasta", "name": "待比对的同源核酸序列集 (FASTA)", "required": true, "note": "16S/ITS 单基因树与串联核心基因比对都从这里进入；序列 ID 必须唯一、不含空格与特殊字符" },
+      { "type": "protein-faa", "name": "待比对的蛋白序列集", "required": false, "note": "编码基因建树常先比蛋白、再回译到密码子比对，可减少替换饱和与移码带来的噪声" }
+    ],
+    "outputs": [
+      { "type": "alignment-fasta", "name": "多序列比对", "ext": ".aln.fasta", "note": "等长 FASTA；下游修剪与建树都读它" },
+      { "type": "log-report", "name": "比对日志与迭代信息", "ext": ".mafft.log", "note": "含所用算法档位、迭代轮数与最终比对长度，是复现的必要信息" }
+    ],
+    "provides": [
+      { "tool": "MAFFT", "version": "7.5x", "access": "cli", "install": "conda", "note": "主流多序列比对工具；算法档位丰富、文档详尽" },
+      { "tool": "MUSCLE", "version": "5.1.x", "access": "cli", "install": "conda", "note": "替代实现；v5 用确定性算法，结果可重复且对输入序列顺序不敏感" },
+      { "tool": "Clustal Omega", "version": "1.2.x", "access": "cli", "install": "conda", "note": "上千条序列时速度很好，但默认精度一般，适合做初步比对" }
+    ],
+    "feeds": [
+      { "target": "phy_trimal", "viaType": "alignment-fasta", "note": "比对后通常先修剪再建树（修剪本身是争议点，见该模块）" },
+      { "target": "phy_iqtree", "viaType": "alignment-fasta", "note": "直接用比对做 ML 建树" },
+      { "target": "phy_modeltest", "viaType": "alignment-fasta", "note": "先按比对选替换模型，再把模型交给建树工具" },
+      { "target": "phy_fasttree", "viaType": "alignment-fasta", "note": "上千条序列时先用快速建树看全貌" }
+    ],
+    "usage": [
+      {
+        "label": "起步：让 MAFFT 自动选档",
+        "lang": "bash",
+        "code": "mafft --auto --thread 8 input.faa > aln.fasta"
+      },
+      {
+        "label": "高精度档位（序列数在几百条以内）",
+        "lang": "bash",
+        "code": "mafft --localpair  --maxiterate 1000 --thread 8 input.faa > aln.fasta   # L-INS-i\nmafft --globalpair --maxiterate 1000 --thread 8 input.faa > aln.fasta   # G-INS-i\nmafft --genafpair  --maxiterate 1000 --thread 8 input.faa > aln.fasta   # E-INS-i（允许局部不可比）"
+      },
+      {
+        "label": "上千条序列：先快后精",
+        "lang": "bash",
+        "code": "mafft --retree 2 --thread 8 big.fasta > aln_big.fasta\n# 需要精修时，先把代表序列精修好，再增量合并其余序列\nmafft --add remaining.fasta --reorder aln_representatives.fasta > aln_merged.fasta"
+      }
+    ],
+    "recipes": {
+      "bash": "mafft --auto --thread ${THREADS} ${ALN_IN} > 05_phylo/${GENE}.aln.fasta 2> 10_logs/${GENE}.mafft.log",
+      "python": "with open(PHYLO_DIR / f\"{gene}.aln.fasta\", \"w\", encoding=\"utf-8\") as out_fh:\n    subprocess.run([\"mafft\", \"--auto\", \"--thread\", str(THREADS), str(FASTA_DIR / f\"{gene}.fa\")],\n                   check=True, stdout=out_fh)"
+    },
+    "params": [
+      { "flag": "--auto", "default": "自动", "note": "按序列数量与长度自动选档，通常落在 FFT-NS-2 与 L-INS-i 之间；它是折中而不是最优，重要分析应显式指定档位并记录" },
+      { "flag": "--maxiterate", "default": "0", "note": "迭代精修轮数；要真正进入精修模式必须显式给出（常用 1000 表示迭代到收敛）" },
+      { "flag": "--localpair / --globalpair / --genafpair", "default": "无", "note": "分别是 L-INS-i / G-INS-i / E-INS-i 的核心打分方式；序列之间是否全长同源决定了该用哪一个" },
+      { "flag": "--leavegappyregion", "default": "关闭", "note": "局部精修时保留 gap 区（F-INS-i）；适合部分区域不可比、部分区域可靠的序列集" },
+      { "flag": "--anysymbol", "default": "关闭", "note": "允许非标准字母（如 U、X、*）参与比对；不加时的报错与处理方式随版本不同（以官方文档为准）" },
+      { "flag": "--thread / --ep / --op", "default": "-1 / 默认", "note": "线程数与 gap 罚分；改 gap 罚分等于改变比对本身的定义，除非有明确理由，不要为了让比对「更好看」而调" }
+    ],
+    "pitfalls": [
+      "L-INS-i / G-INS-i 在几千条序列上不是「慢一点」，而是会因内存耗尽被系统杀掉。序列数超过约一千条、比对长度上千列时先用 FFT-NS-2；必须精修时改走「代表序列精修 + 增量合并」的路线。",
+      "--auto 会随数据规模自动降级。序列数变多时它退回 FFT-NS-2，于是同一项目的不同批次用了不同档位却不自知；方法里必须写明实际使用的算法，而不是写「用 MAFFT 默认参数比对」。",
+      "序列 ID 必须唯一且不含空格、冒号、括号、逗号等字符。下游建树工具会把 ID 直接写进 Newick，特殊字符会让树文件解析失败，或在下游脚本里被静默截断成重名序列。",
+      "比对产物里的 all-gap 列与 N/X 等符号在不同工具中含义不一致：有的当缺失、有的当简并碱基、有的直接警告。跨工具比较结果前先统一这些符号的处理方式。",
+      "蛋白比对回译到核酸用于密码子模型时，必须用专门的回译方法。直接把氨基酸比对的 gap 填回核酸会造成移码与假终止子；先比蛋白再回译的收益只在用密码子模型建树时才体现。",
+      "把长度差异极大的序列（例如从基因组提取的全长 16S 与一两百 bp 的扩增子片段）放进同一个比对，会让比对退化成以最短序列为准的局部对齐。这种情况应分组建树，或使用能处理片段的比对参数。"
+    ],
+    "related": [
+      { "id": "phy_trimal", "note": "比对之后的常规步骤（是否修剪需要判断）" },
+      { "id": "phy_iqtree", "note": "主流 ML 建树工具" },
+      { "id": "phy_modeltest", "note": "替换模型选择；与比对长度和质量直接相关" },
+      { "id": "phy_its_phylogeny", "note": "ITS 这类长度高度可变的标记需要专门的比对策略" }
+    ],
+    "docs": [
+      { "label": "第 7 章 比较基因组与泛基因组", "path": "docs/guidebook/07-comparative-pangenome.md" }
+    ]
+  },
+  {
+    "id": "phy_trimal",
+    "name": "比对修剪 (trimAl)",
+    "category": "phylogeny",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["phylogenetics"],
+    "tags": ["比对修剪", "trimal", "gappyout", "automated1", "gblocks", "争议"],
+    "summary": "按 gap 与相似度阈值修剪比对，并评估其取舍",
+    "what": [
+      "这一步在做什么：trimAl 读入比对，按给定规则删掉列（也可以删序列），输出更短的比对。规则有三类：按 gap 比例（-gt、-gappyout）、按相似度或一致性（-st、-cons）、以及作者给出的启发式组合（-automated1）。它还能只输出统计量而不修改数据（例如各列的相似度与 gap 比例），这对判断「该不该修剪」非常有用。",
+      "为什么它是争议点：修剪掉高变、gap 密集的列，能避免把同源关系不确定的位点当作可靠证据塞进似然计算，在很多数据集上表现为支持度提高、拓扑更稳定；但被修剪掉的列同样携带信息，尤其在类群采样不均衡时，过度修剪会让有效位点数骤减，反而放大随机误差，把树推离真值。更稳妥的做法不是「默认修剪」或「默认不修剪」，而是两条路都走：修剪与不修剪各建一棵树，比较拓扑差异与支持度分布；如果两者冲突，重点看冲突分支是否落在高 gap 区，而不是简单挑一棵。",
+      "模式怎么取舍：-gappyout 按 gap 比例自动定阈值，是最常用的保守选项，对长度不齐的 16S / ITS 或含片段的数据特别有效；-automated1 是作者为 ML 建树调试出的启发式组合，接近「不用调参」的默认选择，但修剪强度常常高于 -gappyout，必须看修剪后的长度再决定；-strict / -strictplus 更激进，常用于分歧度高的数据集（属级以上）以去掉不可靠的比对区。反向的情况同样重要：近缘菌株的核心基因组（core SNP）比对几乎没有 gap，修剪意义有限，而 core SNP 比对本身是人为拼接的等长 SNP 列，更不应该修剪。无论用哪个模式，都要报告修剪前后的比对长度与删除比例；修剪后长度掉到原始的 30% 以下时，应当先怀疑参数过激，而不是接受这个结果。"
+    ],
+    "inputs": [
+      { "type": "alignment-fasta", "name": "未修剪的多序列比对", "required": true, "note": "必须是已经比对好的等长序列；把未比对的序列直接喂进来会按 gap 比例乱剪" }
+    ],
+    "outputs": [
+      { "type": "alignment-fasta", "name": "修剪后的比对", "ext": ".trimmed.fasta", "note": "与未修剪版本成对保留，便于比较两种建树结果" },
+      { "type": "log-report", "name": "修剪统计", "ext": ".trimal.log", "note": "含原始列数、保留列数、删除比例与所用模式；这是判断修剪是否过激的依据" }
+    ],
+    "provides": [
+      { "tool": "trimAl", "version": "1.5.x", "access": "cli", "install": "conda", "note": "模式丰富，还支持只统计不修改数据" },
+      { "tool": "GBlocks", "version": "0.91.x", "access": "cli", "install": "conda", "note": "经典保守区选择工具；最后一个正式版本为 0.91b，工具已停止维护，阈值语义与 trimAl 不同、结果通常更保守" },
+      { "tool": "BMGE", "version": "1.12.x", "access": "cli", "install": "conda", "note": "基于相似度矩阵与熵的修剪；可指定替换模型，便于与 ML 流程配套" }
+    ],
+    "feeds": [
+      { "target": "phy_iqtree", "viaType": "alignment-fasta", "note": "用修剪后的比对建 ML 树" },
+      { "target": "phy_raxml", "viaType": "alignment-fasta", "note": "换一套 ML 实现复核拓扑" },
+      { "target": "phy_fasttree", "viaType": "alignment-fasta", "note": "大规模数据时先快速看全貌" }
+    ],
+    "usage": [
+      {
+        "label": "先看统计，再决定要不要修剪",
+        "lang": "bash",
+        "code": "trimal -in aln.fasta -sident > aln.ident.txt   # 各列相似度\ntrimal -in aln.fasta -sgaps  > aln.gaps.txt    # 各列 gap 比例"
+      },
+      {
+        "label": "两个最常用的自动模式",
+        "lang": "bash",
+        "code": "trimal -in aln.fasta -out aln.gappyout.fasta -gappyout\ntrimal -in aln.fasta -out aln.auto1.fasta    -automated1"
+      },
+      {
+        "label": "手工阈值：便于复现与横向比较",
+        "lang": "bash",
+        "code": "trimal -in aln.fasta -out aln.gt50.fasta -gt 0.5    # 删除 gap 比例超过一半的列\ntrimal -in aln.fasta -out aln.st.fasta  -st 0.001   # 按相似度阈值删除"
+      }
+    ],
+    "recipes": {
+      "bash": "trimal -in 05_phylo/${GENE}.aln.fasta -out 05_phylo/${GENE}.trim.fasta -gappyout \\\n  > 10_logs/${GENE}.trimal.log 2>&1",
+      "python": "run([\"trimal\", \"-in\", str(PHYLO_DIR / f\"{gene}.aln.fasta\"),\n     \"-out\", str(PHYLO_DIR / f\"{gene}.trim.fasta\"), \"-gappyout\"],\n    log_name=f\"{gene}.trimal.log\")"
+    },
+    "params": [
+      { "flag": "-gappyout", "default": "关闭", "note": "按 gap 比例自动选阈值，最常用的保守模式；对长度不齐的 rRNA / ITS 序列集最有效" },
+      { "flag": "-automated1", "default": "关闭", "note": "作者为 ML 建树设计的启发式组合；省去调参，但修剪强度常高于 -gappyout，务必检查修剪后的长度" },
+      { "flag": "-gt", "default": "无", "note": "按 gap 比例的显式阈值（1 减去允许带 gap 的序列比例）；手工阈值便于复现与横向比较" },
+      { "flag": "-st", "default": "无", "note": "按相似度阈值删除列；对分歧度高的数据集有效，但语义与 gap 规则不同，不宜混着调" },
+      { "flag": "-cons", "default": "60", "note": "按列一致性的百分比阈值；数值越高保留越少，需要与数据的分歧水平匹配" }
+    ],
+    "pitfalls": [
+      "修剪能提高 bootstrap 支持度，但支持度提高不等于拓扑更正确。修剪掉的列同时也在提供信息，「剪完支持度从 70 变成 95」可能只是位点数减少带来的假象；判断依据应是修剪与不修剪的树在关键分支上是否冲突。",
+      "修剪后必须报告长度变化。删掉一半以上的列意味着有效位点数大幅下降，短内部枝的支持度会变得极不稳定；这种情况下更适合改用更保守的模式，或回到比对本身找问题。",
+      "core SNP 比对不该用 trimAl。这类「比对」是人为拼接的等长 SNP 列，几乎没有 gap，修剪的统计假设不成立；对它做 -gappyout 通常什么也不删，做 -strict 则可能删掉真实信号。",
+      "把未经比对的序列直接送进 trimAl 会得到看似正常的输出。trimAl 不做比对，只会把「未比对」解释成大量 gap 并把相关列剪掉；先确认上游比对真的完成。",
+      "不同修剪参数下得到的树不能直接比较支持度。有效位点数不同，bootstrap 与 SH-aLRT 的数值分布会整体移动；要比较就固定一套参数，或者只比较拓扑是否一致。",
+      "换修剪工具等于换标准。trimAl 的 -automated1、GBlocks 的默认参数、BMGE 的默认熵阈值会给出长度差异明显的比对；跨项目比较时方法里必须写清软件与参数，而不是只写「进行了比对修剪」。"
+    ],
+    "related": [
+      { "id": "phy_mafft", "note": "上游比对；比对的算法档位会直接影响需要修剪的程度" },
+      { "id": "phy_iqtree", "note": "修剪后的主要消费者" },
+      { "id": "phy_support_test", "note": "支持度数值的解释必须结合是否修剪过" },
+      { "id": "phy_tree_compare", "note": "用 RF 距离量化「修剪 vs 不修剪」的拓扑差异" }
+    ],
+    "docs": [
+      { "label": "第 7 章 比较基因组与泛基因组", "path": "docs/guidebook/07-comparative-pangenome.md" }
+    ]
+  },
+  {
+    "id": "phy_iqtree",
+    "name": "最大似然建树 (IQ-TREE)",
+    "category": "phylogeny",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["phylogenetics", "genomics"],
+    "tags": ["最大似然", "iq-tree", "modelfinder", "ufboot", "分区模型", "建树"],
+    "summary": "ML 建树、模型选择与超快 bootstrap 的一体化工具",
+    "what": [
+      "这一步在做什么：IQ-TREE 用最大似然估计拓扑与分支长度，并把通常要分开做的三件事集成在一条命令里——替换模型选择（ModelFinder）、拓扑搜索（NNI / SPR 等启发式搜索）、分支支持度评估（ultrafast bootstrap 与 SH-aLRT）。它支持分区模型与混合模型，是目前微生物系统发育中使用最广的 ML 工具。输入是比对（FASTA / PHYLIP），输出是带分支长度与支持度标注的树，以及一份包含模型选择结果、似然值与运行参数的日志。",
+      "建树前必须做的两个决定。第一是替换模型：用模型选择（IQ-TREE 里通过 -m MFP 调用 ModelFinder）让程序按 BIC 自动选，而不是照搬别的数据集用过的固定模型；结果会写在日志里（含候选模型得分与最终选择），必须核对最终模型是否包含速率异质性（+G/+R）与不变位点（+I）等分量。用错模型不会让程序失败，只会让分支长度与支持度出现系统偏差。第二是位点异质性：细菌不同基因、不同密码子位置的进化速率差异很大。把多个基因首尾拼接后用一个模型处理，会低估真实的速率异质性；更合适的做法是分区（partition）建树，让每个基因（或每组基因）有自己的模型与速率。分区会显著增加参数与运行时间，是否值得取决于基因数与分歧水平，但「多基因串联 = 单分区」这个默认假设必须是有意识做出的选择。",
+      "支持度与可复现性：-B 1000（ultrafast bootstrap，UFBoot2）与 -alrt 1000（SH-aLRT）是常用组合，两者可以同时给出，日志与树文件里会同时记录两种数值。UFBoot 比标准 bootstrap 快两个数量级，但会高估支持度，模型复杂时建议加 -bnni，让 bootstrap 树也做一次 NNI 优化以减轻高估。-T 多线程会因浮点运算顺序不同带来极小的数值差异，配合固定的随机种子才能严格复现。跑完必须回看日志：有没有收敛相关的警告、最终似然值是多少、用了什么模型与分区方案、支持度数值的分布如何。如果几乎所有节点都是最高支持度，通常说明信号极强或类群采样过于近缘，而不是「结果特别可靠」。"
+    ],
+    "inputs": [
+      { "type": "alignment-fasta", "name": "多序列比对", "required": true, "note": "可以是修剪前或修剪后的版本，但必须在方法里说明是哪一个" },
+      { "type": "tree", "name": "起始树或拓扑约束树", "required": false, "note": "指定起始树可减少搜索时间，施加拓扑约束可检验特定假设；它们不改变无根拓扑的推断目标" },
+      { "type": "tsv-table", "name": "模型选择结果或分区方案", "required": false, "note": "把选出的模型或分区定义以文件形式传入，避免手工抄写模型字符串出错" }
+    ],
+    "outputs": [
+      { "type": "tree", "name": "最大似然树", "ext": ".treefile", "note": "含分支长度与支持度标注；它是无根树，展示时的根位置不代表祖先" },
+      { "type": "log-report", "name": "运行日志与模型参数", "ext": ".iqtree", "note": "含模型选择表、分区方案、最终似然值、收敛与警告信息；比树文件更值得逐行读一遍" }
+    ],
+    "provides": [
+      { "tool": "IQ-TREE", "version": "2.3.x", "access": "cli", "install": "conda", "note": "ML 建树；支持分区模型、混合模型与多种支持度度量" },
+      { "tool": "ModelFinder", "version": "2.3.x", "access": "cli", "install": "conda", "note": "IQ-TREE 内置的模型选择模块（随 IQ-TREE 版本发布，不再单独发行）" }
+    ],
+    "feeds": [
+      { "target": "phy_root_calibrate", "viaType": "tree", "note": "ML 树是无根树，讨论分化方向之前必须先定根" },
+      { "target": "phy_tree_compare", "viaType": "tree", "note": "与其他方法或参数的树比较拓扑（RF 距离）" },
+      { "target": "viz_tree_plot", "viaType": "tree", "note": "把树画出来并做注释" }
+    ],
+    "usage": [
+      {
+        "label": "标准用法：模型选择 + UFBoot + SH-aLRT",
+        "lang": "bash",
+        "code": "iqtree2 -s aln.trimmed.fasta -m MFP -B 1000 -alrt 1000 -T 8 --prefix iqtree_run"
+      },
+      {
+        "label": "多基因串联：分区建树",
+        "lang": "bash",
+        "code": "iqtree2 -s concat.fasta -p partition.nex -m MFP -B 1000 -bnni -T 8 --prefix iqtree_part"
+      },
+      {
+        "label": "固定随机种子，保证可复现",
+        "lang": "bash",
+        "code": "iqtree2 -s aln.fasta -m MFP -B 1000 -T 8 -seed 12345 --prefix iqtree_seed"
+      },
+      {
+        "label": "施加拓扑约束，检验特定假设",
+        "lang": "bash",
+        "code": "iqtree2 -s aln.fasta -m MFP -g constraint.tree -B 1000 -T 8 --prefix iqtree_constrained"
+      }
+    ],
+    "recipes": {
+      "bash": "iqtree2 -s 05_phylo/${GENE}.trim.fasta -m MFP -B 1000 -alrt 1000 -bnni \\\n  -T ${THREADS} -seed 12345 --prefix 05_phylo/${GENE}.iqtree",
+      "python": "run([\"iqtree2\", \"-s\", str(PHYLO_DIR / f\"{gene}.trim.fasta\"),\n     \"-m\", \"MFP\", \"-B\", \"1000\", \"-alrt\", \"1000\", \"-bnni\",\n     \"-T\", str(THREADS), \"-seed\", \"12345\",\n     \"--prefix\", str(PHYLO_DIR / f\"{gene}.iqtree\")])"
+    },
+    "params": [
+      { "flag": "-m", "default": "MFP", "note": "让 ModelFinder 按 BIC 选模型；不要跨数据集照搬固定模型。日志里会列出候选模型与最终选择，必须核对" },
+      { "flag": "-B", "default": "1000", "note": "ultrafast bootstrap 重复数；比标准 bootstrap 快两个数量级，但会高估支持度，可用 -bnni 缓解" },
+      { "flag": "-alrt", "default": "1000", "note": "SH-aLRT 重复数；它是近似似然比检验，数值通常高于 UFBoot，两者不可互相换算" },
+      { "flag": "-bb", "default": "关闭", "note": "标准（非超快）bootstrap；更保守但慢得多，发表里的关键拓扑值得用它复核" },
+      { "flag": "-p / -q", "default": "无", "note": "-p 用分区模型（各分区独立估计参数与速率），-q 用混合模型；把多基因串联数据当单一分区会低估速率异质性" },
+      { "flag": "-T / -seed", "default": "1 / 自动", "note": "线程数会影响浮点运算顺序，带来极小的数值差异；要严格复现必须同时固定 -T 与 -seed" },
+      { "flag": "--seqtype", "default": "自动检测", "note": "自动检测在密码子比对或含大量简并碱基时可能判错；显式指定序列类型更安全（选项名以官方文档为准）" }
+    ],
+    "pitfalls": [
+      "不做模型选择、直接用默认或别人用过的模型，是本领域最常见的静默错误：程序正常结束、树看起来正常，但分支长度、支持度与长枝吸引的风险都已经改变。至少要用 -m MFP 跑一次并把结果记录下来。",
+      "UFBoot 的支持度普遍高于标准 bootstrap。把 -B 1000 的结果写成「bootstrap = 98」是不准确的表述；报告时必须写清用的是哪一种度量、重复多少次。",
+      "多基因串联不等于一个分区。细菌不同基因的进化速率差异很大，单分区模型会低估异质性、压缩分支长度；基因数多时应评估分区模型，同时注意分区过多会显著增加参数与运行时间。",
+      "输出的是无根树。树文件里那个「根」只是书写起点；据此讨论「谁更古老」是无效的，必须先定根。",
+      "多线程与随机种子会影响可复现性。同一份数据在 -T 8 与 -T 1 下可能得到略有差异的似然值与支持度；方法部分必须记录线程数、随机种子与软件版本。",
+      "序列极度相似（同种不同菌株的核心基因组）时，几乎每个节点都会是最高支持度。这不是「结果特别可靠」，而是位点极多、差异位点极少带来的必然结果；真正需要报告的是分歧位点数与树的解析度（有多少内部枝长接近 0）。"
+    ],
+    "related": [
+      { "id": "phy_mafft", "note": "上游比对" },
+      { "id": "phy_trimal", "note": "比对修剪；修剪与否会改变支持度数值" },
+      { "id": "phy_modeltest", "note": "把模型选择单独做一遍时使用" },
+      { "id": "phy_raxml", "note": "另一套 ML 实现，可用于拓扑复核" },
+      { "id": "phy_fasttree", "note": "大规模数据的快速替代方案" },
+      { "id": "phy_support_test", "note": "支持度数值的含义与报告方式" },
+      { "id": "phy_root_calibrate", "note": "定根与校准" }
+    ],
+    "docs": [
+      { "label": "第 7 章 比较基因组与泛基因组", "path": "docs/guidebook/07-comparative-pangenome.md" }
+    ]
+  },
+  {
+    "id": "phy_fasttree",
+    "name": "快速建树 (FastTree)",
+    "category": "phylogeny",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["phylogenetics", "metagenomics"],
+    "tags": ["快速建树", "fasttree", "近似最大似然", "cat", "局部支持值", "大规模"],
+    "summary": "近似最大似然的大规模快速建树，支持值是局部支持",
+    "what": [
+      "这一步在做什么：FastTree 用启发式的最近邻互换（NNI）与子树修剪重接（SPR）搜索拓扑，并用 CAT 近似（把位点按速率分组）代替连续的 gamma 分布，从而把单棵树的构建时间压到分钟级。它的定位很清楚：序列数在几千到几万条、或需要快速看一遍拓扑时，它是最现实的选择；但它不是 ML 的替代品——搜索是启发式的、模型是近似的，得到的树不保证是似然最优。",
+      "最容易被误读的一点是它的支持值。FastTree 默认输出的不是 bootstrap 比例，而是「局部支持值」（local support value，本质上是基于 SH 检验的近似），数值普遍偏高：0.80 的局部支持值比 0.80 的 bootstrap 弱得多。要得到 bootstrap 类数值必须显式加 -boot（局部 bootstrap，仍然不是标准的位点重采样 bootstrap）。因此把默认支持值写成「bootstrap = 95%」是明确的方法学错误。另外 -gtr（核酸）与 -lg（蛋白）分别把默认的 JC+CAT / JTT+CAT 换成更接近实际的模型；-gamma 会在树建好之后用离散 gamma 重新计算似然与分支长度，使不同运行之间的似然值可比。",
+      "什么时候不该用：当结论依赖于近缘类群之间短内部枝的位置时（菌株水平分型、近缘种归属），CAT 近似与启发式搜索带来的误差可能正好落在这些短枝上。合理的工作方式是「用 FastTree 快速得到全貌和初筛（发现明显错误的序列、判断是否需要重新比对），用 ML 工具确认要下结论的那部分」。对上千条序列的全貌树，至少要检查是否存在异常长枝——那通常指向错误序列或比对问题，而不是真实的快速进化。"
+    ],
+    "inputs": [
+      { "type": "alignment-fasta", "name": "多序列比对", "required": true, "note": "FastTree 不做比对；必须是已经比对好的等长序列，且需显式指明是核酸还是蛋白" }
+    ],
+    "outputs": [
+      { "type": "tree", "name": "系统发育树", "ext": ".tree", "note": "Newick；默认内部节点上是局部支持值而不是 bootstrap 比例" },
+      { "type": "log-report", "name": "运行日志与似然值", "ext": ".log", "note": "含比对长度、所用模型、最终似然与警告；加 -gamma 之后报告的似然值才可跨运行比较" }
+    ],
+    "provides": [
+      { "tool": "FastTree", "version": "2.1.x", "access": "cli", "install": "conda", "note": "C 实现，内存占用小；启用 OpenMP 编译的版本可多线程加速" }
+    ],
+    "feeds": [
+      { "target": "phy_support_test", "viaType": "tree", "note": "默认支持值是局部支持；需要 bootstrap 类度量时进入支持度检验模块" },
+      { "target": "phy_root_calibrate", "viaType": "tree", "note": "快速树同样是无根树，谈方向前先定根" },
+      { "target": "viz_tree_plot", "viaType": "tree", "note": "把大规模树画出来做初筛" }
+    ],
+    "usage": [
+      {
+        "label": "核酸数据（必须显式指定）",
+        "lang": "bash",
+        "code": "FastTree -gtr -nt -gamma aln.fasta > tree.nwk 2> tree.log"
+      },
+      {
+        "label": "蛋白数据",
+        "lang": "bash",
+        "code": "FastTree -lg -gamma aln.faa > tree.nwk 2> tree.log"
+      },
+      {
+        "label": "只要拓扑、不要支持值（最快）",
+        "lang": "bash",
+        "code": "FastTree -nt -nosupport aln.fasta > tree.nwk"
+      },
+      {
+        "label": "局部 bootstrap（仍然不是标准位点重采样 bootstrap）",
+        "lang": "bash",
+        "code": "FastTree -nt -boot 1000 aln.fasta > tree.nwk 2> tree.log"
+      }
+    ],
+    "recipes": {
+      "bash": "FastTree -gtr -nt -gamma 05_phylo/${GENE}.trim.fasta \\\n  > 05_phylo/${GENE}.fasttree.nwk 2> 10_logs/${GENE}.fasttree.log",
+      "python": "with open(PHYLO_DIR / f\"{gene}.fasttree.nwk\", \"w\", encoding=\"utf-8\") as out_fh, \\\n     open(LOG_DIR / f\"{gene}.fasttree.log\", \"w\", encoding=\"utf-8\") as err_fh:\n    subprocess.run([\"FastTree\", \"-gtr\", \"-nt\", \"-gamma\",\n                    str(PHYLO_DIR / f\"{gene}.trim.fasta\")],\n                   check=True, stdout=out_fh, stderr=err_fh)"
+    },
+    "params": [
+      { "flag": "-nt / -gtr", "default": "-nt（JC+CAT）", "note": "核酸数据必须显式指定；-nt 用 Jukes-Cantor，-gtr 用 GTR。不指定时按蛋白处理，结果完全错误" },
+      { "flag": "-lg / -wag / -dayhoff", "default": "JTT+CAT", "note": "蛋白替换模型；默认 JTT 对细菌蛋白常常不是最佳，-lg 通常更合适" },
+      { "flag": "-gamma", "default": "关闭", "note": "树建好后用离散 gamma 重算似然与分支长度；开启后不同运行的似然值才可比较，也便于与 ML 结果对照" },
+      { "flag": "-boot", "default": "关闭", "note": "额外的局部 bootstrap 重采样次数；不加时输出的是局部支持值而不是 bootstrap 比例，两者含义不同" },
+      { "flag": "-nosupport / -fastest", "default": "关闭", "note": "不计算支持值；-fastest 同时降低搜索强度，适合上万条序列的初筛，不适合最终结论" },
+      { "flag": "-spr / -mlacc / -slownni", "default": "默认", "note": "搜索强度相关参数；加大可略微改善拓扑，代价是耗时成倍增加（具体默认值以官方文档为准）" }
+    ],
+    "pitfalls": [
+      "把默认的局部支持值当成 bootstrap。不加 -boot 时输出的是 local support，数值系统性偏高；在论文里写成「bootstrap support = 0.95」是方法学错误。要 bootstrap 类数值就加 -boot，并说明它是局部 bootstrap。",
+      "CAT 近似不是 +G。位点速率被分到离散类别，比连续的 gamma 分布粗糙；在短内部枝上这种近似可能改变拓扑或分支长度，近缘类群的结论必须用 ML 工具复核。",
+      "输入必须是比对好的序列。FastTree 不做比对，把未比对的 FASTA 直接喂进去会得到毫无意义的树（长度不同的序列被当作含 gap），而且不会有明显报错。",
+      "核酸数据不加 -nt 或 -gtr 会被当作蛋白序列处理，得到看似正常但完全错误的树。这是最常见的 FastTree 使用错误，注意别让脚本里的默认分支掩盖它。",
+      "日志里有大量有用信息（比对长度、所用模型、最终似然、gap 相关警告），跑完务必读一遍；只有加了 -gamma，报告出来的似然值才可以跨运行比较。",
+      "「快」不等于「可以不做检查」。对上千条序列的全貌树，至少应检查是否存在异常长枝（往往指向错误序列或比对问题），再做后续分析。"
+    ],
+    "related": [
+      { "id": "phy_iqtree", "note": "需要严格结论时用它复核关键分支" },
+      { "id": "phy_raxml", "note": "另一套 ML 实现，支持度度量更丰富" },
+      { "id": "phy_support_test", "note": "局部支持值与 bootstrap 的区别在这里展开" },
+      { "id": "phy_mafft", "note": "上游比对；FastTree 对错误比对非常敏感" }
+    ],
+    "docs": [
+      { "label": "第 7 章 比较基因组与泛基因组", "path": "docs/guidebook/07-comparative-pangenome.md" }
+    ]
+  },
+  {
+    "id": "phy_raxml",
+    "name": "最大似然建树 (RAxML-NG)",
+    "category": "phylogeny",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["phylogenetics", "genomics"],
+    "tags": ["最大似然", "raxml-ng", "bootstrap", "tbe", "断点续跑", "建树"],
+    "summary": "ML 搜索与含 TBE 的支持度评估，支持断点续跑",
+    "what": [
+      "这一步在做什么：RAxML-NG 是经典 RAxML 的重写版本，同样是最大似然建树工具，与 IQ-TREE 的能力高度重叠：都做 ML 搜索、都支持分区模型、都能计算 bootstrap。它的特点是把搜索与支持度评估拆得更清楚：可以只做 ML 搜索、只做 bootstrap，或一次做完；支持度除了传统的 FBP（Felsenstein bootstrap proportion）还支持 TBE（transfer bootstrap expectation），后者在类群采样不均衡、内部枝极短的大树上更稳健，不容易因为单个类群的移动就把支持度打到 0。",
+      "使用习惯上的两点差异。第一，RAxML-NG 要求显式给出模型或分区文件，它不会替你选模型；配套的输入检查模式会先验证比对与命令是否合法（序列名重复、非法字符、模型是否可用、内存需求），这是非常值得养成的习惯——错过这一步，问题往往会在几小时后的运行中途才暴露。第二，它的 checkpointing 与断点续跑做得很好：长任务中断后，重新执行同一条命令即可从检查点继续，不必从头开始；只有输入或参数改变时才需要显式从头运行。对分区多、序列多的大树来说，这能省下大量机时。",
+      "与 IQ-TREE 怎么选：两者在多数数据集上给出一致的拓扑。若已用 ModelFinder 选好模型，可以把它交给 RAxML-NG 独立复算一遍，作为「换工具是否改变结论」的稳健性检查——这是审稿人最容易提出的问题之一。若关心类群采样不均衡（例如内群很密、外群只有两三条），RAxML-NG 的 TBE 比 FBP 更值得报告。注意两者的似然值不能直接比较：模型参数化、优化顺序与近似处理不同，似然值存在系统差异；要比较就比拓扑。"
+    ],
+    "inputs": [
+      { "type": "alignment-fasta", "name": "多序列比对", "required": true, "note": "建议先做输入检查：序列名重复、非法字符与内存需求都会在这一步暴露" },
+      { "type": "tsv-table", "name": "模型或分区定义", "required": false, "note": "RAxML-NG 不替你选模型；把模型选择结论或分区方案以文件形式传入，避免手工抄错" }
+    ],
+    "outputs": [
+      { "type": "tree", "name": "ML 最优树（含支持度）", "ext": ".raxml.support", "note": "内部节点上写 FBP 或 TBE 支持度；未加支持度的最优树是另一个文件（文件名以官方文档为准）" },
+      { "type": "log-report", "name": "运行日志与最优模型", "ext": ".raxml.log", "note": "含最终似然、模型参数与 bootstrap 收敛情况（bootstopping 的结果）" }
+    ],
+    "provides": [
+      { "tool": "RAxML-NG", "version": "1.2.x", "access": "cli", "install": "conda", "note": "重写版本；检查点机制完善，支持 FBP/TBE 等支持度度量" },
+      { "tool": "RAxML", "version": "8.2.x", "access": "cli", "install": "conda", "note": "经典 8.x 版本，已被作者标注为旧版；大量已发表流程仍在使用，命令与 NG 不兼容" }
+    ],
+    "feeds": [
+      { "target": "phy_support_test", "viaType": "tree", "note": "只做了 ML 搜索时，支持度检验是下一步" },
+      { "target": "phy_root_calibrate", "viaType": "tree", "note": "ML 树是无根树，先定根再解读方向" },
+      { "target": "phy_tree_compare", "viaType": "tree", "note": "与 IQ-TREE 或不同参数的树比较拓扑" },
+      { "target": "viz_tree_plot", "viaType": "tree", "note": "树的可视化与注释" }
+    ],
+    "usage": [
+      {
+        "label": "先检查输入，再开跑（强烈建议）",
+        "lang": "bash",
+        "code": "raxml-ng --parse --msa aln.fasta --model GTR+G --prefix check"
+      },
+      {
+        "label": "ML 搜索 + bootstrap（FBP 与 TBE 都输出）",
+        "lang": "bash",
+        "code": "raxml-ng --all --msa aln.fasta --model GTR+G \\\n  --bs-trees 1000 --bs-metric fbp,tbe \\\n  --threads 8 --prefix raxml_run"
+      },
+      {
+        "label": "让程序按收敛判据自动决定重复数",
+        "lang": "bash",
+        "code": "raxml-ng --all --msa aln.fasta --model GTR+G \\\n  --bs-trees autoMRE{1000} --threads 8 --prefix raxml_run"
+      },
+      {
+        "label": "中断后继续：重新执行同一条命令即可",
+        "lang": "bash",
+        "code": "# checkpointing 默认开启；不要随手加 --redo（那会从头开始）\nraxml-ng --all --msa aln.fasta --model GTR+G --bs-trees 1000 --threads 8 --prefix raxml_run"
+      }
+    ],
+    "recipes": {
+      "bash": "raxml-ng --parse --msa 05_phylo/${GENE}.trim.fasta --model ${MODEL} --prefix 05_phylo/${GENE}.check\nraxml-ng --all --msa 05_phylo/${GENE}.trim.fasta --model ${MODEL} \\\n  --bs-trees autoMRE{1000} --threads ${THREADS} --prefix 05_phylo/${GENE}.raxml",
+      "python": "run([\"raxml-ng\", \"--parse\", \"--msa\", str(PHYLO_DIR / f\"{gene}.trim.fasta\"),\n     \"--model\", model, \"--prefix\", str(PHYLO_DIR / f\"{gene}.check\")])\nrun([\"raxml-ng\", \"--all\", \"--msa\", str(PHYLO_DIR / f\"{gene}.trim.fasta\"),\n     \"--model\", model, \"--bs-trees\", \"autoMRE{1000}\",\n     \"--threads\", str(THREADS), \"--prefix\", str(PHYLO_DIR / f\"{gene}.raxml\")])"
+    },
+    "params": [
+      { "flag": "--model", "default": "无（必填）", "note": "RAxML-NG 不做模型选择，必须显式给出（如 GTR+G、LG+G）；用错模型不会报错，只会让结果偏差" },
+      { "flag": "--bs-metric", "default": "fbp", "note": "支持度度量；类群采样不均衡或内部枝极短时 TBE 比 FBP 更稳健，可以同时输出两者" },
+      { "flag": "--bs-trees", "default": "100", "note": "bootstrap 树数量；可用 autoMRE{1000} 让程序按收敛判据自动停止，比固定重复数更省机时" },
+      { "flag": "--parse", "default": "—", "note": "只做输入检查不建树；序列名重复、非法字符、模型不可用、内存需求都会在这里暴露" },
+      { "flag": "--threads", "default": "2", "note": "线程数；并行效率依赖搜索阶段，纯似然优化阶段的并行度有限" },
+      { "flag": "--all / --search / --bootstrap", "default": "无", "note": "分别对应「ML 搜索 + bootstrap」/ 只做搜索 / 只做 bootstrap；只做搜索后可以再补支持度检验" }
+    ],
+    "pitfalls": [
+      "RAxML-NG 的模型必须显式给出，而且模型字符串的写法与旧版 RAxML 8.x 不兼容。把旧流程的命令直接套到 NG 上，会失败或静默使用另一个模型。",
+      "第一次跑之前先做输入检查。序列名重复、含空格或特殊字符、比对里有非法碱基都会在这里报出来；跳过它，问题常常在运行数小时后才暴露，白烧机时。",
+      "支持度报告必须写明度量（FBP 还是 TBE）与重复数。TBE 数值通常高于 FBP，两者不能混在同一棵树的不同分支上解读。",
+      "bootstrap 收敛不等于拓扑正确。自动收敛判据只说明「再增加重复数也不会改变支持度估计」，它无法发现长枝吸引、模型错误或比对错误造成的系统性偏差。",
+      "中断后不要习惯性从头重跑。默认开启的 checkpointing 允许用同一条命令续跑；只有输入或参数改变时才需要从头开始。",
+      "RAxML-NG 与 IQ-TREE 的似然值不能直接比较。两者的模型参数化、优化顺序与近似处理不同，似然值存在系统差异；要比较就比拓扑（例如 RF 距离）。"
+    ],
+    "related": [
+      { "id": "phy_iqtree", "note": "功能重叠的另一套 ML 实现；互相复核拓扑是最省事的稳健性检查" },
+      { "id": "phy_modeltest", "note": "RAxML-NG 不选模型，模型来源通常在这里" },
+      { "id": "phy_support_test", "note": "FBP、TBE 与 SH-aLRT 的差异" },
+      { "id": "phy_tree_compare", "note": "与其他方法的结果比较拓扑" },
+      { "id": "phy_trimal", "note": "上游比对修剪" }
+    ],
+    "docs": [
+      { "label": "第 7 章 比较基因组与泛基因组", "path": "docs/guidebook/07-comparative-pangenome.md" }
+    ]
+  },
+  {
+    "id": "phy_modeltest",
+    "name": "替换模型选择 (ModelFinder)",
+    "category": "phylogeny",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["phylogenetics"],
+    "tags": ["替换模型", "modelfinder", "modeltest-ng", "bic", "aic", "模型选择"],
+    "summary": "选替换模型：候选集、信息准则与最终选择依据",
+    "what": [
+      "这一步在做什么：替换模型描述「序列沿树演化时碱基/氨基酸如何替换」，它决定分支长度与似然值的尺度，也影响拓扑搜索找到的树。ModelFinder（IQ-TREE 内置）与 ModelTest-NG 会在给定比对与候选模型集合上逐一计算似然，按信息准则（BIC/AIC）排序并给出推荐模型。候选模型通常由「替换速率矩阵（JC、K2P、HKY、GTR、JTT、LG、WAG…）× 速率异质性（+G 离散 gamma、+I 不变位点、+R 自由速率、+I+G）× 碱基频率（+F）」组合而成。",
+      "为什么必须做：用错模型不会让程序失败，但会系统性地影响结果。模型过于简单（例如核酸只用 JC、蛋白只用默认 JTT）会低估多处替换与速率异质性，导致分支长度被压缩、长枝吸引更容易发生、支持度被高估或低估；模型过于复杂（参数远多于数据能支撑的）会过拟合，似然值变高但拓扑反而更不稳定。BIC 比 AIC 更倾向简单模型，在位点数少、类群多的数据集上通常更稳妥；两者结论不一致时，选更简单的那个一般更安全。",
+      "选择的边界条件：模型选择针对的是「当前这份比对与这批类群」，换类群、换基因、或改变比对的修剪参数，最优模型都可能变化，所以不能跨数据集照搬。而且「最优模型」只是在候选集合里的最优：如果候选集合里缺少合适的分量（例如该用 +R 而不是 +G，或需要密码子模型、混合模型），再好的选择也只是近似。最后，结果必须落纸：模型名、信息准则、候选模型数、软件版本与比对长度，这些都是复现的必要信息；把选出的模型以文件形式传给建树工具，比手工抄字符串可靠得多。"
+    ],
+    "inputs": [
+      { "type": "alignment-fasta", "name": "多序列比对", "required": true, "note": "必须是最终要用的那份比对（同一修剪参数）；换比对就等于换模型选择的前提" },
+      { "type": "tsv-table", "name": "分区定义或候选模型列表", "required": false, "note": "多基因数据应按分区分别选模型；把分区方案以文件传入，避免手工维护" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "模型比较与推荐模型", "ext": ".model.tsv", "note": "含候选模型、似然、参数个数、BIC/AIC 与最终选择；由本模块从工具输出整理而来" },
+      { "type": "log-report", "name": "模型选择日志", "ext": ".modelfinder.log", "note": "工具的完整输出；含分区逐区结果与警告" }
+    ],
+    "provides": [
+      { "tool": "ModelFinder", "version": "2.3.x", "access": "cli", "install": "conda", "note": "IQ-TREE 内置的模型选择模块；随 IQ-TREE 版本发布，不再单独发行" },
+      { "tool": "ModelTest-NG", "version": "0.1.x", "access": "cli", "install": "conda", "note": "独立实现，与 RAxML-NG 配套；候选集与准则的默认设置与 ModelFinder 略有不同" },
+      { "tool": "IQ-TREE", "version": "2.3.x", "access": "cli", "install": "conda", "note": "调用 ModelFinder 的宿主程序，也是把选出的模型直接用于建树的最短路径" }
+    ],
+    "feeds": [
+      { "target": "phy_iqtree", "viaType": "tsv-table", "note": "把选出的模型与分区结果直接用于建树，避免手工抄写模型字符串" },
+      { "target": "phy_raxml", "viaType": "tsv-table", "note": "RAxML-NG 不自己选模型，模型必须由外部提供" }
+    ],
+    "usage": [
+      {
+        "label": "只做模型选择，不建树",
+        "lang": "bash",
+        "code": "iqtree2 -s aln.fasta -m MF -T 8 --prefix modelfinder\n# 日志里的 ModelFinder 一节给出各候选模型的得分与最终选择"
+      },
+      {
+        "label": "分区数据：每个分区分别选模型",
+        "lang": "bash",
+        "code": "iqtree2 -s concat.fasta -p partition.nex -m MF -T 8 --prefix mf_partition"
+      },
+      {
+        "label": "换一套实现交叉核对",
+        "lang": "bash",
+        "code": "modeltest-ng -i aln.fasta -d nt -p 8 -o modeltest_out\n# 具体选项以官方文档为准；两套实现的候选集与默认准则不同，结论一致时更可信"
+      }
+    ],
+    "recipes": {
+      "bash": "iqtree2 -s 05_phylo/${GENE}.trim.fasta -m MF -T ${THREADS} \\\n  --prefix 05_phylo/${GENE}.mf > 10_logs/${GENE}.modelfinder.log 2>&1",
+      "python": "run([\"iqtree2\", \"-s\", str(PHYLO_DIR / f\"{gene}.trim.fasta\"),\n     \"-m\", \"MF\", \"-T\", str(THREADS),\n     \"--prefix\", str(PHYLO_DIR / f\"{gene}.mf\")],\n    log_name=f\"{gene}.modelfinder.log\")"
+    },
+    "params": [
+      { "flag": "-m MF / -m MFP", "default": "MF", "note": "MF 只做模型选择，MFP 是模型选择加建树；想把模型先记下来、以后再建树时用 MF" },
+      { "flag": "-mset", "default": "自动", "note": "限定候选模型集合（如只考虑 GTR 家族或某个蛋白模型家族）；限定集合会改变「最优」的含义，报告里要写清" },
+      { "flag": "-criterion", "default": "BIC", "note": "信息准则；BIC 更倾向简单模型，AIC 更倾向复杂模型。位点多、类群少时两者往往给出同样的结论" },
+      { "flag": "-mtree", "default": "关闭", "note": "更彻底（也更慢）的搜索：同时探索模型与树空间；只在候选模型排名接近时才值得开启（以官方文档为准）" },
+      { "flag": "-p / -q", "default": "无", "note": "分区模型选择：每个分区独立选模型；分区过多会让参数剧增，需要与数据量权衡" },
+      { "flag": "-T", "default": "1", "note": "线程数；模型选择要遍历大量候选模型，几乎总是值得并行" }
+    ],
+    "pitfalls": [
+      "不选模型、直接用默认或别人用过的模型，是本领域最常见的静默错误：程序正常结束、树看起来也正常，但分支长度、支持度与长枝吸引的风险都已经改变。至少跑一次模型选择并记录结果。",
+      "模型不能跨数据集照搬。换类群、换基因、改比对修剪参数都会改变最优模型；同一个项目内部也要按基因或分区分别做。",
+      "不要把 BIC 得分差很小的两个模型当成「结论不同」。候选模型排名接近时，选更简单的那个通常更稳；真正的判断依据是两种模型下的树是否在关键分支上冲突。",
+      "核酸与蛋白的模型集合完全不同。把蛋白模型名用在核酸比对上会直接报错，反之则可能被静默接受为同名模型——务必确认序列类型设置。",
+      "分区数据只做一个全局模型等于放弃分区的意义；但分区也不能无限细分，每个分区都需要足够的位点支撑其参数。",
+      "结果必须记录软件与版本。ModelFinder 与 ModelTest-NG 的候选集、默认准则与搜索策略都在演进，同一个比对在不同版本下可能给出不同的推荐模型。"
+    ],
+    "related": [
+      { "id": "phy_iqtree", "note": "内置 ModelFinder，也是模型的主要消费者" },
+      { "id": "phy_raxml", "note": "不自己选模型，需要外部提供模型或分区文件" },
+      { "id": "phy_mafft", "note": "上游比对；比对质量决定模型选择是否有意义" },
+      { "id": "phy_trimal", "note": "修剪会改变位点数，从而改变模型选择的结论" }
+    ],
+    "docs": [
+      { "label": "第 7 章 比较基因组与泛基因组", "path": "docs/guidebook/07-comparative-pangenome.md" }
+    ]
+  },
+  {
+    "id": "phy_root_calibrate",
+    "name": "定根与外群设置",
+    "category": "phylogeny",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["phylogenetics"],
+    "tags": ["定根", "外群", "midpoint", "分子钟", "校准", "祖先状态"],
+    "summary": "用外群或模型方法定根，并说明校准的适用边界",
+    "what": [
+      "这一步在做什么：ML 与距离法建出来的树都是无根树——Newick 文件里确实有一个「根」的位置，但那只是文件开始书写的地方，不代表生物学上的共同祖先。定根是在树上额外声明一个方向性假设（谁从谁分化出来），所有关于「祖先状态」「谁更古老」「分化顺序」的陈述都依赖它。因此定根不是一个画图设置，而是一个需要理由的分析步骤，必须说明用了哪个外群或哪种方法。",
+      "三类定根方法各有前提。外群定根最常用也最可靠：选一个（或几个）确定比内群更早分化的类群，把根放在内群与外群的连接处。前提很严格——外群必须真的位于内群之外，并且不能与内群发生过基因流、重组或水平基因转移；对细菌来说，LGT 会让外群序列嵌进内群内部，这时外群定根会把根放在错误的位置，稳妥做法是同时用几个候选外群并检查定根位置是否稳定。中点定根把根放在树上相隔最远的两个类群的中点，假设两端进化速率相同；它在速率异质（某些谱系加速或减速进化）时会系统性放错位置，但不需要外群，适合作为快速对照——如果中点定根与外群定根给出完全不同的位置，说明速率异质性很严重，值得进一步查。基于模型或分子钟的定根（最小祖先偏差、速率平滑性假设等）适合没有合适外群的场合，它们同样是假设驱动的，结果必须与替代方法对照。",
+      "校准与定根是两件事：定根只确定拓扑方向，校准是给树赋予绝对时间尺度，需要外部证据（化石、已知年代的序列、采样日期）。细菌几乎没有可用的化石校准点，古菌/细菌的分化时间只能依赖间接证据（如蓝细菌化石、内共生事件），不确定性极大。真正可行的绝对时间分析通常出现在有采样日期的病毒序列或近期传播链上，这也是为这类数据设计的分子钟工具的主场。如果数据不支持校准，正确的做法是报告相对时间与分支长度，并明确说明没有做绝对时间推断——而不是给一个看起来精确的年代数字。"
+    ],
+    "inputs": [
+      { "type": "tree", "name": "未定根的系统发育树", "required": true, "note": "来自 ML 或快速建树的结果；定根不改变无根拓扑，只给出方向" },
+      { "type": "tsv-table", "name": "外群列表与校准信息", "required": false, "note": "外群的选择理由、采样日期或校准点；没有它就只能靠分类学知识现场判断" }
+    ],
+    "outputs": [
+      { "type": "tree", "name": "定根后的树", "ext": ".rooted.treefile", "note": "根的位置有明确来源；方法里要写明用了哪个外群或哪种定根方法" },
+      { "type": "log-report", "name": "定根与校准记录", "ext": ".rooting.log", "note": "含外群选择、定根方法，以及不同方法之间是否一致" }
+    ],
+    "provides": [
+      { "tool": "ETE 3", "version": "3.1.x", "access": "python-api", "install": "pip", "note": "set_outgroup() 做外群定根，也便于批量处理树文件" },
+      { "tool": "DendroPy", "version": "5.0.x", "access": "python-api", "install": "pip", "note": "树对象读写、外群定根与拓扑操作" },
+      { "tool": "TreeTime", "version": "0.11.x", "access": "python-api", "install": "pip", "note": "分子钟定根与时间树；需要采样日期或已知速率，否则只是另一种定根启发式" },
+      { "tool": "ape", "version": "5.8.x", "access": "r-api", "install": "cran", "note": "R 侧的树操作与定根；具体参数用法以官方文档为准" }
+    ],
+    "feeds": [
+      { "target": "viz_tree_plot", "viaType": "tree", "note": "把定根后的树画出来；有根树才能表达方向性结论" },
+      { "target": "phy_tree_compare", "viaType": "tree", "note": "比较不同定根方法给出的位置是否一致" }
+    ],
+    "usage": [
+      {
+        "label": "外群定根（Python / ETE 3）",
+        "lang": "python",
+        "code": "from ete3 import Tree\n\nt = Tree(\"unrooted.treefile\")\noutgroup = [leaf.name for leaf in t.get_leaves() if leaf.name.startswith(\"Outgroup_\")]\nt.set_outgroup(t.get_common_ancestor(outgroup))\nt.write(outfile=\"rooted.treefile\")"
+      },
+      {
+        "label": "建树时直接指定外群",
+        "lang": "bash",
+        "code": "iqtree2 -s aln.trimmed.fasta -m MFP -o Outgroup_sp1,Outgroup_sp2 \\\n  -B 1000 -T 8 --prefix iqtree_rooted"
+      },
+      {
+        "label": "有采样日期时才做时间树",
+        "lang": "bash",
+        "code": "# 没有年代信息时，分子钟定根只是另一种启发式，不构成独立证据\ntreetime --aln aln.fasta --tree unrooted.treefile --dates dates.csv --outdir treetime_out"
+      }
+    ],
+    "recipes": {
+      "python": "from ete3 import Tree\n\nt = Tree(str(PHYLO_DIR / f\"{gene}.iqtree.treefile\"))\noutgroup_leaves = [l.name for l in t.get_leaves() if l.name in outgroups]\nt.set_outgroup(t.get_common_ancestor(outgroup_leaves))\nt.write(outfile=str(PHYLO_DIR / f\"{gene}.rooted.treefile\"))"
+    },
+    "params": [
+      { "flag": "ETE 3 set_outgroup", "default": "—", "note": "把外群作为整体设为根；多个外群要先取它们的最近共同祖先，逐条指定会得到错误结果" },
+      { "flag": "IQ-TREE -o", "default": "无", "note": "指定外群用于输出定根树；它不影响无根拓扑的搜索，只决定输出树的方向" },
+      { "flag": "TreeTime --clock-rate / --covariation", "default": "自动估计", "note": "分子钟速率与速率变异；没有采样日期时时间树的意义有限，不要把它当成独立的定根证据" },
+      { "flag": "外群数量", "default": "建议 ≥ 2", "note": "单个外群一旦定错位置，整棵树的解读都会错；用多个外群并检查定根位置是否稳定" },
+      { "flag": "中点定根", "default": "仅作对照", "note": "假设两端速率相同的启发式；与外群定根结果不一致时，应优先怀疑速率异质性，而不是直接采信任一个" }
+    ],
+    "pitfalls": [
+      "未定根的树不能用来谈「谁更古老」。这是系统发育里最常见的越界解读：ML 树的分支长度与拓扑都是无根的，树文件里那个根只是书写起点。",
+      "外群不是随便挑一个远缘物种。外群必须真的位于内群之外，且没有与内群发生水平基因转移或重组；细菌里「远缘」和「不在内群里」是两件事，建议用多个外群并检查定根位置。",
+      "定根不改变无根拓扑。建树工具的定根选项与树操作库的 set_outgroup 都只改变树的呈现方向；如果结论依赖根的位置，必须说明根是怎么来的。",
+      "中点定根在速率异质时会被系统性带偏。某些谱系加速进化（例如寄生、共生导致的基因组缩减与速率变化）会把中点推向错误的位置；把它当成「没有假设的默认做法」是误解。",
+      "细菌没有可用的化石校准点。「细菌分化于 X 亿年前」这类结论通常来自极少的间接证据与很强的假设，不确定性远大于图上误差棒给人的印象；没有独立年代证据时，应报告相对时间而不是绝对年代。",
+      "如果定根后还要做祖先状态重建，必须意识到每个节点的状态概率都依赖根的位置与替换模型；换一种定根方法重做一次，看结论是否稳健，再决定报不报。"
+    ],
+    "related": [
+      { "id": "phy_iqtree", "note": "ML 建树；输出的是无根树" },
+      { "id": "phy_raxml", "note": "同样输出无根树，定根是下游的必要步骤" },
+      { "id": "phy_tree_compare", "note": "比较不同定根方法的差异" },
+      { "id": "viz_tree_plot", "note": "有根树的展示与注释" }
+    ],
+    "docs": [
+      { "label": "第 7 章 比较基因组与泛基因组", "path": "docs/guidebook/07-comparative-pangenome.md" }
+    ]
+  },
+  {
+    "id": "phy_support_test",
+    "name": "分支支持度检验 (bootstrap / SH-aLRT / aLRT)",
+    "category": "phylogeny",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["phylogenetics"],
+    "tags": ["支持度", "bootstrap", "sh-alrt", "ufboot", "长枝吸引", "系统误差"],
+    "summary": "理解并正确报告 bootstrap、SH-aLRT 与 aLRT 支持度",
+    "what": [
+      "这一步在做什么：支持度回答「这条分支有多少证据」，但不同方法回答的是不同的问题。非参数 bootstrap（FBP）对位点做有放回重采样、重建若干棵树，统计某个分支在重采样树中出现的比例，衡量的是拓扑在数据扰动下的稳健性，不是「这个分支为真的概率」，代价是需要数百到上千次完整建树。超快 bootstrap（UFBoot）用近似方法把代价降到可接受范围，可以在建树的同时给出支持度，代价是数值系统性偏高、模型复杂时更明显。SH-aLRT 是 Shimodaira–Hasegawa 近似似然比检验，把最优树与它的最近邻互换（NNI）备择拓扑比较似然差并做重采样校正，得到的 p 值常被当作支持度使用，它是单侧近似检验，数值通常明显高于 bootstrap。aLRT（及其改进版）同样基于 NNI 近似，速度最快，但在短内部枝上偏乐观。",
+      "两套数值不可比较，也不矛盾。SH-aLRT = 92 与 UFBoot = 78 出现在同一条分支上完全正常：前者只检查最近的 NNI 备择拓扑，后者要在大量重采样里稳定出现。文献里常见的联合阈值（例如 SH-aLRT 与 UFBoot 各设一个下限）来自 IQ-TREE 作者的经验建议，用它可以减少假阳性，但这只是启发式规则，不是正确率保证。报告时必须写清用了哪种方法、多少次重复、阈值来自哪里。",
+      "最需要说清楚的一点：支持度高不等于结论正确。bootstrap 只能反映「当前数据与当前模型下的稳定性」，无法发现系统误差。以下情况会给出高支持度的错误分支：长枝吸引（快速进化谱系被错误地聚在一起）、组成异质性（不同类群的 GC 或氨基酸组成差异被模型当成系统发育信号）、替换饱和（远缘类群间同一位点反复替换，信号已被抹平）、模型错误（该用 +R 却用 +G、该分区却单分区）、比对错误（同源关系判断错误）、不完全谱系分选（ILS）与重组（单个基因树的信号与物种树不一致）。识别它们要靠别的手段：改变类群采样（去掉可疑的长枝看拓扑是否改变）、换模型或加位点异质模型、检查位点的组成与饱和度、比较多个独立基因的树、用拓扑检验比较备择拓扑，而不是把 bootstrap 重复数从 1000 提到 10000。"
+    ],
+    "inputs": [
+      { "type": "tree", "name": "待评估的树", "required": true, "note": "通常来自只做了 ML 搜索、还没算支持度的运行；若树已带支持度，先确认那是哪一种度量" },
+      { "type": "alignment-fasta", "name": "与树对应的比对", "required": true, "note": "必须与建树用的是同一份比对（同样的修剪参数），否则任何重采样检验都没有意义" }
+    ],
+    "outputs": [
+      { "type": "tree", "name": "带支持度的树", "ext": ".support.treefile", "note": "内部节点上标注支持度；务必在方法里写明是哪一种度量" },
+      { "type": "tsv-table", "name": "支持度明细", "ext": ".support.tsv", "note": "逐分支列出支持度数值与分支长度，便于筛出需要重点检查的短内部枝" },
+      { "type": "log-report", "name": "支持度检验日志", "ext": ".support.log", "note": "含重复数、收敛信息与所用模型" }
+    ],
+    "provides": [
+      { "tool": "IQ-TREE", "version": "2.3.x", "access": "cli", "install": "conda", "note": "内置 UFBoot2、SH-aLRT 与标准 bootstrap 三种支持度度量" },
+      { "tool": "RAxML-NG", "version": "1.2.x", "access": "cli", "install": "conda", "note": "FBP 与 TBE 支持度；TBE 在类群采样不均衡的大树上更稳健" },
+      { "tool": "PhyML", "version": "3.3.x", "access": "cli", "install": "conda", "note": "aLRT / SH-aLRT 的经典实现；结果可与 IQ-TREE 对照" }
+    ],
+    "feeds": [
+      { "target": "phy_root_calibrate", "viaType": "tree", "note": "支持度标注完成后再定根，避免在错误方向上解读" },
+      { "target": "phy_tree_compare", "viaType": "tree", "note": "把支持度与拓扑差异一起评估" },
+      { "target": "viz_tree_plot", "viaType": "tree", "note": "把支持度标注画在树上" }
+    ],
+    "usage": [
+      {
+        "label": "建树时一起算（IQ-TREE）",
+        "lang": "bash",
+        "code": "iqtree2 -s aln.trimmed.fasta -m MFP -B 1000 -alrt 1000 -bnni -T 8 --prefix iqtree_support"
+      },
+      {
+        "label": "标准 bootstrap 复核关键拓扑（RAxML-NG）",
+        "lang": "bash",
+        "code": "raxml-ng --all --msa aln.fasta --model GTR+G \\\n  --bs-trees 1000 --bs-metric fbp,tbe --threads 8 --prefix raxml_support"
+      },
+      {
+        "label": "读结果前先确认标签的含义",
+        "lang": "bash",
+        "code": "# 同时使用 -alrt 与 -B 时，节点标签会同时记录两种数值；\n# 标签的顺序与含义由工具决定，report 之前务必按官方文档核对\nhead -c 400 iqtree_support.treefile"
+      }
+    ],
+    "recipes": {
+      "bash": "iqtree2 -s 05_phylo/${GENE}.trim.fasta -m MFP -B 1000 -alrt 1000 -bnni \\\n  -T ${THREADS} --prefix 05_phylo/${GENE}.support > 10_logs/${GENE}.support.log 2>&1",
+      "python": "run([\"iqtree2\", \"-s\", str(PHYLO_DIR / f\"{gene}.trim.fasta\"),\n     \"-m\", \"MFP\", \"-B\", \"1000\", \"-alrt\", \"1000\", \"-bnni\",\n     \"-T\", str(THREADS), \"--prefix\", str(PHYLO_DIR / f\"{gene}.support\")],\n    log_name=f\"{gene}.support.log\")"
+    },
+    "params": [
+      { "flag": "-B / -bb", "default": "无", "note": "-B 是超快 bootstrap（快、数值偏高），-bb 是标准 bootstrap（慢、更保守）；发表里的关键结论可用标准 bootstrap 复核" },
+      { "flag": "-alrt", "default": "无", "note": "SH-aLRT 重复数；数值与 bootstrap 不可换算，两者应分别报告" },
+      { "flag": "-bnni", "default": "关闭", "note": "对 bootstrap 树再做一次 NNI 优化，减轻 UFBoot 在复杂模型下的高估；代价是运行时间增加" },
+      { "flag": "重复数", "default": "1000", "note": "标准 bootstrap 建议至少 1000；重复数太少会让短内部枝的支持度极不稳定，但增加重复数无法修正系统性偏差" },
+      { "flag": "TBE（RAxML-NG --bs-metric tbe）", "default": "关闭", "note": "迁移 bootstrap 期望：在大树、类群采样不均衡时比 FBP 更能反映支持程度；数值通常高于 FBP" },
+      { "flag": "阈值", "default": "经验规则", "note": "常见做法是对 SH-aLRT 与 UFBoot 各设一个下限（具体数值以文献与官方文档为准）；它是启发式规则，不能替代对系统误差的检查" }
+    ],
+    "pitfalls": [
+      "把不同来源的支持度混在一棵树里解读。SH-aLRT、UFBoot、标准 bootstrap、FastTree 的局部支持值数值分布完全不同，不能相互换算，也不能套用同一组阈值。",
+      "FastTree 默认输出的不是 bootstrap。它的局部支持值系统性偏高，写成「bootstrap = 0.95」是方法学错误；要 bootstrap 必须显式开启，并说明它是局部 bootstrap。",
+      "支持度高不等于结论正确。长枝吸引、组成异质性、替换饱和、模型错误、比对错误、ILS 与重组都会产生高支持度的错误分支；把重复数从 1000 加到 10000 对此毫无帮助。",
+      "树必须与比对配套。用修剪前的比对去评估修剪后建的树，重采样得到的支持度没有意义；两个文件的类群集合、序列顺序与位点数都必须一致。",
+      "短内部枝是支持度最不可靠的地方。近缘类群数据里大量内部枝长度接近 0，这些分支的支持度对模型、比对与采样都极度敏感；报告时应当同时给出分支长度。",
+      "不要把「支持度低」当作删除分支的理由。低支持度说明数据不足以区分几种可能，正确做法是报告多分支并存的结论（或展示共识树的多分叉），而不是挑一棵树当真相。"
+    ],
+    "related": [
+      { "id": "phy_iqtree", "note": "UFBoot 与 SH-aLRT 的主要实现" },
+      { "id": "phy_raxml", "note": "FBP 与 TBE 支持度" },
+      { "id": "phy_fasttree", "note": "局部支持值与 bootstrap 的区别" },
+      { "id": "phy_tree_compare", "note": "拓扑检验是支持度之外的另一种证据" },
+      { "id": "phy_trimal", "note": "修剪会改变位点数，从而改变支持度数值" }
+    ],
+    "docs": [
+      { "label": "第 7 章 比较基因组与泛基因组", "path": "docs/guidebook/07-comparative-pangenome.md" }
+    ]
+  },
+  {
+    "id": "phy_tree_compare",
+    "name": "树拓扑比较 (Robinson-Foulds)",
+    "category": "phylogeny",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["phylogenetics"],
+    "tags": ["拓扑比较", "robinson-foulds", "rf 距离", "au 检验", "一致树", "冲突"],
+    "summary": "用 RF 距离与拓扑检验量化两棵树的差异",
+    "what": [
+      "这一步在做什么：比较两棵（或一批）树的拓扑差异，最常用的度量是 Robinson-Foulds（RF）距离：统计两棵树各自拥有的分支（split）集合，RF 距离等于不共享的分支数目。它对拓扑差异敏感、计算简单，但有个重要局限——差异的刻画是离散的，而且类群数很多时，即使两棵树在生物学上差别很大，RF 距离也可能因为大量共享的浅层分支而显得不大。加权 RF 与 TBE（迁移 bootstrap 期望）这类改进度量在类群采样不均衡时更稳健。",
+      "什么时候需要比较树：不同建树方法（ML 与快速法）、不同比对参数（修剪与不修剪）、不同数据集（单基因树与串联树）、不同模型下的结果。常见做法是把所有树放在一起算 RF 距离矩阵，然后聚类或做主成分分析，看「结果是聚成方法簇还是聚成生物学簇」——这两种结果的含义完全不同：如果拓扑主要按方法聚类，说明结论对方法敏感，需要谨慎；如果按类群或基因聚类，则说明数据本身存在冲突（不完全谱系分选、重组或不同的进化历史）。",
+      "距离之外还要做拓扑检验。RF 距离只告诉你「差多少」，不告诉你「差异是否显著」。SH 检验、AU 检验等可以评估备择拓扑在统计上是否被数据拒绝；把两棵树的 RF 距离、似然值差异与拓扑检验的 p 值放在一起看，才能判断冲突是采样噪声还是真实的结构差异。另外，比较之前必须先把类群集合对齐：任何一棵树缺少或多出一个类群，RF 距离都没有意义，这一步要先做，而不是让工具按名字悄悄丢弃。"
+    ],
+    "inputs": [
+      { "type": "tree", "name": "待比较的树集合（两棵或更多）", "required": true, "note": "必须共享同一套类群名；补齐或剔除缺失类群之后再比较" },
+      { "type": "tsv-table", "name": "参考拓扑或分组标签", "required": false, "note": "例如把树按建树方法、基因或修剪参数分组，便于把距离矩阵解释成方法效应还是数据效应" }
+    ],
+    "outputs": [
+      { "type": "cluster-dist", "name": "RF 距离矩阵与聚类结果", "ext": ".rf_dist.tsv", "note": "树 × 树的距离矩阵；可直接用于热图与聚类" },
+      { "type": "tsv-table", "name": "拓扑比较明细", "ext": ".tree_compare.tsv", "note": "各对树的 RF 距离、共享分支数、类群数，以及可选的拓扑检验结果" }
+    ],
+    "provides": [
+      { "tool": "phangorn", "version": "2.1x", "access": "r-api", "install": "cran", "note": "RF.dist() 等树距离函数与拓扑检验的 R 实现" },
+      { "tool": "ETE 3", "version": "3.1.x", "access": "python-api", "install": "pip", "note": "比较两棵树、计算 RF 与一致树；适合脚本化批量比较" },
+      { "tool": "DendroPy", "version": "5.0.x", "access": "python-api", "install": "pip", "note": "提供对称差等树比较度量，便于与自写脚本集成" },
+      { "tool": "IQ-TREE", "version": "2.3.x", "access": "cli", "install": "conda", "note": "对候选拓扑集合做 AU/SH 类拓扑检验（选项以官方文档为准）" }
+    ],
+    "feeds": [
+      { "target": "viz_heatmap", "viaType": "cluster-dist", "note": "把 RF 距离矩阵画成热图并聚类" },
+      { "target": "viz_ggplot2", "viaType": "tsv-table", "note": "把比较明细画成散点或条形图" }
+    ],
+    "usage": [
+      {
+        "label": "R：距离矩阵 + 聚类",
+        "lang": "r",
+        "code": "library(phangorn)\n\ntrees <- read.tree(\"trees.nwk\")          # 文件里含多棵树\nrf <- RF.dist(trees, normalize = TRUE)\nhc <- hclust(as.dist(rf), method = \"average\")\nplot(hc)"
+      },
+      {
+        "label": "Python：两棵树快速比较",
+        "lang": "python",
+        "code": "from ete3 import Tree\n\nt1 = Tree(\"methodA.treefile\")\nt2 = Tree(\"methodB.treefile\")\nrf, max_rf, common_leaves = t1.compare(t2, unrooted=True)[:3]\nprint(rf, max_rf, common_leaves)"
+      },
+      {
+        "label": "拓扑检验：备择拓扑是否被数据拒绝",
+        "lang": "bash",
+        "code": "iqtree2 -s aln.trimmed.fasta -m MFP -z candidate_trees.nwk -n 0 \\\n  -zb 10000 -au -T 8 --prefix toptest\n# 具体选项与输出格式以官方文档为准"
+      }
+    ],
+    "recipes": {
+      "r": "library(phangorn)\ntrees <- read.tree(file.path(PHYLO_DIR, \"trees.nwk\"))\nrf <- RF.dist(trees, normalize = TRUE)\nwrite.table(as.matrix(rf), file.path(RES_DIR, \"rf_dist.tsv\"), sep = \"\\t\", quote = FALSE)"
+    },
+    "params": [
+      { "flag": "RF.dist normalize", "default": "FALSE", "note": "是否把 RF 距离归一化到 0–1；比较类群数不同的树集时必须归一化，否则距离不可比" },
+      { "flag": "split 类型", "default": "无根", "note": "无根树比较用 split（bipartition），有根树比较用 clade；把有根树当无根比较会丢掉方向信息" },
+      { "flag": "-zb", "default": "10000", "note": "拓扑检验的重采样重复数；p 值依赖它，重复数太少会让 p 值不稳定" },
+      { "flag": "-au / -sh", "default": "无", "note": "AU 检验与 SH 检验；AU 更常用，但两者对备择拓扑的判定可能不同，报告时要说明用了哪个" },
+      { "flag": "一致树的阈值", "default": "0.5", "note": "生成多数一致树时的阈值；调低会得到更保守（分支更少、多分叉更多）的共识树，调高则相反" }
+    ],
+    "pitfalls": [
+      "类群集合必须先对齐。任何一棵树多了或少了类群，RF 距离就失去意义；比较前先取交集并重新剪枝，而不是让工具按名字自动丢弃。",
+      "RF 距离对大树「不敏感」。类群数多时大量浅层分支共享，即使生物学上差异很大，归一化后的 RF 也可能很小；需要时改用加权 RF 或 TBE 这类度量。",
+      "有根树与无根树的比较方式不同。用无根 split 比较两棵定根不同的树会得到 0 距离（它们确实只差根的位置），但这会误导「定根是否一致」这个问题。",
+      "RF 距离没有显著性。距离大不等于差异显著，距离小也不等于结论一致；要判断冲突是否被数据支持，必须做拓扑检验并给出 p 值。",
+      "比较树的前提是它们来自同一份比对。用不同比对（不同修剪参数、不同基因集）建的树算 RF 距离，反映的是整个流程的差异而不是方法本身的差异；要归因就必须控制变量。",
+      "多数一致树里的多分叉不是「支持度低的分支被删掉了」，而是数据无法区分这些分支的相对关系。展示共识树时应保留多分叉结构，而不是让软件随机解析成二叉树。"
+    ],
+    "related": [
+      { "id": "phy_iqtree", "note": "树的来源之一；也可用于拓扑检验" },
+      { "id": "phy_raxml", "note": "另一套 ML 实现，常用于交叉复核拓扑" },
+      { "id": "phy_fasttree", "note": "快速树与方法学对照" },
+      { "id": "phy_support_test", "note": "支持度与拓扑差异是两类不同证据" },
+      { "id": "viz_heatmap", "note": "距离矩阵的常规可视化" }
+    ],
+    "docs": [
+      { "label": "第 7 章 比较基因组与泛基因组", "path": "docs/guidebook/07-comparative-pangenome.md" }
+    ]
+  },
+  {
+    "id": "phy_its_phylogeny",
+    "name": "真菌 ITS / 大亚基建树",
+    "category": "phylogeny",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["phylogenetics", "metagenomics"],
+    "tags": ["its", "真菌", "itsx", "unite", "分区模型", "rdna"],
+    "summary": "真菌 ITS 序列的提取、分区比对与专用建树路线",
+    "what": [
+      "这一步在做什么：ITS（internal transcribed spacer）是真菌分类与鉴定最常用的标记，但它的建树方式与蛋白编码基因差别很大。ITS1 与 ITS2 位于 18S–5.8S–28S 之间，长度在同属不同种之间都能相差数倍，序列里既有高度保守区（5.8S 几乎不变）又有高度可变区，还有大量插入缺失。这带来三个直接后果：必须先把 ITS 区域从更长的序列里切出来（避免侧翼的 18S/28S 保守序列把信号带偏）；比对必须允许大段不可比区域（默认的全局比对会把不相关区域硬对齐）；保守区与可变区的速率差异极大，分区模型或分开建树比单分区更合适。",
+      "典型流程：用 ITSx 一类工具从基因组或扩增子序列里识别并提取 ITS1、ITS2 与 5.8S 区域；用允许局部不可比的比对档位做多序列比对，并按规则修剪边界；把 ITS1、5.8S、ITS2 作为分区交给 ML 工具分别选模型，或把它们分开建树再比较（因为两个 ITS 区的进化速率与可用信息量差别很大）。如果序列来自扩增子（长度只有一两百 bp、只覆盖一个 ITS 区），那么能做的是「把未知序列放到参考树上看它落在哪」，而不是重新构建一棵高分辨率大树。",
+      "三个必须说清楚的假设。第一，ITS 的种内与种间变异范围有重叠，同一物种的不同拷贝（甚至同一基因组的不同 ITS 拷贝）之间也可能有差异，因此「ITS 序列相同」不等于「同一个种」。第二，ITS 数据库（如 UNITE）的物种标签受参考序列覆盖度限制，最近邻是某个种不等于就是那个种；报告时应给出相似度与覆盖度，而不是只给一个物种名。第三，ITS 的分辨率集中在属内与种间，属以上的关系它解析不了（饱和与比对不确定性太高），属以上应当用 LSU/SSU 或串联的保守蛋白基因。"
+    ],
+    "inputs": [
+      { "type": "cds-fasta", "name": "真菌 ITS / LSU 核酸序列集", "required": true, "note": "这里放的是核酸序列本身（扩增子代表序列、从基因组提取的 ITS、或下载的参考序列），不限于 CDS" },
+      { "type": "tsv-table", "name": "序列元数据", "required": false, "note": "物种名、登录号、来源（基因组/扩增子/数据库）与长度；带进树里才便于解读，也便于发现错误标注" }
+    ],
+    "outputs": [
+      { "type": "alignment-fasta", "name": "ITS 比对", "ext": ".its.aln.fasta", "note": "提取并比对后的序列；保留提取边界信息便于核查" },
+      { "type": "tree", "name": "ITS 系统发育树", "ext": ".its.treefile", "note": "含支持度；属以上关系不应据此下结论" },
+      { "type": "log-report", "name": "提取与建树记录", "ext": ".its.log", "note": "含 ITSx 的提取结果（各区域长度与方向）、比对参数、分区与模型选择" }
+    ],
+    "provides": [
+      { "tool": "ITSx", "version": "1.1.x", "access": "cli", "install": "conda", "note": "从 rRNA 序列中识别并提取 ITS1/ITS2/5.8S；基于 HMM，比按坐标硬切可靠" },
+      { "tool": "MAFFT", "version": "7.5x", "access": "cli", "install": "conda", "note": "ITS 比对需要用允许大段不可比区域的档位" },
+      { "tool": "IQ-TREE", "version": "2.3.x", "access": "cli", "install": "conda", "note": "分区建树与模型选择；ITS1/5.8S/ITS2 建议分区处理" },
+      { "tool": "UNITE", "version": "9.0.x", "access": "cli", "install": "binary", "note": "真菌 ITS 参考数据库，以官方发布的序列包形式使用；版本号与发布日期绑定（此处按 9.0 系列记录），使用前核对官方最新 release（以官方文档为准）" }
+    ],
+    "feeds": [
+      { "target": "phy_root_calibrate", "viaType": "tree", "note": "ITS 树同样是无根树，谈方向前先定根" },
+      { "target": "phy_tree_compare", "viaType": "tree", "note": "与 LSU/蛋白基因树比较，判断冲突来自数据还是标记本身" },
+      { "target": "viz_tree_plot", "viaType": "tree", "note": "把 ITS 树与物种标签一起展示" }
+    ],
+    "usage": [
+      {
+        "label": "从序列中提取 ITS 区域",
+        "lang": "bash",
+        "code": "ITSx -i input.fasta -o its_out --preserve T --cpu 8\n# 输出包含 ITS1 / ITS2 / 5.8S 各区域；具体文件名与选项以官方文档为准"
+      },
+      {
+        "label": "比对 + 修剪",
+        "lang": "bash",
+        "code": "mafft --genafpair --maxiterate 1000 --thread 8 its.fasta > its.aln.fasta   # E-INS-i\ntrimal -in its.aln.fasta -out its.trim.fasta -gappyout"
+      },
+      {
+        "label": "分区建树",
+        "lang": "bash",
+        "code": "iqtree2 -s its.trim.fasta -p its_partition.nex -m MFP \\\n  -B 1000 -alrt 1000 -T 8 --prefix its_tree"
+      }
+    ],
+    "recipes": {
+      "bash": "ITSx -i 04_its/${SAMPLE}.fasta -o 04_its/${SAMPLE}_its --preserve T --cpu ${THREADS}\nmafft --genafpair --maxiterate 1000 --thread ${THREADS} \\\n  04_its/${SAMPLE}_its.ITS1.fasta > 05_phylo/${SAMPLE}.its.aln.fasta\ntrimal -in 05_phylo/${SAMPLE}.its.aln.fasta -out 05_phylo/${SAMPLE}.its.trim.fasta -gappyout"
+    },
+    "params": [
+      { "flag": "ITSx --preserve", "default": "T", "note": "是否保留全长序列的位置信息；需要把提取区域映射回原始序列时开启（取值含义以官方文档为准）" },
+      { "flag": "MAFFT 算法档位", "default": "E-INS-i 或 L-INS-i", "note": "ITS 含大段可变区，E-INS-i（--genafpair）允许局部不可比；序列数多时退回 FFT-NS-2 并接受精度损失" },
+      { "flag": "分区方案", "default": "ITS1 / 5.8S / ITS2 三分区", "note": "三个区域速率差异极大，分区后各自选模型；不分区时高度保守的 5.8S 会主导信号" },
+      { "flag": "trimAl 模式", "default": "-gappyout", "note": "ITS 长度差异大、gap 多，通常需要修剪；但要报告保留列数，过度修剪会让短序列几乎被删空" },
+      { "flag": "最短序列长度", "default": "视数据而定", "note": "只覆盖一个 ITS 区的短序列与全长序列放在一起时比对会退化；建议分组建树或使用片段感知的比对参数" },
+      { "flag": "参考数据库版本", "default": "UNITE 最新 release", "note": "数据库版本决定物种标签的含义；分析记录里必须写明版本与下载日期" }
+    ],
+    "pitfalls": [
+      "ITS 长度差异极大（同属内可相差数倍），默认的全局比对会把不相关区域硬对齐，得到「看起来完整」但充满虚假同源位点的比对。应使用允许局部不可比的算法，并在比对后检查 gap 分布。",
+      "5.8S 高度保守，夹在 ITS1 与 ITS2 之间。把三段直接连起来做单分区分析，会让保守区主导信号、可变区的信息被稀释；分区建树或只用一个 ITS 区往往更合理。",
+      "基因组内的 ITS 拷贝之间存在差异（intra-genomic variation），同一菌株的不同拷贝可能落在树的不同位置。从基因组提取 ITS 时要说清用的是哪一份、如何合并，否则会把技术性差异当成种内多样性。",
+      "ITS 树不能回答属以上的关系。「ITS 树显示这两个属很近」这类结论通常来自饱和与比对不确定性；属以上应当用 LSU/SSU 或串联的保守蛋白基因。",
+      "数据库标签不是鉴定结论。UNITE 的物种假设依赖参考序列覆盖度，最近邻是某个种并不意味着就是那个种；应报告相似度、覆盖度与次优匹配，必要时结合形态或生理证据。",
+      "扩增子序列与从基因组提取的 ITS 混在一起建树时，长度与覆盖区域差别很大，这类树的分辨率由最短的序列决定。最好分开建树，或明确说明把它们放在一起只是为了「定位」而不是重建系统发育。"
+    ],
+    "related": [
+      { "id": "phy_mafft", "note": "ITS 比对的算法档位选择" },
+      { "id": "phy_trimal", "note": "ITS 长度不齐，修剪通常必要但要控制程度" },
+      { "id": "phy_iqtree", "note": "分区建树与支持度评估" },
+      { "id": "amplicon_its_fungal", "note": "ITS 扩增子分析的入口；本模块处理其中的系统发育部分" },
+      { "id": "phy_root_calibrate", "note": "定根的通用问题" }
+    ],
+    "docs": [
+      { "label": "第 7 章 比较基因组与泛基因组", "path": "docs/guidebook/07-comparative-pangenome.md" },
+      { "label": "第 8 章 宏基因组与微生物组", "path": "docs/guidebook/08-metagenome-microbiome.md" }
+    ]
+  }
+]

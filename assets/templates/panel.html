@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>微生物生物信息学 Pipeline 面板 · 交互式流程拼装</title>
+<meta name="description" content="离线可用的微生物生物信息学 pipeline 拼装面板：拖拽模块、连接端口、导出可运行的 Bash / Python 脚本。" />
+<style>
+/*__PANEL_CSS__*/
+</style>
+</head>
+<body>
+
+<a class="skip-link" href="#canvas">跳到流程画布</a>
+
+<header class="appbar">
+  <div class="appbar__brand">
+    <span class="appbar__logo" aria-hidden="true">◈</span>
+    <span class="appbar__title">微生物生物信息学 Pipeline 面板</span>
+    <span class="appbar__sub" id="registry-meta">加载中…</span>
+  </div>
+
+  <div class="appbar__center">
+    <label class="field">
+      <span class="field__label">流程名称</span>
+      <input type="text" id="pipeline-name" value="未命名流程" spellcheck="false" autocomplete="off" />
+    </label>
+  </div>
+
+  <div class="appbar__actions">
+    <button type="button" class="btn" id="btn-presets" aria-haspopup="dialog">预设流程</button>
+    <button type="button" class="btn" id="btn-fit" title="缩放至适合窗口">适应窗口</button>
+    <button type="button" class="btn" id="btn-clear">清空</button>
+    <span class="appbar__spacer" aria-hidden="true"></span>
+    <div class="menu">
+      <button type="button" class="btn btn--primary" id="btn-export" aria-haspopup="menu" aria-expanded="false">
+        导出 ▾
+      </button>
+      <div class="menu__list" id="export-menu" role="menu" hidden>
+        <button type="button" role="menuitem" data-export="json">管线 JSON（.json）</button>
+        <button type="button" role="menuitem" data-export="bash">Bash 脚本（.sh）</button>
+        <button type="button" role="menuitem" data-export="python">Python 脚本（.py）</button>
+        <hr />
+        <button type="button" role="menuitem" data-export="import">导入管线 JSON…</button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main class="layout">
+
+  <!-- ============ 左：模块库 ============ -->
+  <aside class="sidebar" aria-label="模块库">
+    <div class="sidebar__head">
+      <div class="tabs" role="tablist" aria-label="左栏视图">
+        <button type="button" class="tab is-active" role="tab" data-view="palette" aria-selected="true">模块库</button>
+        <button type="button" class="tab" role="tab" data-view="presets" aria-selected="false">预设流程</button>
+        <button type="button" class="tab" role="tab" data-view="issues" aria-selected="false">
+          校验 <span class="tab__count" id="issue-tab-count">0</span>
+        </button>
+      </div>
+      <div class="sidebar__search" id="search-wrap">
+        <input type="search" id="module-search" placeholder="搜索工具名、说明、标签…（如 fastp / 组装 / binning）"
+               spellcheck="false" autocomplete="off" aria-label="搜索模块" />
+        <label class="chk">
+          <input type="checkbox" id="filter-uptodate" />
+          <span>仅显示成熟工具</span>
+        </label>
+      </div>
+    </div>
+
+    <div class="sidebar__body" id="palette" role="tabpanel" aria-label="模块库"></div>
+    <div class="sidebar__body" id="preset-list" role="tabpanel" aria-label="预设流程" hidden></div>
+    <div class="sidebar__body" id="issue-list" role="tabpanel" aria-label="校验结果" hidden></div>
+  </aside>
+
+  <!-- ============ 中：画布 ============ -->
+  <section class="canvas-wrap" aria-label="流程画布">
+    <div class="canvas-toolbar">
+      <div class="legend" id="legend" aria-label="数据类型图例"></div>
+      <div class="canvas-toolbar__right">
+        <span class="hint" id="canvas-hint">从左侧拖入模块开始；从节点右侧圆点拖到另一个节点即可连线</span>
+        <button type="button" class="btn btn--ghost" id="btn-zoom-out" title="缩小" aria-label="缩小">−</button>
+        <span class="zoom-label" id="zoom-label">100%</span>
+        <button type="button" class="btn btn--ghost" id="btn-zoom-in" title="放大" aria-label="放大">+</button>
+      </div>
+    </div>
+
+    <div class="canvas" id="canvas" tabindex="0" aria-label="pipeline 画布，可用方向键移动选中节点，Delete 删除">
+      <svg id="svg" role="application" aria-label="流程编辑器">
+        <defs>
+          <marker id="arrow-direct" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--edge-direct)" />
+          </marker>
+          <marker id="arrow-adapter" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--edge-adapter)" />
+          </marker>
+          <marker id="arrow-error" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--edge-error)" />
+          </marker>
+          <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
+            <path d="M 24 0 L 0 0 0 24" fill="none" stroke="var(--grid-line)" stroke-width="1" />
+          </pattern>
+        </defs>
+        <g id="viewport">
+          <rect id="grid-rect" x="-10000" y="-10000" width="20000" height="20000" fill="url(#grid)" />
+          <g id="layer-edges"></g>
+          <g id="layer-nodes"></g>
+          <g id="layer-overlay"></g>
+        </g>
+      </svg>
+
+      <div class="empty-state" id="empty-state">
+        <div class="empty-state__inner">
+          <div class="empty-state__glyph" aria-hidden="true">◈</div>
+          <h2>把模块拖进来，拼出你的分析流程</h2>
+          <p>
+            左侧是 100 多个已登记的模块：上游质控（fastp、MultiQC）、组装（SPAdes、Flye）、
+            注释（Bakta、eggNOG-mapper）、分箱与分类、Python / R 数据处理、可视化，以及流程引擎。
+          </p>
+          <p class="empty-state__cta">
+            <button type="button" class="btn btn--primary" id="btn-open-presets">看看预设流程</button>
+            <span>或直接把模块拖到这块空白处</span>
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <footer class="canvas-status" id="canvas-status" role="status" aria-live="polite"></footer>
+  </section>
+
+  <!-- ============ 右：检查器 ============ -->
+  <aside class="inspector" aria-label="模块详情与流程检查">
+    <div class="tabs tabs--inspector" role="tablist" aria-label="右栏视图">
+      <button type="button" class="tab is-active" role="tab" data-iview="detail" aria-selected="true">详情</button>
+      <button type="button" class="tab" role="tab" data-iview="export" aria-selected="false">导出预览</button>
+      <button type="button" class="tab" role="tab" data-iview="about" aria-selected="false">关于</button>
+    </div>
+    <div class="inspector__body" id="inspector-detail" role="tabpanel"></div>
+    <div class="inspector__body" id="inspector-export" role="tabpanel" hidden>
+      <div class="export-preview__head">
+        <span id="export-preview-lang">Bash</span>
+        <button type="button" class="btn btn--ghost" id="btn-copy-preview">复制</button>
+      </div>
+      <pre class="codeblock" id="export-preview" tabindex="0"></pre>
+    </div>
+    <div class="inspector__body" id="inspector-about" role="tabpanel" hidden></div>
+  </aside>
+</main>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<!-- 预设画廊（模态） -->
+<div class="modal" id="preset-modal" hidden>
+  <div class="modal__backdrop" data-close-modal></div>
+  <div class="modal__panel" role="dialog" aria-modal="true" aria-labelledby="preset-modal-title">
+    <div class="modal__head">
+      <h2 id="preset-modal-title">预设流程</h2>
+      <button type="button" class="btn btn--ghost" data-close-modal aria-label="关闭">✕</button>
+    </div>
+    <p class="modal__note">
+      载入预设会替换当前画布内容。预设只是「经过验证的起点」，载入后可以自由增删模块与连线。
+      同一环节的候选工具是各自独立的模块，预设选的是其中一种，细节见各预设的说明。
+    </p>
+    <div class="modal__body" id="preset-modal-body"></div>
+  </div>
+</div>
+
+<input type="file" id="import-file" accept=".json,application/json" hidden />
+
+<script type="application/json" id="bundle-data">/*__BUNDLE_JSON__*/</script>
+<script>
+/*__PANEL_MODEL__*/
+</script>
+<script>
+/*__PANEL_APP__*/
+</script>
+</body>
+</html>

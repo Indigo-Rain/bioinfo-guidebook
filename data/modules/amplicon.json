@@ -1,0 +1,681 @@
+[
+  {
+    "id": "amplicon_qiime2_import",
+    "name": "扩增子数据导入 (QIIME 2)",
+    "category": "amplicon",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["metagenomics"],
+    "tags": ["扩增子", "qiime2", "导入", "manifest", "16S", "引物切除"],
+    "summary": "把读长与元数据导入 QIIME 2 并确认测序质量",
+    "what": [
+      "这一步把 demultiplexed 的扩增子 FASTQ 与样本元数据导入 QIIME 2，变成带类型标签的 artifact（.qza），并用 qiime demux summarize 看每个样本的读长数与质量分布。它本身不产生生物学结论，但决定了后面所有步骤的格式契约：QIIME 2 每一步都校验输入 artifact 的类型，类型写错会在导入或下一步立刻报错，而不是在下游得出一个看似合理的结果。",
+      "代价是数据不再是一个裸文件。artifact 只能在 QIIME 2 内部流动，要交给 dada2 的 R 包、QIIME 2 之外的脚本或合作方，必须先 qiime tools export；反过来，外部结果要进 QIIME 2 也要先按正确的 --type 导入。配对读长必须写成 Manifest（表头 sample-id / forward-absolute-filepath / reverse-absolute-filepath，路径必须是绝对路径）或用 Casava 1.8 的文件名格式，manifest 的表头拼写与路径是这一步最常见的失败原因。",
+      "**先决定路线，再决定工具**：16S/ITS 扩增子只能给出「谁在、大致多少」，分辨率通常到属水平（16S 高变区片段很难可靠到种），受引物偏好、16S 拷贝数与 PCR 偏倚影响，也没有功能信息；但它便宜、可扩展到几百上千个样本，是做群落分类学组成与多样性比较的默认选择。鸟枪法宏基因组能到种/株水平，还能给出基因与通路信息，但成本高一个数量级，对低生物量样本的灵敏度更差。判断标准是问题类型：问「组成与多样性」→ 扩增子；问「功能、基因、菌株、新物种」→ 宏基因组。两者都做时，不要把扩增子的相对丰度和宏基因组的相对丰度当同一个量直接比较（引物偏好与 16S 拷贝数会让两者系统性不一致）。",
+      "本步骤还应顺手把引物切掉（q2-cutadapt）。引物残留在读长里会成为所有 ASV 共有的前缀，让不同样本的 ASV 长度分布出现假的整齐，也更容易产生嵌合体。引物是否切干净，要在 demux summarize 的长度分布上看出来（例如 16S V4 期望插入片段约 253 bp，出现明显更长的峰就说明有问题）。"
+    ],
+    "inputs": [
+      { "type": "raw-reads", "name": "demultiplexed 双端读长 (R1/R2)", "required": true, "note": "已按样本拆分、未修剪的 FASTQ；单端数据同样支持，改用对应的 --type" },
+      { "type": "tsv-table", "name": "导入清单 / 样本元数据", "required": false, "note": "manifest.tsv（样本名 + 绝对路径 + 方向）或后续分组检验用的 metadata.tsv" }
+    ],
+    "outputs": [
+      { "type": "raw-reads", "name": "QIIME 2 序列对象 (.qza)", "ext": ".qza", "note": "类型上仍是读长集合，但被包成 artifact：只能在 QIIME 2 内流动，出 QIIME 2 必须 export" },
+      { "type": "tsv-table", "name": "导入清单与元数据表", "ext": ".tsv", "note": "元数据是后续所有分组检验的依据，应与结果一起归档" },
+      { "type": "report", "name": "测序质量汇总可视化 (.qzv)", "ext": ".qzv", "note": "qiime demux summarize 的输出；在 QIIME 2 路线里承担 FastQC 的角色" }
+    ],
+    "provides": [
+      { "tool": "QIIME 2", "version": "2024.x", "access": "cli", "install": "conda", "note": "版本号按发行年月命名（如 2024.2），发布频繁；具体版本必须随结果记录" },
+      { "tool": "q2-demux", "version": "2024.x", "access": "cli", "install": "conda", "note": "导入与 demux summarize 插件" },
+      { "tool": "cutadapt (q2-cutadapt)", "version": "2024.x", "access": "cli", "install": "conda", "note": "在 artifact 体系内切除引物，避免引物残留进入 ASV" }
+    ],
+    "feeds": [
+      { "target": "amplicon_dada2", "viaType": "raw-reads", "note": "QIIME 2 路线直接用 q2-dada2 插件读 .qza；R 路线则先用 qiime tools export 导出 FASTQ" },
+      { "target": "amplicon_deblur", "viaType": "raw-reads", "note": "读长长度统一、样本量大时改走 Deblur，速度更快" },
+      { "target": "amplicon_its_fungal", "viaType": "raw-reads", "note": "ITS 扩增子也从这里导入，但后续不能照搬 16S 的去噪参数" }
+    ],
+    "usage": [
+      {
+        "label": "导入双端读长（manifest 路线）",
+        "lang": "bash",
+        "code": "qiime tools import \\\n  --type 'SampleData[PairedEndSequencesWithQuality]' \\\n  --input-path manifest.tsv \\\n  --output-path demux.qza \\\n  --input-format PairedEndFastqManifestPhred33V2"
+      },
+      {
+        "label": "看每样本读长数与质量分布",
+        "lang": "bash",
+        "code": "qiime demux summarize \\\n  --i-data demux.qza \\\n  --o-visualization demux.qzv"
+      },
+      {
+        "label": "切除引物（在去噪之前）",
+        "lang": "bash",
+        "code": "qiime cutadapt trim-paired \\\n  --i-demultiplexed-sequences demux.qza \\\n  --p-front-f GTGCCAGCMGCCGCGGTAA \\\n  --p-front-r GGACTACHVGGGTWTCTAAT \\\n  --p-discard-untrimmed \\\n  --o-trimmed-sequences demux-trimmed.qza"
+      },
+      {
+        "label": "导出给非 QIIME 2 工具",
+        "lang": "bash",
+        "code": "qiime tools export --input-path demux-trimmed.qza --output-path exported_fastq/\n# 导出后是裸 FASTQ，可交给 dada2 的 R 包或其他工具；反向导入需要正确的 --type"
+      }
+    ],
+    "recipes": {
+      "bash": "qiime tools import --type 'SampleData[PairedEndSequencesWithQuality]' \\\n  --input-path 00_raw/manifest.tsv --output-path 01_clean/demux.qza \\\n  --input-format PairedEndFastqManifestPhred33V2\nqiime demux summarize --i-data 01_clean/demux.qza --o-visualization 10_logs/demux.qzv",
+      "python": "run([\n    \"qiime\", \"tools\", \"import\",\n    \"--type\", \"SampleData[PairedEndSequencesWithQuality]\",\n    \"--input-path\", str(RAW_DIR / \"manifest.tsv\"),\n    \"--output-path\", str(QC_DIR / \"demux.qza\"),\n    \"--input-format\", \"PairedEndFastqManifestPhred33V2\",\n])"
+    },
+    "params": [
+      { "flag": "--input-format", "default": "无", "note": "按数据产生方式选择：Casava 1.8 用 CasavaOneEightSingleLanePerSampleDirFmt，自建 manifest 用 PairedEndFastqManifestPhred33V2（老数据可能是 Phred64，写错会让质量分数整体错位）" },
+      { "flag": "manifest 路径列", "default": "无", "note": "必须是绝对路径。相对路径在导入时不一定立刻报错，但换工作目录后就会失败" },
+      { "flag": "--p-front-f / --p-front-r", "default": "无", "note": "引物序列；用了 --p-discard-untrimmed 会把没匹配上的读长全部丢掉，单端数据污染严重时要先确认比例" },
+      { "flag": "--p-discard-untrimmed", "default": "关闭", "note": "丢掉未检出引物的读长；能显著减少嵌合与假 ASV，但会损失一部分真实数据，建议前后对比读长数" },
+      { "flag": "--p-cores", "default": "1", "note": "cutadapt 多线程；批量几十上百样本时不设会非常慢" }
+    ],
+    "pitfalls": [
+      "manifest 的表头拼写（forward-absolute-filepath / reverse-absolute-filepath）与绝对路径是最常见的失败点；写成相对路径、或用错 V1/V2 格式（Phred33 与 Phred64 混用），会导致质量分数整体偏移，而后续所有质量阈值的含义都跟着错。",
+      "导入成功不等于数据可用。必须先看 demux summarize：如果某些样本读长数比同批其他样本低一个数量级，通常是 demultiplex 或 index 问题，而不是「样本质量差」；这种情况下它不是离群值，而是数据错误，应该重跑拆分或联系测序方。",
+      "引物没切干净会污染下游全部结果：残留引物会成为 ASV 的共有前缀，让去噪把引物差异当真实变异，也让嵌合体更容易产生。16S V4 的插入片段约 253 bp，长度分布明显偏离预期时先怀疑引物或建库问题。",
+      "不要把 .qza 当通用格式传给别人。它是容器（内含数据 + 类型元数据），对方没有对应版本的 QIIME 2 就打不开；跨工具交换一律走 qiime tools export，并同时记录导出用的 --type。",
+      "元数据表里不要有重复样本名或空行。QIIME 2 与 phyloseq 都会因样本名不匹配而报错；更糟的是有些工具会静默丢样本，等你发现分组少了一半样本时已经跑完一整轮分析。",
+      "低生物量样本（皮肤、呼吸道、组织、水）从这一步起就要把空白对照一起导入并保留在表里。没有空白对照，后面 decontam 无法判断哪些低丰度序列来自试剂与环境，这批数据基本报废。",
+      "批次信息要写进元数据。不同提取/建库批次的试剂污染谱不同，事后无法从数据里恢复批次归属——这是扩增子项目最常见的不可补救错误之一。"
+    ],
+    "related": [
+      { "id": "amplicon_dada2", "note": "导入之后的默认去噪步骤" },
+      { "id": "amplicon_deblur", "note": "大批量、长度统一的数据可改走 Deblur" },
+      { "id": "amplicon_its_fungal", "note": "ITS 扩增子的导入相同，但去噪与注释完全另走一套" },
+      { "id": "qc_fastqc", "note": "非 QIIME 2 路线里承担同类检查的模块" }
+    ],
+    "docs": [
+      { "label": "第 8 章 宏基因组与微生物组", "path": "docs/guidebook/08-metagenome-microbiome.md" }
+    ]
+  },
+  {
+    "id": "amplicon_dada2",
+    "name": "ASV 推断与去噪 (DADA2)",
+    "category": "amplicon",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["metagenomics"],
+    "tags": ["ASV", "去噪", "dada2", "16S", "嵌合体", "错误模型"],
+    "summary": "用错误模型去噪得到 ASV 表与代表序列",
+    "what": [
+      "DADA2 为每个测序批次学习一个逐碱基的错误率模型，据此判断哪些序列差异是测序错误、哪些是真实变异，输出精确序列变异（ASV）及其在各样本中的计数。它把去重复、质量过滤、双端合并与嵌合体去除串在一次分析里，是现在扩增子分析的默认起点（R 包与 QIIME 2 的 q2-dada2 插件算法相同，只是接口不同）。",
+      "**OTU 与 ASV 的分歧必须讲清楚**：97% 相似度聚类 OTU 是 2010 年代的标准做法，问题在于 97% 既不是物种边界，也不是可复现的实体——换一个聚类工具、换一批样本、甚至只是改了输入顺序，同一个「OTU_1」就可能对应不同的序列集合，因此 OTU 编号在论文之间毫无可比性，也无法累积复用。ASV 用的是数据本身的精确序列：同一序列在不同研究里是同一个 ASV，可以直接比较、可以合并数据集。代价有两个：一是测序错误如果没被模型识别就会变成假 ASV（低质量数据上尤其明显）；二是同一物种的不同 16S 拷贝之间若有差异，会被拆成多个 ASV，使「ASV 数」系统性高于「物种数」。",
+      "因此 **ASV ≠ 物种**。ASV 只是「一个能被区分出来的序列变体」，它的物种归属需要单独的注释步骤，而且很多 ASV 只能到属甚至科。写论文时应同时报告「ASV 数」与「注释到的属/种数」，不要用 ASV 数直接当物种丰富度。",
+      "参数上有三个真正影响结论的选择。第一是截断长度（truncLen）与 maxEE：前者把读长截到质量开始下降的位置，后者按期望错误数丢弃读长；对质量较差的数据，业界更推荐用 maxEE 而不是把 truncLen 设得很短。第二是汇合策略（pool）：pool=FALSE 每个样本单独学错误率，会漏掉只在少数样本出现的真实序列；pool=TRUE 把所有样本合在一起，灵敏但会把低生物量样本里的污染物与 index hopping 当成真实 ASV 放大；pseudo-pooling 是常用的折中。第三是嵌合体去除，不能省。"
+    ],
+    "inputs": [
+      { "type": "raw-reads", "name": "demultiplexed 双端读长", "required": true, "note": "未做质量修剪的 FASTQ 或 QIIME 2 序列对象；修剪交给 DADA2 内部的 filterAndTrim 统一处理" },
+      { "type": "tsv-table", "name": "样本清单与引物信息", "required": false, "note": "ITS 或需按批次分组学习错误率时提供；样本名必须与读长文件名对应" }
+    ],
+    "outputs": [
+      { "type": "feature-table", "name": "ASV × 样本计数表", "ext": ".feature-table.tsv", "note": "核心产物。行是 ASV、列是样本；DADA2 的 seqtab 以序列本身为特征名，QIIME 2 路线下 rep-seqs.qza 与 table.qza 必须成对保存" },
+      { "type": "log-report", "name": "去噪过程统计", "ext": ".denoising-stats.tsv", "note": "含 input / filtered / denoised / merged / non-chimeric 各步读长数，是判断参数是否合理的唯一依据" },
+      { "type": "tsv-table", "name": "ASV 与代表序列对照表", "ext": ".asv-sequences.tsv", "note": "ASV id ↔ 序列 ↔ 长度；用于核对长度分布与后续注释输入" }
+    ],
+    "provides": [
+      { "tool": "DADA2", "version": "1.3x", "access": "r-api", "install": "cran", "note": "Bioconductor 包；版本升级会改变默认参数与错误模型行为，必须记录" },
+      { "tool": "q2-dada2", "version": "2024.x", "access": "cli", "install": "conda", "note": "QIIME 2 插件；与 R 包同一算法，输出即 artifact，便于与 QIIME 2 的多样性与注释模块衔接" }
+    ],
+    "feeds": [
+      { "target": "amplicon_decontam", "viaType": "feature-table", "note": "先去污染再做注释与多样性；有空白对照时这一步不能跳" },
+      { "target": "amplicon_taxonomy_assign", "viaType": "feature-table", "note": "把 ASV 注释到参考数据库；代表序列随表一起传递" },
+      { "target": "amplicon_qiime2_diversity", "viaType": "feature-table", "note": "alpha/beta 多样性与群落结构检验" },
+      { "target": "amplicon_phyloseq", "viaType": "feature-table", "note": "R 侧做对象化、组成性变换与差异丰度分析" }
+    ],
+    "usage": [
+      {
+        "label": "R：先看质量分布，再决定截断位置",
+        "lang": "bash",
+        "code": "library(dada2)\nfnFs <- sort(list.files(\"raw\", pattern = \"_R1_001.fastq.gz\", full.names = TRUE))\nfnRs <- sort(list.files(\"raw\", pattern = \"_R2_001.fastq.gz\", full.names = TRUE))\nplotQualityProfile(fnFs[1:2])\nplotQualityProfile(fnRs[1:2])\n# 根据质量图决定 truncLen；也可只设 maxEE 让 DADA2 自己处理尾端"
+      },
+      {
+        "label": "R：过滤、学习错误率、去噪、合并、去嵌合",
+        "lang": "bash",
+        "code": "filterAndTrim(fnFs, filtFs, fnRs, filtRs,\n              truncLen = c(240, 200), maxEE = c(2, 2), truncQ = 2,\n              rm.phix = TRUE, multithread = TRUE)\nerrF <- learnErrors(filtFs, multithread = TRUE)\ndadaF <- dada(filtFs, err = errF, pool = \"pseudo\", multithread = TRUE)\nmergers <- mergePairs(dadaF, filtFs, dadaR, filtRs)\nseqtab <- makeSequenceTable(mergers)\nseqtab.nochim <- removeBimeraDenovo(seqtab, method = \"consensus\", multithread = TRUE)\n# 具体默认值与阈值以官方文档为准；关键是保留每一步的读长数"
+      },
+      {
+        "label": "QIIME 2：同样一步完成去噪",
+        "lang": "bash",
+        "code": "qiime dada2 denoise-paired \\\n  --i-demultiplexed-seqs demux-trimmed.qza \\\n  --p-trunc-len-f 240 --p-trunc-len-r 200 \\\n  --p-max-ee-f 2 --p-max-ee-r 2 \\\n  --p-n-threads 8 \\\n  --o-table table.qza --o-representative-sequences rep-seqs.qza \\\n  --o-denoising-stats denoising-stats.qza"
+      }
+    ],
+    "recipes": {
+      "bash": "qiime dada2 denoise-paired --i-demultiplexed-seqs 01_clean/demux-trimmed.qza \\\n  --p-trunc-len-f 240 --p-trunc-len-r 200 --p-max-ee-f 2 --p-max-ee-r 2 \\\n  --p-n-threads ${THREADS} \\\n  --o-table 02_asv/table.qza --o-representative-sequences 02_asv/rep-seqs.qza \\\n  --o-denoising-stats 10_logs/denoising-stats.qza",
+      "r": "library(dada2)\nseqtab.nochim <- removeBimeraDenovo(seqtab, method = \"consensus\", multithread = TRUE)\n# 保存为下游可直接读入的形式\nwrite.table(t(seqtab.nochim), \"02_asv/asv_table.tsv\", sep = \"\\t\", quote = FALSE)"
+    },
+    "params": [
+      { "flag": "truncLen", "default": "0（不截断）", "note": "把读长截到质量稳定区。设得太长会保留低质量尾端（制造假 ASV），设得太短会让 R1/R2 重叠不足而无法合并；两个方向的读长在重叠区必须有足够长度（DADA2 合并对最小重叠有要求，以官方文档为准）" },
+      { "flag": "maxEE", "default": "2", "note": "按期望错误数过滤读长；比固定质量阈值更稳健，是低质量数据上首选的过滤方式" },
+      { "flag": "truncQ", "default": "2", "note": "从第一个质量 ≤ truncQ 的碱基起截断；ITS 场景常设 0 并完全依赖 maxEE" },
+      { "flag": "pool", "default": "FALSE（QIIME 2 里为 independent）", "note": "FALSE 保守、TRUE 灵敏但易放大污染与 index hopping；低生物量样本用 pseudo 是常见折中。这个选择会实实在在改变 ASV 数量，必须写进方法" },
+      { "flag": "rm.phix / removeBimeraDenovo", "default": "开启", "note": "PhiX 过滤与嵌合体去除都应保留；不去嵌合体会凭空产生大量「新物种」" },
+      { "flag": "--p-n-reads-learn / --p-n-reads / --p-min-fold-parent-over-abundance", "default": "以官方文档为准", "note": "学习错误模型与嵌合体判定的读长数、以及嵌合体父序列丰度倍数门槛；样本量小时不要凭感觉改" }
+    ],
+    "pitfalls": [
+      "**OTU 编号不可跨研究复用**。如果你的流程还在输出 OTU_1、OTU_2，那么这批结果只能在本项目内部自洽，无法与任何已发表数据比较，也无法在补充材料之外被复用。现在默认用 ASV。",
+      "**ASV 不是物种**。同一物种的多个 16S 拷贝会被拆成多个 ASV，物种丰富度因此虚高；反过来，不同物种也可能共享同一个 ASV。所有涉及「物种数」「丰富度」的结论，都要基于注释后的结果，而不是 ASV 数。",
+      "pool=TRUE（或 QIIME 2 的 pooled 模式）在低生物量样本上会把空白对照里的污染物、以及 index hopping 产生的少量读长固化成真实 ASV，让污染物看起来在每个样本里都存在。低生物量项目应优先 pseudo-pooling，并保留空白对照交给 decontam 处理。",
+      "去噪统计一定要逐步核对：如果 merged 占比骤降，说明 R1/R2 重叠不足（truncLen 太短或扩增子太长）；如果 filtered 占比很低，说明 maxEE/truncLen 过严；如果 non-chimeric 掉得特别多，说明引物没切干净或 PCR 循环数过高。读「ASV 数量」这一个数字看不出这些问题。",
+      "ASV 表里天然有大量零值（稀疏矩阵），不要用「零多」当作数据质量差：低丰度类群本来就在多数样本里检不到。真正的问题是抽样深度不足——看去噪统计里的非嵌合读长数，而不是看 ASV 数。",
+      "在去噪之后、任何比较之前，必须处理污染物与批次。同一批试剂污染在不同样本里的比例不同，会让组成看起来「有生物学差异」；这一步由 decontam 负责，别等到差异分析出结果后再回头怀疑。",
+      "不要为了「让结果更干净」反复调参直到显著。ASV 数量、downstream 的差异丰度结果对 truncLen/maxEE/pool 都很敏感，参数应在看质量分布后一次性确定并写进方法，而不是当作调优旋钮。"
+    ],
+    "related": [
+      { "id": "amplicon_deblur", "note": "另一种 ASV 方法，不做跨样本错误模型，速度快但要求长度统一" },
+      { "id": "amplicon_decontam", "note": "去噪之后紧接着的必需步骤（有空白对照时）" },
+      { "id": "amplicon_taxonomy_assign", "note": "把 ASV 变成可解释的分类学标签" },
+      { "id": "amplicon_its_fungal", "note": "ITS 长度变异大，需要专门的去噪参数与注释库" }
+    ],
+    "docs": [
+      { "label": "第 8 章 宏基因组与微生物组", "path": "docs/guidebook/08-metagenome-microbiome.md" }
+    ]
+  },
+  {
+    "id": "amplicon_deblur",
+    "name": "ASV 推断 (Deblur)",
+    "category": "amplicon",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "active",
+    "domains": ["metagenomics"],
+    "tags": ["ASV", "deblur", "去噪", "16S", "qiime2", "大批量"],
+    "summary": "按样本内错误分布快速去噪成 ASV",
+    "what": [
+      "Deblur 也是 ASV 方法，但走的是另一条路：它不跨样本学习错误模型，而是用一条预先确定的错误分布（基于 Illumina 平台的错误特征）在每个样本内部做去噪，因此内存占用低、可以并行处理大量样本，在几百到上千个样本的项目里比 DADA2 快得多。它在 QIIME 2 里以 q2-deblur 插件提供，也有独立命令行版本。",
+      "它有两个硬性前提。第一，所有读长必须等长——Deblur 按固定长度做 k-mer 比较，必须先截断到统一长度（通常 150 bp），这对 16S 是可行的，对长度变异很大的 ITS 基本不适用。第二，Deblur 本身不做嵌合体去除，需要在之后单独跑（QIIME 2 路线通常接 qiime vsearch uchime-denovo），这一点常被忽略，结果就是 ASV 表里混入大量嵌合序列，看起来「物种多样性很高」。",
+      "**不要混用两种 ASV 方法**。DADA2 与 Deblur 的去噪模型不同，同一批数据得到的 ASV 集合并不相同，甚至数量能差出可观比例；在一个项目里对不同样本用不同方法，等于让样本之间的差异里混进了方法差异。选择依据很实际：样本量大、读长统一、算力有限 → Deblur；读长长度不齐（ITS）、低生物量、需要更灵敏地保留只在少数样本出现的序列 → DADA2。",
+      "无论用哪种方法，得到的仍然是 ASV 而不是物种，也需要同样的下游处理：去污染（有空白对照时）、注释、按统一样本深度做多样性比较。统计上的陷阱（组成性数据、样本量、伪重复）与 DADA2 路线完全一样，换工具不会让这些问题消失。"
+    ],
+    "inputs": [
+      { "type": "raw-reads", "name": "单端读长或已合并的读长", "required": true, "note": "Deblur 只按单一方向处理：双端数据要么先合并，要么只用一个方向；所有读长必须先截断到同一长度" }
+    ],
+    "outputs": [
+      { "type": "feature-table", "name": "ASV × 样本计数表", "ext": ".feature-table.tsv", "note": "与 DADA2 的产物语义相同，但 ASV 集合不同，不能与 DADA2 结果混合比较" },
+      { "type": "log-report", "name": "每样本去噪统计", "ext": ".deblur-stats.tsv", "note": "含各样本读长保留比例与 ASV 数；保留比例过低说明截断长度或最小读长阈值不合适" }
+    ],
+    "provides": [
+      { "tool": "Deblur", "version": "1.1.x", "access": "cli", "install": "conda", "note": "独立命令行版；发布节奏较慢，使用前确认与 QIIME 2 版本的兼容性" },
+      { "tool": "q2-deblur", "version": "2024.x", "access": "cli", "install": "conda", "note": "QIIME 2 插件，常见的实际用法；嵌合体去除需另接 vsearch" }
+    ],
+    "feeds": [
+      { "target": "amplicon_taxonomy_assign", "viaType": "feature-table", "note": "ASV 注释；注意 Deblur 输出需要先补做嵌合体去除" },
+      { "target": "amplicon_qiime2_diversity", "viaType": "feature-table", "note": "多样性分析；必须先抽平到统一样本深度" },
+      { "target": "amplicon_phyloseq", "viaType": "feature-table", "note": "R 侧对象化与差异丰度分析" }
+    ],
+    "usage": [
+      {
+        "label": "QIIME 2：Deblur 去噪（读长先截断到统一长度）",
+        "lang": "bash",
+        "code": "qiime deblur denoise-16S \\\n  --i-demultiplexed-seqs demux-trimmed.qza \\\n  --p-trim-length 150 \\\n  --p-sample-stats \\\n  --o-representative-sequences rep-seqs.qza \\\n  --o-table table.qza \\\n  --o-stats deblur-stats.qza"
+      },
+      {
+        "label": "补做嵌合体去除（Deblur 本身不做这一步）",
+        "lang": "bash",
+        "code": "qiime vsearch uchime-denovo \\\n  --i-table table.qza \\\n  --i-sequences rep-seqs.qza \\\n  --o-nonchimeric-wo-borderline-table table-nochim.qza \\\n  --o-nonchimeric-wo-borderline-sequences rep-seqs-nochim.qza\n# 具体输出选项名以官方文档为准；关键是去掉 borderline 与非嵌合判定的结果"
+      },
+      {
+        "label": "独立命令行版",
+        "lang": "bash",
+        "code": "deblur workflow --seqs-fp reads.fa --output-dir deblur_out -t 150\n# 独立版要求输入已合并/单端的 FASTA，正负链过滤与标签处理需按官方文档配置"
+      }
+    ],
+    "recipes": {
+      "bash": "qiime deblur denoise-16S --i-demultiplexed-seqs 01_clean/demux-trimmed.qza \\\n  --p-trim-length 150 --p-sample-stats \\\n  --o-table 02_asv/table-deblur.qza \\\n  --o-representative-sequences 02_asv/rep-seqs-deblur.qza \\\n  --o-stats 10_logs/deblur-stats.qza",
+      "python": "run([\n    \"qiime\", \"deblur\", \"denoise-16S\",\n    \"--i-demultiplexed-seqs\", str(QC_DIR / \"demux-trimmed.qza\"),\n    \"--p-trim-length\", \"150\", \"--p-sample-stats\",\n    \"--o-table\", str(ASV_DIR / \"table-deblur.qza\"),\n    \"--o-representative-sequences\", str(ASV_DIR / \"rep-seqs-deblur.qza\"),\n    \"--o-stats\", str(LOG_DIR / \"deblur-stats.qza\"),\n])"
+    },
+    "params": [
+      { "flag": "--p-trim-length", "default": "无（必填）", "note": "截断到统一长度。取值要兼顾「保留足够信息」与「留在质量好的区间」，16S 常用 150；取值过短会显著降低分类分辨率，过长会把低质量尾端带进来" },
+      { "flag": "--p-min-reads", "default": "10", "note": "样本内一条序列至少被多少条读长支持才保留；调高会去掉更多低丰度 ASV（也去掉一部分真实低丰度类群）" },
+      { "flag": "--p-min-size", "default": "2", "note": "样本内去噪后 ASV 的最小读长数；设 1 会让测序错误更容易残留成 ASV" },
+      { "flag": "--p-left-trim", "default": "0", "note": "切掉读长 5' 端的固定长度（引物或 barcode 残留）；引物已在导入阶段切除时可以留 0" },
+      { "flag": "--p-negative-mode / --p-sample-stats", "default": "关闭 / 关闭", "note": "负链模式与每样本统计输出；具体语义与默认值以官方文档为准，负链模式用错会明显改变保留的读长数" }
+    ],
+    "pitfalls": [
+      "**Deblur 不做嵌合体去除**。这是它与 DADA2 最容易被忽略的差别；不补做嵌合体过滤，ASV 数量与「新类群」会明显虚高，而且这些嵌合序列往往集中在低丰度端，正好污染稀有生物圈的分析。",
+      "读长长度必须统一。若在双端数据上直接把 R1 拿去 Deblur 而不截断，运行会失败或把绝大多数读长丢掉；截断长度选择不当（比如照抄别人的 100 bp）会同时降低分类分辨率与多样性估计。",
+      "正链/负链处理选项用错会丢掉大量真实读长。某些 16S 引物对产生的扩增子两端方向混杂，需要按官方文档设置方向过滤；设置错误时表现为某些样本保留比例异常低。",
+      "Deblur 与 DADA2 的 ASV 集合不可互换、也不可跨方法合并。如果中途换了方法，必须把全部样本重跑一遍，否则样本间差异里混着方法差异，而且这种差异恰好会与批次相关时最难发现。",
+      "ITS 不要用 Deblur：ITS 长度变异大，无法截断到统一长度，硬截会丢掉大部分真菌。真菌走 DADA2 的 ITS 工作流。",
+      "引物未切除时，残留引物会成为所有读长共有的前缀，使 Deblur 的 k-mer 比较失真，并让部分含引物、部分不含引物的读长被当作不同序列。导入阶段的引物切除不是可选项。"
+    ],
+    "related": [
+      { "id": "amplicon_dada2", "note": "另一种 ASV 方法；长度不齐或低生物量时更合适" },
+      { "id": "amplicon_qiime2_import", "note": "上游导入与引物切除" },
+      { "id": "amplicon_taxonomy_assign", "note": "ASV 注释" }
+    ],
+    "docs": [
+      { "label": "第 8 章 宏基因组与微生物组", "path": "docs/guidebook/08-metagenome-microbiome.md" }
+    ]
+  },
+  {
+    "id": "amplicon_taxonomy_assign",
+    "name": "ASV 物种注释 (SILVA / Greengenes2)",
+    "category": "amplicon",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["metagenomics"],
+    "tags": ["物种注释", "silva", "greengenes", "分类器", "16S", "置信度"],
+    "summary": "ASV 物种注释：数据库与置信度决定上限",
+    "what": [
+      "注释把 ASV 的核酸序列变成可解释的分类学标签（界/门/纲/目/科/属/种）。主流做法有三类：朴素贝叶斯分类器（QIIME 2 的 q2-feature-classifier，用预先在参考数据库上训练好的 sklearn 分类器；DADA2 的 assignTaxonomy 属同一族方法，基于参考序列的 k-mer 相似度）、一致性比对（VSEARCH/BLAST 把 ASV 比到参考库，按多数投票给标签），以及系统发育放置（SEPP、EPA-ng，把短序列插入参考树，精度更高但更慢、依赖参考树）。目前默认是朴素贝叶斯，用一致性比对做交叉验证。",
+      "**参考数据库的选择必须显式记录**，因为它直接决定你能看到什么：SILVA 覆盖广、更新活跃、命名体系成熟；Greengenes2 用全长系统发育把 16S 与鸟枪法数据放进同一套可比较的框架；GTDB 也提供 16S，但分类与命名是另一套体系（例如 GTDB 对梭菌纲、肠杆菌目的划分与 SILVA/NCBI 差异很大）。同一个 ASV 在不同库里可能得到不同层级的名字，甚至一个拿到属名、另一个只到科；**用 SILVA 注释的结果不能与用 Greengenes2 的结果逐条对比**，跨研究比较要么统一数据库，要么退到属以上层级并做名称映射。",
+      "置信度阈值是第二个关键取舍。QIIME 2 的 classify-sklearn 默认 0.7，调高会让更多 ASV 停在属/科水平但减少错误种名；DADA2 的 assignTaxonomy 有 minBoot 门槛，assignSpecies 还要求精确匹配。**宁可停在属，也不要错的种名**——微生物组文献里大量「某菌在病例组升高」的结论其实只到属水平，把它们写成种名是常见的过度解读。",
+      "还有一个容易被忽略的匹配问题：训练区域必须与你的扩增区一致。用 V4 区训练的分类器去注释 V3–V4 或 V4–V5 的 ASV，会得到系统性偏差的注释结果，而流程本身不会报错。分区域训练自己的分类器（RESCRIPt 提供这类工具）比直接下载一个「通用」分类器更可靠。"
+    ],
+    "inputs": [
+      { "type": "feature-table", "name": "ASV 表与代表序列", "required": true, "note": "注释的对象是 ASV 序列；DADA2 的 seqtab 以序列为特征名，QIIME 2 路线下 table.qza 需与 rep-seqs.qza 成对提供" },
+      { "type": "reference-genome", "name": "训练好的分类器或参考序列库", "required": true, "note": "SILVA / Greengenes2 / UNITE 的训练集或参考 FASTA；版本与训练区域必须记录" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "ASV 分类学注释表", "ext": ".taxonomy.tsv", "note": "ASV id → 各层级标签与置信度；保留低置信度条目而不是直接删掉，便于复核" },
+      { "type": "abundance-table", "name": "按分类层级汇总的丰度表", "ext": ".taxa-abundance.tsv", "note": "在属/科等层级把 ASV 汇总；**汇总层级一旦改变，结果就不可比**，必须与图一起声明" },
+      { "type": "feature-table", "name": "带注释的特征表", "ext": ".feature-table-annotated.tsv", "note": "注释与计数合并后的表，是多样性与差异分析的实际输入" },
+      { "type": "report", "name": "注释与组成可视化", "ext": ".qzv", "note": "QIIME 2 的 taxa barplot 一类交互报告；用于人工检查是否有明显错分" }
+    ],
+    "provides": [
+      { "tool": "q2-feature-classifier", "version": "2024.x", "access": "cli", "install": "conda", "note": "classify-sklearn 与 classify-consensus-* 的提供者" },
+      { "tool": "DADA2 (assignTaxonomy)", "version": "1.3x", "access": "r-api", "install": "cran", "note": "k-mer 相似度的注释路线；与去噪在同一 R 会话里完成" },
+      { "tool": "VSEARCH", "version": "2.2x", "access": "cli", "install": "conda", "note": "一致性比对注释；常用来交叉验证朴素贝叶斯的结果" },
+      { "tool": "RESCRIPt", "version": "2024.x", "access": "cli", "install": "conda", "note": "QIIME 2 插件；下载、去冗余并训练与扩增区匹配的分类器，插件命令与参数以官方文档为准" }
+    ],
+    "feeds": [
+      { "target": "amplicon_phyloseq", "viaType": "tsv-table", "note": "R 侧把注释与计数、元数据合成一个对象，做组成性变换与差异分析" },
+      { "target": "viz_composition_bar", "viaType": "abundance-table", "note": "按门/属画群落组成堆叠图；必须同时声明汇总层级" },
+      { "target": "viz_heatmap", "viaType": "abundance-table", "note": "展示高丰度类群在样本间的分布模式" }
+    ],
+    "usage": [
+      {
+        "label": "QIIME 2：朴素贝叶斯注释",
+        "lang": "bash",
+        "code": "qiime feature-classifier classify-sklearn \\\n  --i-classifier silva-138-99-nb-classifier.qza \\\n  --i-reads rep-seqs.qza \\\n  --p-confidence 0.7 \\\n  --o-classification taxonomy.qza\n# 分类器文件名与版本随 QIIME 2 数据资源更新，务必记录实际使用的那个"
+      },
+      {
+        "label": "查看注释结果与组成",
+        "lang": "bash",
+        "code": "qiime metadata tabulate --m-input-file taxonomy.qza --o-visualization taxonomy.qzv\nqiime taxa barplot \\\n  --i-table table.qza --i-taxonomy taxonomy.qza \\\n  --m-metadata-file metadata.tsv \\\n  --o-visualization taxa-bar-plots.qzv"
+      },
+      {
+        "label": "DADA2：k-mer 相似度注释",
+        "lang": "bash",
+        "code": "taxa <- assignTaxonomy(seqtab.nochim, \"silva_nr99_v138.1_train_set.fa.gz\", multithread = TRUE)\n# 种水平需要额外的 exact-match 步骤；训练集版本必须与扩增区域匹配"
+      },
+      {
+        "label": "自建与扩增区匹配的分类器（插件命令以官方文档为准）",
+        "lang": "bash",
+        "code": "qiime rescript get-silva-data --p-version 138.1 --p-target 'SSU' \\\n  --o-silva-sequences silva-ssu-r138-1-seq.qza --o-silva-taxonomy silva-ssu-r138-1-tax.qza\n# 再按引物区段提取、去冗余并 fit-classifier-naive-bayes"
+      }
+    ],
+    "recipes": {
+      "bash": "qiime feature-classifier classify-sklearn \\\n  --i-classifier ${CLASSIFIER} --i-reads 02_asv/rep-seqs.qza \\\n  --p-confidence 0.7 --p-n-jobs ${THREADS} \\\n  --o-classification 03_taxonomy/taxonomy.qza\nqiime taxa collapse --i-table 02_asv/table.qza --i-taxonomy 03_taxonomy/taxonomy.qza \\\n  --p-level 6 --o-collapsed-table 03_taxonomy/table-l6.qza",
+      "r": "library(dada2)\ntaxa <- assignTaxonomy(seqtab.nochim, refFasta, multithread = TRUE)\ntaxa.print <- taxa\nrownames(taxa.print) <- NULL\nwrite.table(taxa.print, \"03_taxonomy/taxonomy.tsv\", sep = \"\\t\", quote = FALSE)"
+    },
+    "params": [
+      { "flag": "--p-confidence", "default": "0.7", "note": "朴素贝叶斯的置信度门槛。提高（如 0.8–0.9）会让更多 ASV 停在属/科但减少错误种名；降低会把低置信度的种名也报出来，是过度解读的常见来源" },
+      { "flag": "--p-reads-per-batch / --p-n-jobs", "default": "以官方文档为准", "note": "批大小与并行数；只影响速度与内存，不影响注释结果，但内存不足会让大项目在跑了一半时失败" },
+      { "flag": "assignTaxonomy minBoot", "default": "50", "note": "bootstrap 支持度下限；提高可减少假种名，DADA2 与 QIIME 2 的默认门槛不同，跨工具比较时要留意" },
+      { "flag": "参考数据库版本与区域", "default": "无", "note": "SILVA 138.x、Greengenes2 的具体发布版本、以及训练所用的扩增区段都必须写进方法；这是结果能否复现的前提" }
+    ],
+    "pitfalls": [
+      "训练区域与扩增区不匹配是最隐蔽的错误：用 V4 分类器注释 V3–V4 的 ASV，流程能跑完、也会给出名字，但注释准确度明显下降。自建分类器或用与引物匹配的官方资源。",
+      "**换数据库 = 换答案**。SILVA、Greengenes2、GTDB 的分类层级与命名差异很大，同一批 ASV 的「属水平组成图」会长得很不一样。数据库版本（含发布日期）必须与结果一起记录，跨研究比较前先统一体系或退到高层级。",
+      "置信度阈值过低会产生大量错误种名，尤其在肠道、皮肤这类参考覆盖很好的环境里——「有名字」不等于「名字对」。看到种水平结果时先检查置信度与数据库是否真的支持种水平分辨。",
+      "「unidentified / uncultured」占比高不是流程错误。环境样本里 20%–40% 的 ASV 拿不到属名是常态，说明参考数据库覆盖不足。把它们删掉再画组成图会系统性高估已知类群的比例。",
+      "不要把 SILVA 的注释结果与 MAG/GTDB 路线的分类直接比较。两套体系对高级分类单元（纲、目）的划分不同，看起来「同一个属在两条路线里丰度差很多」，很多时候只是命名体系不同。",
+      "ASV 表里有大量只出现一两次的序列，它们的注释几乎不可靠；分析时可以对低丰度 ASV 的注释结果打折（例如只在属水平使用），但不要在流程里静默丢弃它们，否则无法评估丢失了多少数据。"
+    ],
+    "related": [
+      { "id": "amplicon_dada2", "note": "上游去噪；DADA2 路线在同一个 R 会话里完成注释" },
+      { "id": "amplicon_phyloseq", "note": "把注释表与计数、元数据合成对象" },
+      { "id": "meta_mag_taxonomy", "note": "宏基因组的分类路线，体系与命名不同，不可逐条比较" },
+      { "id": "util_download_ref", "note": "参考数据库的下载与版本管理" }
+    ],
+    "docs": [
+      { "label": "第 8 章 宏基因组与微生物组", "path": "docs/guidebook/08-metagenome-microbiome.md" }
+    ]
+  },
+  {
+    "id": "amplicon_qiime2_diversity",
+    "name": "多样性与群落结构 (QIIME 2 diversity)",
+    "category": "amplicon",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["metagenomics"],
+    "tags": ["alpha 多样性", "beta 多样性", "permanova", "unifrac", "抽平", "排序"],
+    "summary": "alpha/beta 多样性与群落结构检验",
+    "what": [
+      "拿到特征表之后，多样性分析回答两类问题：单样本内部有多少、多均匀（alpha 多样性：observed features、Shannon、Faith's PD 等），以及样本之间有多像（beta 多样性：Bray-Curtis、Jaccard、UniFrac 等距离，再用 PCoA/NMDS 排序并做统计检验）。它在 QIIME 2 里由 q2-diversity 提供，core-metrics 一条命令就把这些指标全部算出来。",
+      "**测序深度必须先统一，再比较 alpha 多样性**。Shannon、observed features 这类指标对深度高度敏感：测得浅的样本天然显得「多样性低」，如果不校正就直接比较组间差异，你测出来的其实是测序深度差异。标准做法是先看 alpha 稀释曲线与每样本读长数，选一个所有（或绝大多数）样本都能达到的抽样深度，用它统一抽平后再比较。反过来，深度差别不大且样本量大时，也有人主张不抽平、直接把深度作为协变量放进模型——两条路都可以，但**必须显式选择并说明**，不能不处理。",
+      "抽平本身是有争议的：它会丢弃数据、会把低深度样本的组成变得不稳，也不能修复「某些样本本来就读得少」这一问题。稳妥的做法是报告抽平深度的选择依据，并用不依赖深度的指标或对深度稳健的方法复核关键结论。",
+      "统计上要报的不只是 p 值。PERMANOVA（如 adonis2）给出 R² 与 p，R² 才说明「分组能解释多少群落变异」；同时要做组内离散度检验（PERMDISP / betadisper）——**组间差异常常只是某一组样本波动更大**，只看 PERMANOVA 会把「离散度差异」误报成「群落结构差异」。依赖树的指标（Faith's PD、UniFrac）还要求先建一棵有根的树（常用 mafft 比对 + fasttree 建树，短读长可用 SEPP 插入参考树），换一种建树方式结果就不可比。"
+    ],
+    "inputs": [
+      { "type": "feature-table", "name": "特征表（ASV/OTU 计数）", "required": true, "note": "建议已在 decontam 处理之后；抽平前的原始计数表" },
+      { "type": "tsv-table", "name": "样本元数据", "required": true, "note": "分组变量、受试者 id、批次；没有元数据就只能算指标，无法做任何检验" },
+      { "type": "tree", "name": "有根系统发育树", "required": false, "note": "计算 Faith's PD 与 UniFrac 时需要；可在本模块内用 align-to-tree-mafft-fasttree 生成" }
+    ],
+    "outputs": [
+      { "type": "cluster-dist", "name": "beta 距离矩阵与排序坐标", "ext": ".distance-matrix.tsv", "note": "含各距离矩阵与 PCoA 坐标，是画排序图与做 PERMANOVA 的输入" },
+      { "type": "stats-result", "name": "alpha 多样性与组间检验结果", "ext": ".diversity-stats.tsv", "note": "每样本指标值 + 分组检验的统计量与 p 值；抽平深度必须记录在同一张表或方法里" },
+      { "type": "report", "name": "多样性与排序可视化", "ext": ".qzv", "note": "QIIME 2 交互报告（箱线图、稀释曲线、PCoA）；用于内部判断" }
+    ],
+    "provides": [
+      { "tool": "QIIME 2 (q2-diversity)", "version": "2024.x", "access": "cli", "install": "conda", "note": "core-metrics 与各种 alpha/beta 指标" },
+      { "tool": "QIIME 2 (q2-phylogeny)", "version": "2024.x", "access": "cli", "install": "conda", "note": "align-to-tree-mafft-fasttree，为 PD/UniFrac 建树" },
+      { "tool": "SEPP (q2-fragment-insertion)", "version": "2024.x", "access": "cli", "install": "conda", "note": "把短读长 ASV 插入参考树；片段太短导致自建树不可靠时的替代路线" }
+    ],
+    "feeds": [
+      { "target": "viz_alpha_beta", "viaType": "cluster-dist", "note": "画 PCoA/NMDS 与 alpha 多样性箱线图" },
+      { "target": "viz_rarefaction_curve", "viaType": "stats-result", "note": "用不同深度下的 alpha 指标画稀释曲线，支撑抽平深度的选择" },
+      { "target": "r_vegan_diversity", "viaType": "cluster-dist", "note": "在 R 里做 adonis2/betadisper、约束排序等更细的统计" }
+    ],
+    "usage": [
+      {
+        "label": "建树 + 一条命令算完常用多样性指标",
+        "lang": "bash",
+        "code": "qiime phylogeny align-to-tree-mafft-fasttree \\\n  --i-sequences rep-seqs.qza \\\n  --o-alignment aligned-rep-seqs.qza \\\n  --o-masked-alignment masked-aligned-rep-seqs.qza \\\n  --o-tree unrooted-tree.qza \\\n  --o-rooted-tree rooted-tree.qza\n\nqiime diversity core-metrics-phylogenetic \\\n  --i-phylogeny rooted-tree.qza --i-table table.qza \\\n  --p-sampling-depth 10000 \\\n  --m-metadata-file metadata.tsv \\\n  --output-dir core-metrics-results"
+      },
+      {
+        "label": "先看稀释曲线再决定抽平深度",
+        "lang": "bash",
+        "code": "qiime diversity alpha-rarefaction \\\n  --i-table table.qza --i-phylogeny rooted-tree.qza \\\n  --p-max-depth 30000 --m-metadata-file metadata.tsv \\\n  --o-visualization alpha-rarefaction.qzv"
+      },
+      {
+        "label": "分组差异与离散度检验",
+        "lang": "bash",
+        "code": "qiime diversity beta-group-significance \\\n  --i-distance-matrix core-metrics-results/bray_curtis_distance_matrix.qza \\\n  --m-metadata-file metadata.tsv \\\n  --m-metadata-column Group --p-method permanova --p-pairwise \\\n  --o-visualization bray-curtis-group-significance.qzv\n# 同时做组内离散度检验（PERMDISP），否则可能把离散度差异误读为群落差异"
+      }
+    ],
+    "recipes": {
+      "bash": "qiime diversity core-metrics-phylogenetic \\\n  --i-phylogeny 02_asv/rooted-tree.qza --i-table 02_asv/table-nochim.qza \\\n  --p-sampling-depth ${SAMPLING_DEPTH} \\\n  --m-metadata-file 00_raw/metadata.tsv \\\n  --output-dir 04_diversity/core-metrics \\\n  --p-n-jobs ${THREADS}",
+      "r": "library(vegan)\ndist_bc <- vegdist(t(asv_counts), method = \"bray\")\nmod <- adonis2(dist_bc ~ Group, data = meta, permutations = 999)\ndisp <- betadisper(dist_bc, meta$Group)\npermutest(disp)\n# 同时报告 R2、p 与组内离散度，缺一不可"
+    },
+    "params": [
+      { "flag": "--p-sampling-depth", "default": "无（必填）", "note": "抽平深度。取太低会丢掉大部分样本，取太高只会剩下少数样本；必须由 alpha 稀释曲线与每样本读长数分布共同决定，并把最终取值写进方法" },
+      { "flag": "--p-method（beta-group-significance）", "default": "permanova", "note": "permanova 检验组间差异，permdist 检验组内离散度；两者结论不一致时以「先解决离散度差异」为原则" },
+      { "flag": "--p-pairwise", "default": "关闭", "note": "多组时做两两比较；注意多重检验校正，否则组数一多就会「到处都是显著」" },
+      { "flag": "距离指标选择", "default": "bray_curtis / unweighted_unifrac 等", "note": "加权 UniFrac 与 Bray-Curtis 对丰度敏感，unweighted UniFrac 只看有无、对稀有类群极敏感；指标选择会改变结论，需在方法里说明理由" },
+      { "flag": "Faith's PD / UniFrac 的树", "default": "本模块自建", "note": "树不同结果不同；短读长 ASV 自建树可能不可靠，此时用 SEPP 插入参考树，并记录参考树版本" }
+    ],
+    "pitfalls": [
+      "**不统一深度就比 alpha 多样性 = 在比测序深度**。这是扩增子分析最常见的错误之一：低深度样本的 observed features 与 Shannon 系统性偏低，分组恰好与测序批次相关时，会得到完全虚假的「处理组多样性下降」。",
+      "抽平会丢数据，而且**不能修复**本来就读得少的样本：抽平后那些样本的组成仍不可靠。如果某组样本普遍更浅，正确做法是说明这一点并做敏感性分析，而不是靠抽平「抹平」。",
+      "PCoA 图看着分得很开不等于统计显著，也不等于生物学差异大：前两轴的解释度经常只有 10%–20%。必须报 PERMANOVA 的 R²（分组解释了多少变异）而不能只报 p。",
+      "**组间差异可能只是组内离散度不同**。做 PERMANOVA 之前或同时做 PERMDISP；如果离散度显著不同，先怀疑样本质量/批次，而不是急着解释群落结构。",
+      "伪重复：同一个受试者的多个时间点、多个部位被当作独立样本，会把个体间差异当成组间差异，显著性被系统性放大。必须用受试者作为置换限制（block/strata）或混合效应模型。",
+      "低生物量样本（皮肤、呼吸道、组织、水）里几条读长就能把样本在 PCoA 上推到很远。这类样本要结合 decontam 结果一起看，并对低深度样本的排序位置保持怀疑。",
+      "UniFrac/Faith's PD 依赖树拓扑与根的位置：换建树工具、换参考树、忘记定根都会改变数值。跨研究比较这些指标前先确认树是同一套。"
+    ],
+    "related": [
+      { "id": "amplicon_phyloseq", "note": "R 侧的同类分析与差异丰度；与 QIIME 2 路线二选一即可" },
+      { "id": "amplicon_decontam", "note": "应在多样性分析之前完成" },
+      { "id": "viz_rarefaction_curve", "note": "稀释曲线的专门模块" },
+      { "id": "r_vegan_diversity", "note": "更灵活的排序与置换检验" }
+    ],
+    "docs": [
+      { "label": "第 8 章 宏基因组与微生物组", "path": "docs/guidebook/08-metagenome-microbiome.md" }
+    ]
+  },
+  {
+    "id": "amplicon_phyloseq",
+    "name": "微生物组数据对象与差异分析 (phyloseq)",
+    "category": "amplicon",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["metagenomics"],
+    "tags": ["phyloseq", "差异丰度", "组成性", "clr", "ancombc", "aldex2", "统计"],
+    "summary": "微生物组对象与组成性感知的差异分析",
+    "what": [
+      "phyloseq 把特征表（ASV/OTU 计数）、分类学注释、代表序列与样本元数据打包成一个对象，是 R 侧微生物组分析的事实标准。它本身不产生新结果，但让「表 + 注释 + 元数据」始终同步，避免样本顺序错位这类灾难性的低级错误；之后所有分析（过滤、变换、排序、差异检验）都作用在同一个对象上，样本与特征的对应关系不会中途丢失。",
+      "**组成性（compositional）是这块内容的核心**。测序只能给出相对比例：某个类群比例上升会机械地让其他所有类群比例下降，因此「某菌在病例组升高」可能只是别的菌减少了，而不是它真的增多。在这种数据上做常规的 t 检验、Wilcoxon 或 Kruskal-Wallis，会系统性地产生大量假阳性（通常几十个百分点）。正确做法有两条：一是先做对数比变换（CLR/ILR）再做常规统计，二是使用为组成性数据设计的方法，如 ANCOM-BC（估计并校正结构零与采样分数）或 ALDEx2（CLR + Monte Carlo 检验）。DESeq2/edgeR 在微生物组里很常见，但它们的离散度估计与「大多数特征不变」的中位数归一化假设是为 RNA-seq 设计的，在稀疏、零膨胀、组成性的扩增子数据上偏激进，用它们时至少要报告与其他方法的一致性。",
+      "**样本量决定可信度上限**。差异丰度分析的检验效能很低：经验上总样本数少于 14（每组 7 个左右）时，几乎任何方法都无法稳定检出中等效应，而且结果对方法选择极度敏感——同一批数据换 DESeq2 / ALDEx2 / ANCOM-BC，显著清单的重叠常常低得让人意外。样本量小时应把结果当探索性假设，报告效应量与置信区间，并做敏感性分析（多种方法 + 多种过滤阈值，只把一致的条目当结论）。",
+      "**伪重复**同样致命：同一受试者的多个时间点或部位不是独立观测。10 个人 × 5 个时间点被当作 50 个独立样本做检验，会把个体间差异当成组间差异，p 值被系统性放大。正确做法是用混合效应模型（随机截距 = 受试者）或限制置换（在受试者内置换）。此外，过滤低丰度特征、是否抽平、用哪种归一化都会改变结果，这些选择必须在看结果之前确定并写进方法。"
+    ],
+    "inputs": [
+      { "type": "feature-table", "name": "特征表（ASV/OTU 计数）", "required": true, "note": "必须是原始计数，不能是相对丰度或已抽平的数据；差异丰度模型需要整数计数" },
+      { "type": "tsv-table", "name": "样本元数据", "required": true, "note": "分组变量、受试者 id、批次、DNA 浓度等；样本名必须与表的列名完全一致" },
+      { "type": "tree", "name": "有根系统发育树", "required": false, "note": "做 UniFrac 或系统发育相关的分析时才需要" }
+    ],
+    "outputs": [
+      { "type": "dataframe", "name": "phyloseq 对象", "ext": "(内存对象)", "note": "含计数表、注释、元数据与可选的树；建议连同构建脚本一起保存，对象本身跨版本不保证兼容" },
+      { "type": "abundance-table", "name": "变换后的丰度矩阵", "ext": ".clr.tsv", "note": "CLR/ILR 变换或相对丰度矩阵；必须同时记录变换方式与是否加伪计数" },
+      { "type": "stats-result", "name": "差异丰度检验结果", "ext": ".da-results.tsv", "note": "含效应量（log2FC/CLR 差）、p 值、校正后 q 值与所用方法；单一方法的输出不应作为唯一结论" }
+    ],
+    "provides": [
+      { "tool": "phyloseq", "version": "1.4x", "access": "r-api", "install": "cran", "note": "Bioconductor 包；对象结构与函数接口在大版本间有变化" },
+      { "tool": "microbiome", "version": "1.2x", "access": "r-api", "install": "cran", "note": "提供 CLR/ILR 等组成性变换与常用统计封装" },
+      { "tool": "ANCOMBC", "version": "2.x", "access": "r-api", "install": "cran", "note": "组成性感知的差异丰度方法；1.x 与 2.x 的接口不同（ancombc / ancombc2）" },
+      { "tool": "ALDEx2", "version": "1.3x", "access": "r-api", "install": "cran", "note": "CLR + Monte Carlo 检验，给出效应量；对稀疏数据相对稳健" },
+      { "tool": "DESeq2", "version": "1.4x", "access": "r-api", "install": "cran", "note": "负二项模型；在微生物组里使用需注意其归一化假设，不要作为唯一证据" }
+    ],
+    "feeds": [
+      { "target": "viz_volcano_ma", "viaType": "stats-result", "note": "差异丰度结果的火山图/MA 图" },
+      { "target": "viz_composition_bar", "viaType": "abundance-table", "note": "用变换后的丰度画组成图，注意注明是相对丰度还是 CLR" },
+      { "target": "r_export_table", "viaType": "stats-result", "note": "整理成可交付的补充材料表格" }
+    ],
+    "usage": [
+      {
+        "label": "构建对象（表 + 注释 + 元数据）",
+        "lang": "bash",
+        "code": "library(phyloseq)\notu <- otu_table(as.matrix(asv_counts), taxa_are_rows = TRUE)\ntax <- tax_table(as.matrix(taxonomy))\nsd  <- sample_data(metadata)          # rownames 必须与 otu 的列名一致\nps  <- phyloseq(otu, tax, sd)\nps"
+      },
+      {
+        "label": "组成性变换（CLR）",
+        "lang": "bash",
+        "code": "library(microbiome)\nps_clr <- transform(ps, \"clr\")\n# 零值处理方式会影响结果：加伪计数、或用 zCompositions 一类方法做零值替换，必须写进方法"
+      },
+      {
+        "label": "组成性感知的差异丰度：ANCOM-BC2",
+        "lang": "bash",
+        "code": "library(ANCOMBC)\nout <- ancombc2(data = ps, fix_formula = \"Group + Batch\",\n                p_adj_method = \"BH\", group = \"Group\")\n# 1.x 版本的函数名与参数不同（ancombc()），以官方文档为准"
+      },
+      {
+        "label": "敏感性分析：换一种方法复核",
+        "lang": "bash",
+        "code": "library(ALDEx2)\nx <- aldex.clr(t(asv_counts), conds = metadata$Group, mc.samples = 128)\nx.tt <- aldex.ttest(x)\nx.eff <- aldex.effect(x)\n# 与 ANCOM-BC / DESeq2 的显著清单取交集，只把一致的条目当结论"
+      }
+    ],
+    "recipes": {
+      "bash": "Rscript -e 'library(phyloseq); ps <- readRDS(\"05_stats/ps.rds\"); saveRDS(ps, \"05_stats/ps.rds\")'",
+      "r": "library(phyloseq); library(ANCOMBC)\nps <- phyloseq(otu_table(as.matrix(counts), taxa_are_rows = TRUE),\n               tax_table(as.matrix(taxonomy)),\n               sample_data(metadata))\nps <- prune_samples(sample_sums(ps) > 1000, ps)\nout <- ancombc2(data = ps, fix_formula = \"Group + Batch\", p_adj_method = \"BH\")\nwrite.csv(out$res, \"05_stats/ancombc2_results.csv\", row.names = FALSE)"
+    },
+    "params": [
+      { "flag": "fix_formula（ANCOM-BC2）", "default": "无", "note": "把批次、受试者等协变量写进公式，而不是事后解释；伪重复数据必须把受试者 id 放进模型" },
+      { "flag": "p_adj_method", "default": "BH", "note": "多重检验校正方法；用了 BH 就不要只报原始 p 值，也不要把 q=0.1 的结果描述成「显著升高」" },
+      { "flag": "prev_cut / 低丰度过滤", "default": "以官方文档为准", "note": "过滤掉在极少数样本出现的特征会改变组成性基准，从而改变所有其他特征的相对关系；阈值必须在看结果前定好并记录" },
+      { "flag": "CLR 的零值处理", "default": "无统一默认", "note": "CLR 对零值没有定义，必须显式选择伪计数或零值替换方法；不同处理会让效应量不可比" },
+      { "flag": "mc.samples（ALDEx2）", "default": "128", "note": "Monte Carlo 抽样次数；样本量小时提高它只能降低估计噪声，不能提高检验效能" }
+    ],
+    "pitfalls": [
+      "**相对丰度上做常规检验会产生大量假阳性**。这是微生物组统计最常见的翻车点：一个类群升高会机械地压低所有其他类群，因此「显著升高」与「显著降低」的条目往往是同一现象的两种表现。要用 CLR/ILR 变换，或 ANCOM-BC、ALDEx2 这类组成性感知方法，并在方法里写明所用变换。",
+      "**14 个样本以下的差异丰度分析不可靠**。每组 7 个左右时，结果几乎完全由方法选择与个别样本决定；换方法显著清单就大变。这种情况下应把结论下调为探索性假设，并报告效应量与置信区间，而不是列一张「显著物种表」。",
+      "**伪重复**：把同一受试者的多时间点/多部位样本当独立样本，会系统性放大显著性。必须用混合效应模型或限制置换；这是审稿人一眼就能看出的问题。",
+      "抽平之后再跑 DESeq2 / ANCOM-BC 是错的：这些模型需要原始整数计数。抽平只适用于多样性比较，不适用于计数模型。",
+      "样本名不匹配会让 phyloseq 报错，或（在某些手工合并操作里）静默丢样本。构建对象后第一件事是核对样本数、以及元数据行数是否与表的列数一致。",
+      "「加伪计数 + CLR」会掩盖真正的结构零；而「直接删掉零多的特征」又会改变组成性基准。两种做法都行，但必须显式选择、记录，并做敏感性分析看结论是否稳健。",
+      "不要用 p 值单独排序「重要菌」。效应量（log2 倍数变化、CLR 差）与检出率一起看，才能区分「差异小但样本一致」与「差异大但只在一个样本里」。",
+      "把 q 值边界（如 q=0.06）写成「有升高趋势」是常见的过度解读；如果检验效能本来就不足，这个「趋势」多半是噪声。"
+    ],
+    "related": [
+      { "id": "amplicon_dada2", "note": "上游产出计数表" },
+      { "id": "amplicon_taxonomy_assign", "note": "提供分类学注释表" },
+      { "id": "amplicon_decontam", "note": "应在差异分析之前完成污染物剔除" },
+      { "id": "r_vegan_diversity", "note": "排序与置换检验的补充工具" },
+      { "id": "viz_volcano_ma", "note": "差异结果的可视化" }
+    ],
+    "docs": [
+      { "label": "第 8 章 宏基因组与微生物组", "path": "docs/guidebook/08-metagenome-microbiome.md" }
+    ]
+  },
+  {
+    "id": "amplicon_decontam",
+    "name": "污染物序列识别 (decontam)",
+    "category": "amplicon",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "active",
+    "domains": ["metagenomics"],
+    "tags": ["污染", "空白对照", "decontam", "低生物量", "批次效应", "试剂"],
+    "summary": "用空白对照识别试剂与环境污染序列",
+    "what": [
+      "decontam 用两类证据识别污染物。频率法（prevalence）：在空白对照里出现的序列，如果它在空白中出现的频率高于在真实样本中，且这种模式与样本的 DNA 浓度或生物量呈负相关，就被判为污染物——因为污染物在读长总量中的占比会随真实 DNA 减少而升高。浓度法（concentration）：直接检验序列丰度与样本 DNA 浓度之间的负相关。前者需要空白对照，后者需要浓度测定（Qubit 等），两者结合（combined）通常最稳。",
+      "**为什么这一步不能省**：低生物量样本（皮肤、呼吸道、组织、水、任何稀释过的样本）的群落组成主要由试剂与环境污染决定。常见的试剂污染物在文献里反复出现（例如 Ralstonia、Bradyrhizobium、Cutibacterium 等，具体物种随试剂批次与实验室而变），而且不同提取/建库批次的污染谱不同——这就是批次效应。污染序列会被 PCR 放大，在低生物量样本里可能占据相当比例，直接导致「处理组出现了某种菌」这类虚假结论。没有空白对照，就无法区分这些序列与真实存在的低丰度类群。",
+      "它给出的是统计判定而不是事实。阈值（默认 0.1）控制「判为污染物」的严格程度：调高会删掉更多序列（也包括真实低丰度类群），调低会留下更多可疑序列。因此正确用法是把 decontam 的结果当作一个**清单**：报告删掉了哪些序列、占多少读长，并做敏感性分析（删/不删对主要结论的影响）。另一条互补路线是不删序列，而把提取批次作为协变量放进下游模型。",
+      "操作顺序很重要：decontam 必须在**原始计数**上运行（不能在相对丰度或抽平后的表上），而且要早于抽平与差异分析，通常放在去噪之后、注释与多样性之前。空白对照必须与样本在同一批次里处理；采样空白（field blank）反映采样环境，试剂空白（extraction/PCR blank）反映试剂与操作污染，两者要分开判断，不要混在一组里。"
+    ],
+    "inputs": [
+      { "type": "feature-table", "name": "未抽平的 ASV 计数表", "required": true, "note": "必须含空白对照样本列；必须是原始计数，不能是相对丰度" },
+      { "type": "tsv-table", "name": "样本元数据", "required": true, "note": "频率法需 is.negative 之类的空白标记列，浓度法需 DNA 浓度列，两者都有时可用 combined" }
+    ],
+    "outputs": [
+      { "type": "feature-table", "name": "去除污染物后的计数表", "ext": ".feature-table-decontam.tsv", "note": "进入注释与多样性分析；原始表必须保留，以便复核删了什么" },
+      { "type": "tsv-table", "name": "污染物判定清单", "ext": ".contaminants.tsv", "note": "每条 ASV 的判定结果与所依据的统计量；论文补充材料里应包含它" },
+      { "type": "report", "name": "污染物丰度分布图", "ext": ".pdf", "note": "plot_frequency 一类图：序列在空白与样本中的频率/丰度分布，用于人工确认判定是否合理" }
+    ],
+    "provides": [
+      { "tool": "decontam", "version": "1.2x", "access": "r-api", "install": "cran", "note": "Bioconductor 包；也可直接作用于 phyloseq 对象，两种入口的判定逻辑相同" }
+    ],
+    "feeds": [
+      { "target": "amplicon_taxonomy_assign", "viaType": "feature-table", "note": "先剔除污染物再注释，避免污染物被赋予醒目物种名后进入结论" },
+      { "target": "amplicon_qiime2_diversity", "viaType": "feature-table", "note": "去污染后再做多样性比较；低生物量样本尤其重要" },
+      { "target": "amplicon_phyloseq", "viaType": "feature-table", "note": "差异丰度分析前必须处理污染物，否则污染谱差异会被当成组间差异" }
+    ],
+    "usage": [
+      {
+        "label": "频率法（需要空白对照标记）",
+        "lang": "bash",
+        "code": "library(decontam)\n# seqtab：ASV × 样本计数矩阵；metadata 的 is.negative 是 TRUE/FALSE 列\ndf <- isContaminant(seqtab, method = \"frequency\", neg = \"is.negative\", threshold = 0.1)\ntable(df$contaminant)\nseqtab_clean <- seqtab[, !df$contaminant]"
+      },
+      {
+        "label": "浓度法（需要 DNA 浓度）",
+        "lang": "bash",
+        "code": "df <- isContaminant(seqtab, method = \"prevalence\", conc = \"dna_conc\", threshold = 0.1)\n# 浓度列必须是真实测得的数值；用 Nanodrop 的估值容易引入噪声"
+      },
+      {
+        "label": "人工复核判定结果",
+        "lang": "bash",
+        "code": "plot_frequency(seqtab, taxa_names(seqtab)[which.max(df$p)], neg = \"is.negative\")\n# 再结合 tax_table 看被判定为污染物的都是什么类群，判断是否符合已知的试剂污染谱"
+      }
+    ],
+    "recipes": {
+      "r": "library(decontam); library(phyloseq)\ndf <- isContaminant(otu_table(ps), method = \"combined\",\n                    neg = \"is.negative\", conc = \"dna_conc\", threshold = 0.1)\nwrite.csv(df, \"09_results/decontam_verdict.csv\")\nps_clean <- prune_taxa(!df$contaminant, ps)\nsaveRDS(ps_clean, \"05_stats/ps_clean.rds\")",
+      "bash": "Rscript 05_stats/decontam.R 2>&1 | tee 10_logs/decontam.log"
+    },
+    "params": [
+      { "flag": "method", "default": "frequency（有空白时）", "note": "frequency 用空白对照，prevalence 只用总体检出率、容易把稀有真实类群误判，combined 同时用频率与浓度证据，最稳但需要两类数据都齐全" },
+      { "flag": "threshold", "default": "0.1", "note": "判定门槛。文献里 0.1–0.5 都有人用；调高删得更多（也伤真实低丰度类群），必须在方法里写明取值并做敏感性分析" },
+      { "flag": "neg / conc 列名", "default": "无", "note": "元数据里的列名必须与代码完全一致；列名写错会报错或（更糟）取到错误的列，得到无意义的判定" },
+      { "flag": "是否同时用 isNotContaminant", "default": "关闭", "note": "它的目标是「确定不是污染物」，适用于想保守保留序列的场景；与 isContaminant 的默认判定不是同一套逻辑，混用会自相矛盾" }
+    ],
+    "pitfalls": [
+      "**没有空白对照也没有浓度数据，就不要跑 decontam**。它需要至少一类证据；强行运行（比如把某些样本手工标记成空白）得到的结果没有意义，却会让流程看起来「做过污染处理」。",
+      "在相对丰度表或抽平后的表上运行是错的。频率法与浓度法都基于读长量随样本生物量的变化关系，归一化会破坏这个关系。必须用原始计数，且必须在抽平之前。",
+      "采样空白与试剂空白要分开处理。混在一起判定，会把采样环境里的真实微生物（例如皮肤样本的环境菌）判成污染物。",
+      "被判定为污染物的序列不要悄悄删掉。论文里应报告删除了多少 ASV、占多少读长比例，并给出不删除时的结果；审稿人常常正是在这里提问。",
+      "**decontam 不能解决批次效应**。它只能识别「与空白对照谱一致」的序列；不同批次的污染谱差异需要在模型里用批次协变量处理。把 decontam 当作批次校正工具是误用。",
+      "频率法要求污染物在空白里确实有读长支持。如果污染物在所有样本（包括空白）里都是高丰度（例如引物二聚体、宿主 rRNA、极度常见的环境菌），decontam 抓不到它，需要靠别的证据（如与提取批次的相关性）判断。",
+      "阈值不能当作「调到显著为止」的旋钮。提高阈值删掉更多序列，往往会让组间差异变得「更干净」——那是删数据删出来的，不是发现。"
+    ],
+    "related": [
+      { "id": "amplicon_dada2", "note": "上游去噪，产出待判定的计数表" },
+      { "id": "amplicon_qiime2_import", "note": "空白对照必须在导入阶段就一起进表" },
+      { "id": "amplicon_phyloseq", "note": "下游差异分析；污染物不处理会让结果直接失真" },
+      { "id": "qc_contamination_screen", "note": "读长级的污染筛查，与 ASV 级的 decontam 互补" }
+    ],
+    "docs": [
+      { "label": "第 8 章 宏基因组与微生物组", "path": "docs/guidebook/08-metagenome-microbiome.md" },
+      { "label": "第 2 章 上游数据质控", "path": "docs/guidebook/02-upstream-qc.md" }
+    ]
+  },
+  {
+    "id": "amplicon_its_fungal",
+    "name": "真菌 ITS 扩增子分析 (ITSx / UNITE)",
+    "category": "amplicon",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "active",
+    "domains": ["metagenomics"],
+    "tags": ["ITS", "真菌", "unite", "itsxpress", "dada2", "标记基因"],
+    "summary": "ITS 长度变异下的真菌去噪与 UNITE 注释",
+    "what": [
+      "ITS 是真菌的官方条形码（ITS1 或 ITS2 区），但它与 16S 的生物学性质差别很大：长度在物种间变异极大（同一对引物的扩增子在部分类群间可差上百 bp）、两侧是保守的 SSU/LSU 而非 ITS 本身、拷贝数与种间变异速率也不均匀。因此 ITS 分析不能照搬 16S 的参数：不能设固定截断长度，不能只用一个方向的读长做去噪，注释库也不是 SILVA。",
+      "推荐的流程是：ITS 专用引物扩增（ITS1f/ITS2、ITS3/ITS4、ITS86F/ITS4 等）→ 导入与引物切除 → DADA2 的 ITS 工作流（不设 truncLen 而依赖 maxEE 与质量截断，并使用 pseudo-pooling）→ 用 ITSx 或 ITSxpress 从扩增子里切出真正的 ITS1/ITS2 区（去掉两侧的 SSU/LSU 保守区）→ 用 UNITE 参考集训练的分类器做注释。切 ITS 区这一步不能省：不切的话，比对会被两侧保守区主导，让不同物种因为共享保守区而「看起来很像」，注释结果假一致。",
+      "**关于 UNITE 与物种定义**：UNITE 用「物种假说」（species hypothesis，SH 编号）组织参考序列，解决了大量未培养真菌没有拉丁名的问题。SH 编号是参考序列簇的标识，**不是物种名**，把 SH 当物种报告是常见错误；需要物种名时只能报告「最接近的参考序列及其名称+相似度」。此外 ITS 对近缘种的分辨力有限（曲霉属、青霉属内多个种的 ITS 几乎一致），属水平通常是可靠上限。",
+      "**必须诚实说明的局限**：真菌参考库的覆盖度远不如 16S，环境样本里大量 ITS 序列没有匹配（unassigned/无参考是常态，不是流程错误）；ITS 引物也会扩增植物与其他真核生物，植物根系、叶际样本尤其严重，需要在分析前识别并去除宿主序列；真菌与细菌的读长比例**不能**用来推算生物量比例（拷贝数、基因组大小、提取效率差异都很大），要谈真菌:细菌比必须用 qPCR 等独立的定量手段。"
+    ],
+    "inputs": [
+      { "type": "raw-reads", "name": "ITS 扩增子读长", "required": true, "note": "ITS1 或 ITS2 专用引物扩增的双端/单端读长；引物序列需记录，切引物在导入阶段完成" },
+      { "type": "reference-genome", "name": "UNITE 参考集与训练好的分类器", "required": false, "note": "UNITE 动态数据集的版本必须记录；也可直接使用官方训练好的分类器" }
+    ],
+    "outputs": [
+      { "type": "feature-table", "name": "真菌 ASV 计数表", "ext": ".feature-table.tsv", "note": "长度变异大，因此不能用固定长度过滤；嵌合体去除同样必需" },
+      { "type": "tsv-table", "name": "ASV → UNITE 注释表", "ext": ".taxonomy-unite.tsv", "note": "含最接近参考序列、相似度与 SH 标识；不要把 SH 编号直接当物种名" },
+      { "type": "abundance-table", "name": "按分类层级汇总的真菌丰度表", "ext": ".taxa-abundance.tsv", "note": "通常汇总到属水平；汇总层级必须与图一起声明" }
+    ],
+    "provides": [
+      { "tool": "DADA2", "version": "1.3x", "access": "r-api", "install": "cran", "note": "ITS 工作流：不设固定截断长度、必须 pseudo-pooling" },
+      { "tool": "ITSx", "version": "1.1.x", "access": "cli", "install": "conda", "note": "从扩增子中提取真正的 ITS1/ITS2 区并保留侧翼标记；具体参数以官方文档为准" },
+      { "tool": "ITSxpress", "version": "2.x", "access": "cli", "install": "conda", "note": "QIIME 2 插件与独立版都可用的 ITS 区提取工具，面向高通量数据" },
+      { "tool": "UNITE", "version": "9.x", "access": "cli", "install": "binary", "note": "参考数据库，按日期发布通用/动态数据集；版本与发布日期必须记录，以官方发布为准" }
+    ],
+    "feeds": [
+      { "target": "amplicon_decontam", "viaType": "feature-table", "note": "真菌低生物量样本（空气、植物表面）污染极常见，有空白对照时必须先做污染判定" },
+      { "target": "amplicon_phyloseq", "viaType": "feature-table", "note": "R 侧的组成性分析与差异丰度；统计陷阱与细菌扩增子完全相同" },
+      { "target": "amplicon_qiime2_diversity", "viaType": "feature-table", "note": "真菌群落的 alpha/beta 多样性；同样必须先统一深度" },
+      { "target": "viz_composition_bar", "viaType": "abundance-table", "note": "按属水平展示真菌组成；需说明汇总层级与无法注释的比例" }
+    ],
+    "usage": [
+      {
+        "label": "ITS 去噪：不截断长度、使用 pseudo-pooling",
+        "lang": "bash",
+        "code": "library(dada2)\n# ITS 长度变异大：truncLen 设为 0（不截断），靠 maxEE 与质量截断控制\nfilterAndTrim(fnFs, filtFs, fnRs, filtRs,\n              truncLen = 0, maxEE = c(2, 2), truncQ = 2,\n              minLen = 50, rm.phix = TRUE, multithread = TRUE)\ndadaF <- dada(filtFs, err = errF, pool = \"pseudo\", multithread = TRUE)\n# pseudo-pooling 在 ITS 上尤其重要：长度变异会让按样本独立学习错误率失效"
+      },
+      {
+        "label": "切出真正的 ITS 区（ITSxpress）",
+        "lang": "bash",
+        "code": "qiime itsxpress trim-pair-output-unmerged \\\n  --i-per-sample-sequences demux-its.qza \\\n  --p-region ITS2 --p-taxa F \\\n  --p-threads 8 \\\n  --o-trimmed demux-its-trimmed.qza\n# region 与 taxa 要与实际引物匹配；参数以官方文档为准"
+      },
+      {
+        "label": "ITSx 独立版提取 ITS 区",
+        "lang": "bash",
+        "code": "ITSx -i asvs.fasta -o its_extracted --cpu 8 --preserve T\n# --preserve T 保留侧翼标记，便于回溯；输出文件命名与选项以官方文档为准"
+      },
+      {
+        "label": "用 UNITE 训练集注释",
+        "lang": "bash",
+        "code": "taxa <- assignTaxonomy(seqtab.nochim, \"unite_ref.fasta.gz\", multithread = TRUE)\n# 参考集版本（含发布日期）必须记录；SH 编号不是物种名"
+      }
+    ],
+    "recipes": {
+      "r": "library(dada2)\n# ITS：不设 truncLen，必须 pseudo-pooling\nseqtab.nochim <- removeBimeraDenovo(seqtab, method = \"consensus\", multithread = TRUE)\ntaxa <- assignTaxonomy(seqtab.nochim, unite_ref, multithread = TRUE)\nwrite.table(taxa, \"03_taxonomy/its_taxonomy.tsv\", sep = \"\\t\", quote = FALSE)",
+      "bash": "qiime itsxpress trim-pair-output-unmerged \\\n  --i-per-sample-sequences 01_clean/demux-its.qza \\\n  --p-region ITS2 --p-taxa F --p-threads ${THREADS} \\\n  --o-trimmed 01_clean/demux-its-trimmed.qza"
+    },
+    "params": [
+      { "flag": "truncLen", "default": "0（不截断）", "note": "ITS 长度变异大，固定截断会系统性丢掉长 ITS 的类群；改用 maxEE 与 minLen 控制质量与最短长度" },
+      { "flag": "pool", "default": "pseudo", "note": "ITS 上尤其关键：长度不一致会让「按样本独立学习错误率」失效，pool=FALSE 会明显漏检真实 ASV" },
+      { "flag": "minLen / maxLen", "default": "以官方文档为准", "note": "过滤过短/过长的读长；阈值要按实际 ITS1/ITS2 的长度分布定，不要照抄别人的数字" },
+      { "flag": "region / taxa（ITSxpress）", "default": "ITS2 / F", "note": "必须与实际引物和目标类群一致；区域选错会切掉真正的 ITS 区，留下保守区" },
+      { "flag": "UNITE 数据集版本", "default": "无", "note": "动态数据集（dynamic）会随日期变化，同一批数据在不同版本下物种分配可能不同；版本与日期必须写进方法" }
+    ],
+    "pitfalls": [
+      "**照搬 16S 的 truncLen 是 ITS 分析最常见的错误**：ITS 长度变异大，固定截断会丢掉一大部分真菌类群，而且丢的是系统性的（长 ITS 的类群先消失），会让组成结果出现假的偏差。",
+      "不做 ITS 区提取（ITSx/ITSxpress）就直接注释，会让两侧保守的 SSU/LSU 主导比对结果，不同物种因为共享保守区而得到过于相似的注释——看起来「注释得很好」，其实分辨力被抹掉了。",
+      "**UNITE 的 SH 编号不是物种名**。SH（species hypothesis）是参考序列簇的标识，把它写进结果表当作物种会误导读者；正确做法是报告最接近的参考序列、相似度与层级。",
+      "ITS 无法可靠区分近缘种（曲霉、青霉、镰刀菌等属内尤其明显）。属水平是多数情况下可靠的上限，写种名需要额外证据（如 EF1α、β-tubulin 等第二标记）。",
+      "**不要用测序读长比例推算真菌:细菌生物量比**。16S 与 ITS 的拷贝数、扩增效率、提取效率都不同，读长比例最多反映「相对扩增信号」。要谈 F:B 比必须用 qPCR。",
+      "植物相关样本（根际、叶际、内生）里 ITS 引物会大量扩增宿主植物，必须先把宿主序列识别并去除，否则「真菌多样性」里混着植物 ITS。宿主参考序列版本也要记录。",
+      "环境样本里 unassigned 比例高是常态。把它当作质控失败、或为了「注释率好看」而放宽相似度阈值，都会让结果更不可信。",
+      "真菌群落的统计陷阱与细菌完全相同：组成性数据、< 14 样本的差异分析、伪重复、批次与试剂污染，换标记基因不会让这些问题消失。"
+    ],
+    "related": [
+      { "id": "amplicon_dada2", "note": "同一种去噪工具，但 ITS 参数完全不同" },
+      { "id": "amplicon_taxonomy_assign", "note": "16S 的注释路线；ITS 用 UNITE，两者不可互换" },
+      { "id": "phy_its_phylogeny", "note": "需要 ITS 系统发育时的建树模块" },
+      { "id": "viz_composition_bar", "note": "真菌组成的展示" }
+    ],
+    "docs": [
+      { "label": "第 8 章 宏基因组与微生物组", "path": "docs/guidebook/08-metagenome-microbiome.md" }
+    ]
+  }
+]

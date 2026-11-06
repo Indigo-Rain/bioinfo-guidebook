@@ -1,0 +1,45 @@
+NOTICE
+======
+
+Third-party names and trademarks
+--------------------------------
+
+This repository documents and generates example commands for third-party
+bioinformatics tools (for example fastp, SPAdes, Bakta, Kraken2, GTDB-Tk,
+Prokka, Panaroo, IQ-TREE and others). All tool names, project names and
+trademarks are the property of their respective owners.
+
+This project is an independent knowledge base. It is not affiliated with,
+endorsed by, or sponsored by any of the tools it documents. Mention of a tool
+does not imply endorsement in either direction.
+
+Content sources
+---------------
+
+Module descriptions, parameter notes and pitfalls were compiled from public
+tool documentation, published papers and general domain practice, and were
+then edited for this knowledge base. Where a value or version could not be
+verified, the text says so; the authoritative source is always the tool's
+official documentation.
+
+No warranty
+-----------
+
+The content is provided "as is", without warranty of any kind. In particular:
+
+  * Version numbers are series approximations in the form `major.minor.x`
+    and have not all been verified against upstream releases.
+  * Parameter defaults and flags may change between releases.
+  * Reference databases, indexes and models are not distributed with this
+    repository and must be obtained and versioned by the user.
+  * Exported Bash and Python scripts are structural skeletons with parameter
+    starting points, not production-ready pipelines.
+
+Always verify commands, parameter values and database versions against the
+official documentation for the exact release you are using.
+
+Licensing
+---------
+
+Source code is licensed under the MIT License (see LICENSE). Documentation and
+data are licensed under CC BY 4.0 (see LICENSE-docs).

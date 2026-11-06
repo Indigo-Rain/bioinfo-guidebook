@@ -1,0 +1,47 @@
+Documentation and data license
+================================
+
+Copyright (c) 2026 Indigo-Rain and contributors
+
+The prose, tables, diagrams and structured data in this repository —
+including everything under `docs/` and `data/`, and the explanatory text
+embedded in generated artifacts — are licensed under the
+
+    Creative Commons Attribution 4.0 International License (CC BY 4.0)
+
+You are free to:
+
+  * Share — copy and redistribute the material in any medium or format.
+  * Adapt — remix, transform, and build upon the material for any purpose,
+    even commercially.
+
+Under the following terms:
+
+  * Attribution — You must give appropriate credit, provide a link to the
+    license, and indicate if changes were made. You may do so in any
+    reasonable manner, but not in any way that suggests the licensor
+    endorses you or your use.
+  * No additional restrictions — You may not apply legal terms or
+    technological measures that legally restrict others from doing anything
+    the license permits.
+
+Full legal code:
+  https://creativecommons.org/licenses/by/4.0/legalcode
+
+Human-readable summary:
+  https://creativecommons.org/licenses/by/4.0/
+
+Suggested attribution:
+
+  "Microbial Bioinformatics Pipeline Guidebook" by Indigo-Rain and
+  contributors, licensed under CC BY 4.0.
+  Source: https://github.com/Indigo-Rain/bioinfo-guidebook
+
+Scope note
+----------
+
+Source code — `tools/`, `assets/`, and build scripts — is licensed under the
+MIT License; see `LICENSE`. Generated artifacts such as `index.html` contain
+both code and explanatory text: treat the code as MIT and the text as CC BY
+4.0. Tool names and trademarks remain the property of their respective
+owners; see `NOTICE`.

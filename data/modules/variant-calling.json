@@ -1,0 +1,490 @@
+[
+  {
+    "id": "var_bwa_map",
+    "name": "读长比对到参考基因组 (BWA-MEM2)",
+    "category": "variant-calling",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics"],
+    "tags": ["比对", "bwa", "bam", "samtools", "读组"],
+    "summary": "用 BWA-MEM2 把清理后读长比对到参考并排序",
+    "what": [
+      "变异检出的第一步是把读长贴到参考基因组上。BWA-MEM2 是 BWA-MEM 的加速实现（比对结果基本一致、速度提升明显），输出的 SAM 需要排序、按需去重并建索引，才能被 bcftools / FreeBayes 等消费。细菌基因组小、覆盖度高，这一步通常很快，瓶颈常在索引与磁盘 I/O。",
+      "两条工程上的硬要求容易被忽视：一是必须在命令行给出读组（@RG）信息，许多下游工具依赖它，且同一 SM 标签会被当成同一样本；二是必须确认参考与样本的种/株关系——用远缘参考会得到大量假阳性变异，因为真实的种间差异被当成了 SNP。",
+      "长读长不要用 BWA-MEM2：Nanopore/PacBio 数据要用 minimap2 的 map-ont / map-hifi 预设，错误模型完全不同。混合数据（短读长 + 长读长）用于变异检出时也应分别比对、分别调用，而不是把两类读长混在一个 BAM 里当作同质证据。"
+    ],
+    "inputs": [
+      { "type": "clean-reads", "name": "清理后双端读长 (R1/R2)", "required": true, "note": "先修剪再去宿主；顺序反了会降低比对效率并产生假比对" },
+      { "type": "reference-genome", "name": "参考基因组", "required": true, "note": "必须记录 accession 与版本；建议用同种甚至同株的完成图或高质量草图" }
+    ],
+    "outputs": [
+      { "type": "bam", "name": "排序后的比对结果", "ext": ".sorted.bam", "note": "已建索引；覆盖度分析与变异调用的共同输入" },
+      { "type": "tsv-table", "name": "比对统计", "ext": ".flagstat.tsv", "note": "比对率、正确配对率等；用于判断参考是否选得合适" },
+      { "type": "log-report", "name": "比对日志", "ext": ".bwa.log", "note": "记录命令、参考版本与读组信息" }
+    ],
+    "provides": [
+      { "tool": "BWA-MEM2", "version": "2.2.x", "access": "cli", "install": "conda", "note": "需要支持 AVX2/AVX512 的 CPU；不支持时会崩溃或需要回退" },
+      { "tool": "BWA", "version": "0.7.17", "access": "cli", "install": "conda", "note": "经典实现；无 AVX 指令集或需要与旧流程严格一致时使用" },
+      { "tool": "SAMtools", "version": "1.1x", "access": "cli", "install": "conda", "note": "排序、索引、flagstat 与去重（fixmate + markdup）" }
+    ],
+    "feeds": [
+      { "target": "var_bcftools_call", "viaType": "bam", "note": "标准下游：从比对结果调用变异" },
+      { "target": "py_pysam", "viaType": "bam", "note": "用 Python 读取比对结果做覆盖度、等位基因比例等自定义统计" },
+      { "target": "io_bam_to_bed", "viaType": "bam", "note": "转成覆盖度或区间文件，用于可视化与区间运算" }
+    ],
+    "usage": [
+      {
+        "label": "建索引（一次即可复用）",
+        "lang": "bash",
+        "code": "bwa-mem2 index reference.fna"
+      },
+      {
+        "label": "比对 + 排序 + 索引 + 统计（务必带读组）",
+        "lang": "bash",
+        "code": "bwa-mem2 mem -t 16 -R '@RG\\tID:s1\\tSM:s1\\tPL:ILLUMINA' \\\n  reference.fna clean_R1.fq.gz clean_R2.fq.gz | \\\n  samtools sort -@ 8 -o 07_variants/sample.sorted.bam -\nsamtools index 07_variants/sample.sorted.bam\nsamtools flagstat 07_variants/sample.sorted.bam > 07_variants/sample.flagstat.txt"
+      },
+      {
+        "label": "需要去重时的正确顺序（名字排序 → fixmate → 坐标排序 → markdup）",
+        "lang": "bash",
+        "code": "samtools sort -n -@ 8 -o name.bam 07_variants/sample.sorted.bam\nsamtools fixmate -m -@ 8 name.bam fixmate.bam\nsamtools sort -@ 8 -o pos.bam fixmate.bam\nsamtools markdup -@ 8 pos.bam 07_variants/sample.markdup.bam"
+      }
+    ],
+    "recipes": {
+      "bash": "bwa-mem2 mem -t ${THREADS} -R '@RG\\tID:${SAMPLE}\\tSM:${SAMPLE}\\tPL:ILLUMINA' \\\n  ${REF} 01_clean/${SAMPLE}_R1.fq.gz 01_clean/${SAMPLE}_R2.fq.gz | \\\n  samtools sort -@ ${THREADS} -o 07_variants/${SAMPLE}.sorted.bam -\nsamtools index 07_variants/${SAMPLE}.sorted.bam\nsamtools flagstat 07_variants/${SAMPLE}.sorted.bam > 10_logs/${SAMPLE}.flagstat.txt",
+      "python": "run(f\"bwa-mem2 mem -t {THREADS} -R '@RG\\\\tID:{sample}\\\\tSM:{sample}\\\\tPL:ILLUMINA' \"\n    f\"{ref} {QC_DIR}/{sample}_R1.fq.gz {QC_DIR}/{sample}_R2.fq.gz | \"\n    f\"samtools sort -@ {THREADS} -o {VAR_DIR}/{sample}.sorted.bam -\")\nrun(f\"samtools index {VAR_DIR}/{sample}.sorted.bam\")\nrun(f\"samtools flagstat {VAR_DIR}/{sample}.sorted.bam\", log_name=f\"{sample}.flagstat.txt\")"
+    },
+    "params": [
+      { "flag": "-R '@RG...'", "default": "无", "note": "读组信息；SM 是样本名，同一样本的多个文库必须用同一个 SM。省略会让部分下游工具报错，或把样本名退化成文件名" },
+      { "flag": "-t", "default": "1", "note": "线程数；必须显式设置" },
+      { "flag": "-K", "default": "以版本为准", "note": "每批处理的读长数，影响内存占用与负载均衡；低内存机器上值得调整" },
+      { "flag": "samtools markdup 前置步骤", "default": "—", "note": "必须 fixmate 之后才能 markdup；跳步会得到错误或缺失的重复标记" },
+      { "flag": "是否去重", "default": "按分析目的", "note": "PCR 重复会放大变异证据强度，高覆盖度细菌数据通常建议去重；但去重与 markdup（只标记）对下游的影响不同，需明确用哪一种" }
+    ],
+    "pitfalls": [
+      "省略 -R 读组是常见且代价高的错误：BAM 里没有样本名，合并多样本时无法区分来源，而补救要回到比对这一步重跑。",
+      "参考序列的选择决定变异数量级。用同属不同种的参考会让「SNP 数」变成种间差异（可能几十万），此时任何过滤阈值都失去意义。先做 ANI/分类确认样本与参考的关系。",
+      "细菌基因组常有多拷贝区域（rRNA 操纵子、IS 元件、噬菌体）。这些区域的读长会多位置比对，产生的「变异」几乎都是假阳性；调用阶段要靠 mapping quality 与深度异常过滤，必要时把这些区间 mask 掉。",
+      "BWA-MEM2 需要 AVX2/AVX512 指令集，在不支持的老 CPU 或某些云实例上会直接崩溃或需要回退到 bwa。批量流程应显式检查可用性，而不是假设它一定能跑。",
+      "不要把长读长喂给 BWA-MEM2。它的种子与打分模型针对高准确度短读长，长读长会得到很低的比对率或大量软剪切。",
+      "比对率低不一定是数据差：参考版本不对、去宿主去过头、或参考里缺少该菌株特有的大片段（附属基因组）都会让比对率下降。先看 flagstat，再看覆盖度是否均匀。"
+    ],
+    "related": [
+      { "id": "var_bcftools_call", "note": "最直接的下游：从 BAM 调用变异" },
+      { "id": "var_snippy", "note": "把比对与调用打包成一条流程；需要标准化流程时改用它" },
+      { "id": "qc_remove_host", "note": "同样使用读长比对，但目的是过滤而非检出变异" },
+      { "id": "py_pysam", "note": "自定义比对文件统计（覆盖度、等位基因比例）" },
+      { "id": "util_samtools", "note": "比对文件的通用操作：排序、索引、切片、统计" }
+    ],
+    "docs": [
+      { "label": "第 7 章 比较基因组与泛基因组", "path": "docs/guidebook/07-comparative-pangenome.md" }
+    ]
+  },
+  {
+    "id": "var_bcftools_call",
+    "name": "变异检出与过滤 (bcftools / FreeBayes)",
+    "category": "variant-calling",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "active",
+    "domains": ["genomics"],
+    "tags": ["变异检出", "bcftools", "freebayes", "vcf", "过滤"],
+    "summary": "从比对结果检出 SNP/INDEL 并按质量过滤",
+    "what": [
+      "bcftools mpileup + call 是细菌变异检出的轻量主力：mpileup 在每个位点汇总碱基证据，call 用统计模型判断该位点是否为变异，输出 VCF。整个流程依赖少、速度快、参数透明，适合把变异结果作为后续分型、距离计算与功能注释的输入。",
+      "细菌是单倍体，这一点必须显式告诉工具（把 ploidy 设为 1）：默认的二倍体模型会把等位基因频率解释成杂合/纯合，在高覆盖度数据里产生一系列难以解释的 genotype 字段。位点过滤同样关键：QUAL、深度下限与深度上限（过高深度常意味着多位置比对或重复区）是三个最有效的过滤器。",
+      "mpileup 有最大深度限制（默认 250）：细菌数据的覆盖度常常远超它，超过部分会被丢弃而不是报错，导致高覆盖位点的证据被截断、等位基因频率与 QUAL 失真。这是高覆盖度细菌数据里最容易踩的参数坑。"
+    ],
+    "inputs": [
+      { "type": "bam", "name": "排序后的比对结果", "required": true, "note": "必须已建索引；建议已去重或标记重复" },
+      { "type": "reference-genome", "name": "参考基因组", "required": true, "note": "与比对时使用的参考必须完全一致，否则坐标不可用" }
+    ],
+    "outputs": [
+      { "type": "vcf", "name": "变异位点文件", "ext": ".vcf.gz", "note": "建议同时保留原始与过滤后的两份，便于回溯阈值影响" },
+      { "type": "tsv-table", "name": "变异统计", "ext": ".vcf.stats.tsv", "note": "位点数、转换/颠换比、深度分布等；判断结果是否合理的第一手材料" },
+      { "type": "log-report", "name": "运行日志", "ext": ".bcftools.log", "note": "记录调用器、过滤表达式与版本" }
+    ],
+    "provides": [
+      { "tool": "BCFtools", "version": "1.2x", "access": "cli", "install": "conda", "note": "mpileup/call/norm/filter/stats 一条链，参数透明易复现" },
+      { "tool": "FreeBayes", "version": "1.3.x", "access": "cli", "install": "conda", "note": "另一种调用器：单倍体数据需要显式指定 ploidy；对复杂位点的处理与 bcftools 不同" },
+      { "tool": "HTSlib (bgzip/tabix)", "version": "1.2x", "access": "cli", "install": "conda", "note": "VCF 压缩与索引，后续按区间取用必需" }
+    ],
+    "feeds": [
+      { "target": "comp_snp_dist", "viaType": "vcf", "note": "多个样本的 VCF 用来算 SNP 距离矩阵、判断菌株亲缘" },
+      { "target": "io_vcf_convert", "viaType": "vcf", "note": "转成 PHYLIP/PED 等格式，供建树或其他软件使用" },
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "把变异统计表汇总，比较多达数百个样本的变异数量分布" }
+    ],
+    "usage": [
+      {
+        "label": "单倍体细菌的标准调用（注意 ploidy 与深度上限）",
+        "lang": "bash",
+        "code": "bcftools mpileup -Ou -f reference.fna -d 2000 -q 20 -Q 20 \\\n  07_variants/sample.sorted.bam | \\\n  bcftools call -mv --ploidy 1 -Oz -o 07_variants/sample.raw.vcf.gz\nbcftools index -t 07_variants/sample.raw.vcf.gz"
+      },
+      {
+        "label": "规范化 + 过滤（INDEL 必须左对齐并拆分多等位）",
+        "lang": "bash",
+        "code": "bcftools norm -f reference.fna -m -both \\\n  -Oz -o 07_variants/sample.norm.vcf.gz 07_variants/sample.raw.vcf.gz\nbcftools filter -i 'QUAL>=20 && INFO/DP>=10 && INFO/DP<=200' \\\n  -Oz -o 07_variants/sample.filt.vcf.gz 07_variants/sample.norm.vcf.gz"
+      },
+      {
+        "label": "另一种调用器（FreeBayes，单倍体）",
+        "lang": "bash",
+        "code": "freebayes -f reference.fna -p 1 --min-coverage 10 \\\n  --min-alternate-fraction 0.9 \\\n  07_variants/sample.sorted.bam > 07_variants/sample.fb.vcf"
+      },
+      {
+        "label": "结果概览",
+        "lang": "bash",
+        "code": "bcftools stats 07_variants/sample.filt.vcf.gz \\\n  > 10_logs/sample.vcf.stats.txt"
+      }
+    ],
+    "recipes": {
+      "bash": "bcftools mpileup -Ou -f ${REF} -d 2000 -q 20 -Q 20 \\\n  07_variants/${SAMPLE}.sorted.bam | \\\n  bcftools call -mv --ploidy 1 -Oz -o 07_variants/${SAMPLE}.raw.vcf.gz\nbcftools index -t 07_variants/${SAMPLE}.raw.vcf.gz\nbcftools norm -f ${REF} -m -both -Oz \\\n  -o 07_variants/${SAMPLE}.norm.vcf.gz 07_variants/${SAMPLE}.raw.vcf.gz\nbcftools filter -i 'QUAL>=20 && INFO/DP>=10 && INFO/DP<=200' -Oz \\\n  -o 07_variants/${SAMPLE}.filt.vcf.gz 07_variants/${SAMPLE}.norm.vcf.gz\nbcftools stats 07_variants/${SAMPLE}.filt.vcf.gz > 10_logs/${SAMPLE}.vcf.stats.txt",
+      "python": "run(f\"bcftools mpileup -Ou -f {ref} -d 2000 -q 20 -Q 20 \"\n    f\"{VAR_DIR}/{sample}.sorted.bam | \"\n    f\"bcftools call -mv --ploidy 1 -Oz -o {VAR_DIR}/{sample}.raw.vcf.gz\")\nrun(f\"bcftools index -t {VAR_DIR}/{sample}.raw.vcf.gz\")\nrun(f\"bcftools norm -f {ref} -m -both -Oz -o {VAR_DIR}/{sample}.norm.vcf.gz \"\n    f\"{VAR_DIR}/{sample}.raw.vcf.gz\")\nrun(f\"bcftools filter -i 'QUAL>=20 && INFO/DP>=10 && INFO/DP<=200' -Oz \"\n    f\"-o {VAR_DIR}/{sample}.filt.vcf.gz {VAR_DIR}/{sample}.norm.vcf.gz\")\nrun(f\"bcftools stats {VAR_DIR}/{sample}.filt.vcf.gz\", log_name=f\"{sample}.vcf.stats.txt\")"
+    },
+    "params": [
+      { "flag": "mpileup -d", "default": "250", "note": "每位点最大深度；细菌高覆盖度必须调大（如 2000），否则证据被静默截断" },
+      { "flag": "mpileup -q / -Q", "default": "0 / 13", "note": "最小比对质量与最小碱基质量；重复区多时把 -q 提到 20–30 能显著减少假阳性" },
+      { "flag": "call --ploidy 1", "default": "2", "note": "细菌单倍体必须显式指定；否则 genotype 语义错误（详见 pitfalls）" },
+      { "flag": "call -mv / -c", "default": "—", "note": "-m 多等位调用保留更多信息，-c 是旧的共识调用器；两者行为不同，项目内必须固定" },
+      { "flag": "过滤表达式 QUAL / INFO/DP", "default": "无", "note": "没有万能值：QUAL 20 只是起点，深度上限要按数据的平均覆盖度定（例如覆盖度 100x 时上限 200–300），并把阈值写进方法" },
+      { "flag": "norm -m -both", "default": "关闭", "note": "拆分多等位并左对齐 INDEL；不规范化会让同一变异在不同样本里写成不同记录，破坏后续合并与比较" }
+    ],
+    "pitfalls": [
+      "mpileup 的 -d 默认 250 会静默截断高覆盖位点。细菌数据覆盖度常在几百到几千 x，不改这个值会让深度、等位基因频率与 QUAL 全部失真，而且不会报错。",
+      "不指定单倍体就调用，会在单倍体数据上生成杂合 genotype 字段，后续按 genotype 过滤或比较时逻辑从一开始就错了。",
+      "INDEL 必须左对齐并规范化，否则同一变异在不同样本中可能被写成不同位置或形式，跨样本比较与建树会系统性出错（尤其在重复序列附近）。",
+      "重复区（rRNA、IS、噬菌体）里的变异几乎都是假阳性。仅靠 QUAL 过滤不够，应结合深度上限、mapping quality 与已知重复区 mask；判断线索是变异是否在该区间成簇出现。",
+      "不同调用器（bcftools / FreeBayes / GATK / Snippy 内部的调用）对同一 BAM 给出的位点集不完全相同，尤其是 INDEL 与低覆盖位点。同一项目内不要中途更换调用器，跨研究比较要说明用的是哪一个。",
+      "过滤阈值不能跨数据集复制。覆盖度 30x 与 300x 的数据能用的深度上下限完全不同；阈值应与数据的覆盖度分布一起写进方法与补充材料。"
+    ],
+    "related": [
+      { "id": "var_bwa_map", "note": "上游的比对步骤；BAM 的读组与去重状态会影响调用结果" },
+      { "id": "var_snippy", "note": "需要标准化、可跨实验室比较的 SNP 流程时改用它" },
+      { "id": "comp_snp_dist", "note": "变异结果的典型下游：菌株间距离与传播分析" },
+      { "id": "io_vcf_convert", "note": "把 VCF 转成建树或群体遗传软件需要的格式" },
+      { "id": "py_pysam", "note": "需要自定义位点级统计（等位基因比例、链偏好）时使用" }
+    ],
+    "docs": [
+      { "label": "第 7 章 比较基因组与泛基因组", "path": "docs/guidebook/07-comparative-pangenome.md" }
+    ]
+  },
+  {
+    "id": "var_snippy",
+    "name": "单菌 SNP 流程 (Snippy)",
+    "category": "variant-calling",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "active",
+    "domains": ["genomics", "phylogenetics"],
+    "tags": ["snp", "核心基因组", "snippy", "暴发", "流程"],
+    "summary": "把比对、变异检出与核心 SNP 比对串成一条流程",
+    "what": [
+      "Snippy 把「比对 → 变异检出 → 生成一致序列 → 多样本核心 SNP 比对」封成一条流程：单样本产出 snps.vcf、snps.tab 等结果，snippy-core 把多个样本合并成 core.aln（仅变异位点）与 core.full.aln（含不变位点）的比对矩阵，可以直接用于建树或算距离。",
+      "它的价值在于一致性与可复现：同一套参考、同一套过滤规则下产出的 SNP 矩阵是细菌暴发调查与传播分析的标准输入之一。代价是它把很多决定藏在默认值里（最小覆盖度、最小等位基因比例、比对质量），因此必须知道这些默认值，并在低覆盖度数据上显式调整。",
+      "参考基因组的选择是这一步最重要的变量：Snippy 报出的是「与参考的差异」，所以参考必须与样本同种、最好同一谱系并尽量完整。分析会发生重组的菌株（携带大量噬菌体、ICE 或基因组岛）时，还需要剔除重组区，否则距离会被重组主导。"
+    ],
+    "inputs": [
+      { "type": "clean-reads", "name": "清理后双端读长 (R1/R2)", "required": true, "note": "同一个多种本批量处理时，样本命名必须唯一且稳定" },
+      { "type": "reference-genome", "name": "参考基因组", "required": true, "note": "同种、最好是完成图；记录 accession 与是否包含质粒序列" }
+    ],
+    "outputs": [
+      { "type": "vcf", "name": "过滤后的变异位点", "ext": ".snps.vcf", "note": "单样本结果；同时会产出未过滤的原始 VCF" },
+      { "type": "alignment-fasta", "name": "核心 SNP 比对", "ext": ".core.full.aln", "note": "含不变位点；core.aln 只含变异位点，两者用途不同" },
+      { "type": "tsv-table", "name": "变异注释表", "ext": ".snps.tab", "note": "逐位点给出类型（SNP/INDEL）、影响、深度与等位基因比例" },
+      { "type": "log-report", "name": "运行日志", "ext": ".snippy.log", "note": "记录参考 accession、参数与各样本的位点统计" }
+    ],
+    "provides": [
+      { "tool": "Snippy", "version": "4.6.x", "access": "cli", "install": "conda", "note": "内部依赖 minimap2、samtools、变异调用器与 snp-sites 等；版本变化会影响位点集" },
+      { "tool": "FreeBayes", "version": "1.3.x", "access": "cli", "install": "conda", "note": "Snippy 默认使用的变异调用器之一；切换调用器会改变结果" }
+    ],
+    "feeds": [
+      { "target": "comp_snp_dist", "viaType": "vcf", "note": "多样本 SNP 距离矩阵，用于暴发判定与传播推断" },
+      { "target": "phy_iqtree", "viaType": "alignment-fasta", "note": "用核心 SNP 比对建最大似然树" }
+    ],
+    "usage": [
+      {
+        "label": "单样本处理",
+        "lang": "bash",
+        "code": "snippy --cpus 16 --outdir 07_variants/snippy/sample1 \\\n  --ref reference.fna \\\n  --R1 clean_R1.fq.gz --R2 clean_R2.fq.gz"
+      },
+      {
+        "label": "多样本核心 SNP 比对",
+        "lang": "bash",
+        "code": "snippy-core --ref reference.fna --prefix core \\\n  07_variants/snippy/sample1 07_variants/snippy/sample2 \\\n  07_variants/snippy/sample3"
+      },
+      {
+        "label": "看每个样本的位点构成",
+        "lang": "bash",
+        "code": "cut -f1-8 07_variants/snippy/sample1/snps.tab | head\n# 关注 FTYPE（SNP/INDEL 等）与 EFFECT 列，判断变异类型是否合理"
+      }
+    ],
+    "recipes": {
+      "bash": "snippy --cpus ${THREADS} --outdir 07_variants/snippy/${SAMPLE} \\\n  --ref ${REF} \\\n  --R1 01_clean/${SAMPLE}_R1.fq.gz --R2 01_clean/${SAMPLE}_R2.fq.gz \\\n  > 10_logs/${SAMPLE}.snippy.log 2>&1\n# 全部样本处理完后合并核心比对\nsnippy-core --ref ${REF} --prefix core 07_variants/snippy/*/",
+      "python": "run([\n    \"snippy\",\n    \"--cpus\", str(THREADS),\n    \"--outdir\", str(VAR_DIR / \"snippy\" / sample),\n    \"--ref\", ref,\n    \"--R1\", str(QC_DIR / f\"{sample}_R1.fq.gz\"),\n    \"--R2\", str(QC_DIR / f\"{sample}_R2.fq.gz\"),\n])\n# TODO: 所有样本完成后运行一次 snippy-core（多样本合并步骤不应放进单样本循环）"
+    },
+    "params": [
+      { "flag": "--mincov", "default": "10", "note": "位点最小覆盖度；低覆盖度数据（< 30x）要下调，同时接受更多假阳性" },
+      { "flag": "--minfrac", "default": "0.9", "note": "变异等位基因的最小比例；克隆样本可用 0.9，混合样本需下调（下调等于承认可能存在多株混合）" },
+      { "flag": "--mapqual", "default": "60", "note": "最小比对质量；重复区多时保持严格，但要知道这会让这些位点直接缺失" },
+      { "flag": "--basequal", "default": "13", "note": "最小碱基质量；数据质量差时可适当放宽" },
+      { "flag": "--ref", "default": "必填", "note": "参考选择决定一切：换参考（哪怕是同种不同株）会改变 SNP 数与核心基因组大小，必须记录 accession 与版本" },
+      { "flag": "--cleanup", "default": "关闭", "note": "删除中间 BAM 以节省磁盘，但会失去回查能力；长期项目建议保留或另存归档" }
+    ],
+    "pitfalls": [
+      "core.aln 只含变异位点，core.full.aln 含全部位点。用 core.aln 建树会丢掉不变位点的信息，分支长度与模型参数都会失真；两者拓扑通常相同但数值不可互换。做距离或建树时必须明确写清用的哪一个。",
+      "「SNP 数」是相对参考基因组的差异，不是绝对差异。换参考会显著改变这个数字；暴发阈值（例如 ≤5 SNP）必须与参考、流程和过滤参数绑定说明，否则无法跨研究比较。",
+      "重组会主导距离。同种菌株间动辄数百 kb 的重组导入会让 SNP 距离严重失真，必须先剔除重组区或使用不依赖重组的分析方法，否则系统发育与传播推断都会出错。",
+      "默认过滤（最小覆盖度 10、最小等位基因比例 0.9）对低覆盖度数据过严：位点会大量丢失，导致核心基因组缩小、样本间距离偏小。低覆盖项目要显式下调并在方法里报告调整后的参数。",
+      "参考里是否包含质粒或附属基因组会造成差异：质粒上的 SNP 会被算进「核心」差异，而质粒在菌株间本就常整段缺失。核心基因组分析通常应只用染色体，把质粒单独分析。",
+      "多样本合并时样本命名与目录必须唯一且稳定：snippy-core 按目录组织结果，重名或遗漏会导致样本被静默覆盖或漏掉，最后表现为「少了一个样本」而不是报错。"
+    ],
+    "related": [
+      { "id": "var_bwa_map", "note": "只想自己控制比对与调用参数时，用通用比对路线替代" },
+      { "id": "var_bcftools_call", "note": "透明的变异调用步骤；Snippy 把类似步骤打包并加了过滤默认值" },
+      { "id": "comp_snp_dist", "note": "核心 SNP 比对/变异结果的典型下游：距离矩阵与暴发判定" },
+      { "id": "phy_iqtree", "note": "用核心比对建树" },
+      { "id": "var_typing_cgmlst", "note": "基于等位基因谱的分型；与 SNP 方法互为验证" }
+    ],
+    "docs": [
+      { "label": "第 7 章 比较基因组与泛基因组", "path": "docs/guidebook/07-comparative-pangenome.md" }
+    ]
+  },
+  {
+    "id": "var_mlst",
+    "name": "多位点序列分型 (MLST)",
+    "category": "variant-calling",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics"],
+    "tags": ["mlst", "管家基因", "分型", "st", "pubmlst"],
+    "summary": "用管家基因等位基因谱做经典序列分型",
+    "what": [
+      "MLST 按物种对应的方案（scheme）取出 6–7 个管家基因的内部片段，与 PubMLST 等数据库里的等位基因比对，得到每个位点的等位基因编号，再组合成序列型（ST）。它速度快、结果可跨实验室比较，是菌株初步分类与命名（如 ST131、ST11）的通用语言。",
+      "它的定位是粗分型：同一个 ST 内部的菌株仍可能有成千上万个 SNP 差异，所以 MLST 不能用于暴发调查或传播链推断——那需要 cgMLST 或 core-SNP。反过来说，MLST 在跨年代、跨地区的长期监测里非常有用，因为它的编号体系稳定且被广泛引用。",
+      "结果解读要结合组装质量：某个等位基因若被 contig 边界截断，会表现为「找不到该位点」或得到不完整的等位基因，从而给出新 ST 或直接失败。草图过于碎片化时这类假阴性会系统性增加，因此 MLST 之前应先确认基本组装指标。"
+    ],
+    "inputs": [
+      { "type": "contigs", "name": "组装序列", "required": true, "note": "草图或完成图均可；碎片化会增加等位基因缺失的概率" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "分型结果表", "ext": ".mlst.tsv", "note": "含方案、各等位基因编号、ST 与是否为新 ST" },
+      { "type": "log-report", "name": "运行日志", "ext": ".mlst.log", "note": "记录使用的方案与版本，跨研究比较必须一致" }
+    ],
+    "provides": [
+      { "tool": "mlst", "version": "2.2x", "access": "cli", "install": "conda", "note": "Seemann 的实现；内置 PubMLST 方案数据，可离线运行" }
+    ],
+    "feeds": [
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "把多样本的 ST 结果汇总成一张分型总表" },
+      { "target": "viz_ggplot2", "viaType": "tsv-table", "note": "画 ST 分布条形图，用于群体构成展示" }
+    ],
+    "usage": [
+      {
+        "label": "先确认方案名（不同版本方案命名可能不同）",
+        "lang": "bash",
+        "code": "mlst --list | grep -i escherichia\n# 用列出的方案名替换下面的 <scheme>"
+      },
+      {
+        "label": "单样本分型",
+        "lang": "bash",
+        "code": "mlst --scheme <scheme> 02_assembly/sample.filtered.fasta \\\n  > 07_variants/sample.mlst.tsv"
+      },
+      {
+        "label": "批量分型并拼成总表",
+        "lang": "bash",
+        "code": "mlst --scheme <scheme> --nopath 02_assembly/filtered/*.fasta \\\n  > 07_variants/all.mlst.tsv"
+      }
+    ],
+    "recipes": {
+      "bash": "mlst --scheme ${MLST_SCHEME} --nopath --csv \\\n  02_assembly/${SAMPLE}.filtered.fasta \\\n  > 07_variants/${SAMPLE}.mlst.tsv 2> 10_logs/${SAMPLE}.mlst.log",
+      "python": "run([\n    \"mlst\",\n    \"--scheme\", os.environ[\"MLST_SCHEME\"],\n    \"--nopath\",\n    str(ASM_DIR / f\"{sample}.filtered.fasta\"),\n])"
+    },
+    "params": [
+      { "flag": "--scheme", "default": "无（会扫描全部方案）", "note": "必须与物种匹配；不指定时工具会遍历所有方案，既慢又可能给出其他物种的等位基因编号" },
+      { "flag": "--list", "default": "—", "note": "列出内置方案名，用于确认拼写（不同版本命名可能不同）" },
+      { "flag": "--nopath", "default": "关闭", "note": "输出中不包含文件路径，便于把多个结果直接拼成一张表" },
+      { "flag": "--csv", "default": "关闭", "note": "CSV 输出，便于 Excel/pandas 直接读取" },
+      { "flag": "比对的相似度与覆盖度阈值", "default": "以官方文档为准", "note": "调低会引入假等位基因；改动阈值后历史结果不可直接比较" }
+    ],
+    "pitfalls": [
+      "MLST 的分辨率不足以做暴发调查：同一 ST 内的菌株可以有几十到几千个 SNP。用「ST 相同」宣布同源暴发是常见的方法学错误，必须再用 cgMLST 或 core-SNP。",
+      "方案（scheme）必须与物种匹配。用错方案不会报错，只会给出无意义的等位基因编号与 ST；结果里出现大量新等位基因时，应先怀疑方案选错。",
+      "组装碎片化会造成假阴性：等位基因被 contig 边界截断时，工具可能报缺失或给出新等位基因。出现新 ST 时应先核对那几个位点的覆盖度与 contig 结构，再决定是否上报为新 ST。",
+      "新 ST 的编号不是本地就能定的：正式 ST 编号需要向 PubMLST 提交等位基因序列并获得确认。分析中应标注「候选新 ST」，不要把本地编号当作正式命名。",
+      "MLST 只覆盖 6–7 个管家基因，无法反映耐药、毒力或血清型等表型相关差异——这些需要专门的基因与突变检测。",
+      "跨研究比较时要注意数据库版本：PubMLST 的等位基因与 ST 定义会随时间增加，同一菌株在新的库版本下可能得到新的等位基因编号。应记录方案版本与查询日期。"
+    ],
+    "related": [
+      { "id": "var_typing_cgmlst", "note": "把位点数扩展到数千个的高分辨率分型；需要区分同一 ST 内的菌株时切换" },
+      { "id": "var_amrfinder", "note": "耐药与毒力相关基因/突变检测；MLST 不提供这类信息" },
+      { "id": "tax_fastani", "note": "物种层面的确认；分型之前应先确定物种" },
+      { "id": "comp_snp_dist", "note": "同 ST 内的菌株区分要靠 SNP 距离" }
+    ],
+    "docs": [
+      { "label": "第 7 章 比较基因组与泛基因组", "path": "docs/guidebook/07-comparative-pangenome.md" }
+    ]
+  },
+  {
+    "id": "var_amrfinder",
+    "name": "耐药基因与突变检测 (AMRFinderPlus)",
+    "category": "variant-calling",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "active",
+    "domains": ["genomics"],
+    "tags": ["耐药", "amr", "点突变", "ncbi", "基因检出"],
+    "summary": "NCBI 维护的耐药基因与点突变检出工具",
+    "what": [
+      "AMRFinderPlus 用 HMM 与 BLAST 在蛋白或核酸序列上查找获得性耐药基因、毒力基因与胁迫/生物杀灭剂相关基因，并按数据库的层级（Class / Subclass）归类；在指定物种后还能检测染色体上的耐药点突变（如 gyrA、parC、rpoB 的特定替换）。输出是一张可以直接汇总的 TSV。",
+      "两个决定结果完整性的用法要点：一是用物种参数指定物种，否则点突变检测不会启用，会漏掉氟喹诺酮、利福平等最重要的染色体耐药机制；二是加上扩展选项才会包含毒力与胁迫相关基因，默认只报耐药相关条目。数据库由 NCBI 持续更新，版本必须记录。",
+      "它报的是「基因或突变是否存在」，不是「表型是否耐药」：基因可能不表达、可能被截断，也可能因其他机制而失效。用于临床预测时应说明这是基因型推断，并与药敏结果对照验证。"
+    ],
+    "inputs": [
+      { "type": "contigs", "name": "核酸组装序列", "required": true, "note": "核酸输入时工具内部会做基因预测；同一项目应固定输入类型" },
+      { "type": "protein-faa", "name": "蛋白序列", "required": false, "note": "已有注释时给蛋白可跳过基因预测，结果更可控" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "耐药条目表", "ext": ".amrfinder.tsv", "note": "含基因符号、类型、Class/Subclass、覆盖度与相似度；逐条记录保留覆盖度信息" },
+      { "type": "gene-list", "name": "基因/突变符号列表", "ext": ".amr_genes.txt", "note": "去重后的符号列表，用于多菌株比较与集合可视化" },
+      { "type": "log-report", "name": "运行日志", "ext": ".amrfinder.log", "note": "必须记录工具版本与数据库版本（NCBI 每月更新）" }
+    ],
+    "provides": [
+      { "tool": "AMRFinderPlus", "version": "3.12.x", "access": "cli", "install": "conda", "note": "数据库随工具版本更新；更新前后结果会变化，版本必须记录" },
+      { "tool": "BLAST+", "version": "2.16.x", "access": "cli", "install": "conda", "note": "内部的序列比对后端" },
+      { "tool": "HMMER", "version": "3.4", "access": "cli", "install": "conda", "note": "内部的蛋白家族搜索后端" }
+    ],
+    "feeds": [
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "把多样本的耐药条目汇总成矩阵，便于比较" },
+      { "target": "viz_upset", "viaType": "gene-list", "note": "多菌株之间的耐药基因集合比较（交集/差集）" }
+    ],
+    "usage": [
+      {
+        "label": "核酸输入（必须指定物种，否则点突变不检测）",
+        "lang": "bash",
+        "code": "amrfinder -n 02_assembly/sample.filtered.fasta \\\n  --organism Escherichia --plus \\\n  -o 07_variants/sample.amrfinder.tsv"
+      },
+      {
+        "label": "蛋白输入",
+        "lang": "bash",
+        "code": "amrfinder -p sample.faa --organism Escherichia --plus \\\n  -o 07_variants/sample.amrfinder.tsv"
+      },
+      {
+        "label": "导出基因列表（列 6 为 Gene symbol，确切列序以版本为准）",
+        "lang": "bash",
+        "code": "cut -f6 07_variants/sample.amrfinder.tsv | tail -n +2 \\\n  | sort -u > 07_variants/sample.amr_genes.txt"
+      },
+      {
+        "label": "记录版本（工具与数据库）",
+        "lang": "bash",
+        "code": "amrfinder --version\n# 输出格式以官方文档为准；方法与补充材料中必须写明工具与数据库版本及运行日期"
+      }
+    ],
+    "recipes": {
+      "bash": "amrfinder -n 02_assembly/${SAMPLE}.filtered.fasta \\\n  --organism ${AMR_ORGANISM} --plus \\\n  -o 07_variants/${SAMPLE}.amrfinder.tsv \\\n  > 10_logs/${SAMPLE}.amrfinder.log 2>&1\ncut -f6 07_variants/${SAMPLE}.amrfinder.tsv | tail -n +2 \\\n  | sort -u > 07_variants/${SAMPLE}.amr_genes.txt",
+      "python": "run([\n    \"amrfinder\",\n    \"-n\", str(ASM_DIR / f\"{sample}.filtered.fasta\"),\n    \"--organism\", os.environ[\"AMR_ORGANISM\"],\n    \"--plus\",\n    \"-o\", str(VAR_DIR / f\"{sample}.amrfinder.tsv\"),\n    \"-t\", str(THREADS),\n])"
+    },
+    "params": [
+      { "flag": "--organism / 物种参数", "default": "无", "note": "指定物种后才启用该物种的耐药点突变检测；不确定时应至少填到属。漏掉这一步会系统性漏报染色体突变" },
+      { "flag": "--plus", "default": "关闭", "note": "加入毒力、胁迫与生物杀灭剂相关基因；只关心耐药时可不开，但报告里要说明是否开启" },
+      { "flag": "-n / -p", "default": "二选一", "note": "核酸输入会内部做基因预测，蛋白输入更可控；同一项目应固定一种，否则条目差异难以解释" },
+      { "flag": "相似度与覆盖度下限", "default": "以官方文档为准（常见为 0.9 / 0.5）", "note": "调低会纳入更多弱相似命中（假阳性风险），调高会漏掉真实的远缘同源基因" },
+      { "flag": "--threads", "default": "以版本为准", "note": "线程数；单样本很快，批量场景下值得设置" },
+      { "flag": "数据库更新", "default": "随工具", "note": "更新是手动步骤；更新后必须重跑对照样本并记录新版本，否则同批数据前后不可比" }
+    ],
+    "pitfalls": [
+      "忘记指定物种是最常见也最严重的用法错误：工具仍会正常输出获得性耐药基因，但染色体点突变（gyrA/parC/rpoB 等）完全不会被检测，结果看起来「干净」却是漏报。",
+      "「检出基因」不等于「表型耐药」：基因可能不表达、可能被截断，也可能被其他机制抵消。报告里应给出覆盖度与相似度而不仅是基因名，并说明这是基因型推断。",
+      "部分命中的条目要谨慎解读：覆盖率明显低于 100% 的结果可能是假基因、片段或近缘基因的弱相似，不能直接当作耐药基因存在。",
+      "数据库版本决定结果。NCBI 每月更新，同一样本在不同版本下可能多出或少掉条目；方法与补充材料必须写明工具与数据库版本及运行日期。",
+      "它只覆盖已知机制。新耐药机制、未收录的变异、以及通过调控网络产生的耐药都不会被检出——阴性结果不能排除耐药表型。",
+      "把核酸与蛋白两种输入的结果混在一张表里比较并不合适：基因预测的差异会带来条目差异（尤其边界与截断判断）。同一项目内应固定输入方式。"
+    ],
+    "related": [
+      { "id": "res_card_rgi", "note": "另一套耐药注释体系（CARD）；数据库与命名不同，结果可互相印证" },
+      { "id": "res_resfinder", "note": "耐药基因与点突变的另一实现；不同数据库侧重不同" },
+      { "id": "res_abricate", "note": "多数据库快速筛查；适合与 AMRFinderPlus 交叉验证" },
+      { "id": "var_mlst", "note": "菌株分型；与耐药谱一起构成菌株特征描述" },
+      { "id": "comp_gene_presence", "note": "把多样本的耐药基因列表做成存在缺失矩阵" }
+    ],
+    "docs": [
+      { "label": "第 6 章 功能注释与耐药毒力", "path": "docs/guidebook/06-annotation-resistance-virulence.md" }
+    ]
+  },
+  {
+    "id": "var_typing_cgmlst",
+    "name": "cgMLST 分型 (chewBBACA / Ridom)",
+    "category": "variant-calling",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "active",
+    "domains": ["genomics", "phylogenetics"],
+    "tags": ["cgmlst", "分型", "chewbbaca", "等位基因谱", "暴发"],
+    "summary": "核心基因组 MLST：高分辨率的菌株分型与聚类",
+    "what": [
+      "cgMLST 把分型位点从 6–7 个管家基因扩展到核心基因组的数千个位点（例如 1002 个或 1748 个基因，取决于方案），按「等位基因谱」比较菌株。它的分辨率接近 core-SNP，同时保留了等位基因编号这种可跨实验室共享的离散表示，是目前细菌分子监测与暴发识别的主流方法之一。",
+      "chewBBACA 是常用的开源实现：先用一组参考基因组建立（或下载）schema，再对每个样本做 allele call 得到等位基因矩阵，最后提取 cgMLST 子集、算距离与聚类。使用商业方案（如 Ridom SeqSphere+）时命名体系与结果表示不同，跨平台比较必须使用同一 schema。",
+      "结果质量取决于组装质量与 schema 适用性：等位基因编号只在同一 schema 版本内有意义；组装碎片化会系统性增加「未检出」位点比例，进而让距离矩阵失真。分析前应统计未检出比例，并把它作为质量门槛写进流程。"
+    ],
+    "inputs": [
+      { "type": "contigs", "name": "同一物种的多个组装", "required": true, "note": "组装连续性直接影响位点未检出比例；建议统一过滤标准后再分型" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "等位基因矩阵", "ext": ".cgmlst.alleles.tsv", "note": "样本 × 位点；异常以代码而非编号表示，代码比例本身就是质量指标" },
+      { "type": "cluster-dist", "name": "距离与聚类结果", "ext": ".cgmlst.dist.tsv", "note": "成对等位基因差异，用于暴发聚类与可视化" },
+      { "type": "log-report", "name": "运行日志", "ext": ".chewbbaca.log", "note": "记录 schema 来源与版本，是跨批次可比的唯一依据" }
+    ],
+    "provides": [
+      { "tool": "chewBBACA", "version": "3.3.x", "access": "cli", "install": "conda", "note": "CreateSchema / AlleleCall / ExtractCgMLST 等子命令组成完整流程" },
+      { "tool": "BLAST+", "version": "2.16.x", "access": "cli", "install": "conda", "note": "allele call 阶段的内部搜索后端；版本变化会影响边界判定" }
+    ],
+    "feeds": [
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "把等位基因矩阵读入并计算未检出比例、筛选样本" },
+      { "target": "py_sklearn_cluster", "viaType": "cluster-dist", "note": "对距离矩阵做聚类与降维，识别暴发簇" }
+    ],
+    "usage": [
+      {
+        "label": "建立 schema（也可直接使用社区维护的物种专用方案）",
+        "lang": "bash",
+        "code": "chewBBACA.py CreateSchema -i reference_genomes/ -o 07_variants/schema \\\n  --ptf <prodigal_training_file>\n# 训练文件等细节以官方文档为准；生产环境通常直接下载物种专用 schema"
+      },
+      {
+        "label": "对样本做 allele call",
+        "lang": "bash",
+        "code": "chewBBACA.py AlleleCall -i 02_assembly/filtered/ -g 07_variants/schema \\\n  -o 07_variants/allelecall --cpu 16"
+      },
+      {
+        "label": "提取 cgMLST 子集并检查异常代码比例",
+        "lang": "bash",
+        "code": "chewBBACA.py ExtractCgMLST -i 07_variants/allelecall \\\n  -o 07_variants/cgmlst\n# 距离矩阵与聚类可用后续子命令，或导入 GrapeTree 等工具（以官方文档为准）"
+      }
+    ],
+    "recipes": {
+      "bash": "chewBBACA.py AlleleCall -i 02_assembly/filtered/ -g ${CGMLST_SCHEMA} \\\n  -o 07_variants/allelecall --cpu ${THREADS} \\\n  > 10_logs/chewbbaca.log 2>&1\nchewBBACA.py ExtractCgMLST -i 07_variants/allelecall \\\n  -o 07_variants/cgmlst",
+      "python": "run([\n    \"chewBBACA.py\", \"AlleleCall\",\n    \"-i\", str(ASM_DIR / \"filtered\"),\n    \"-g\", os.environ[\"CGMLST_SCHEMA\"],\n    \"-o\", str(VAR_DIR / \"allelecall\"),\n    \"--cpu\", str(THREADS),\n])\nrun([\n    \"chewBBACA.py\", \"ExtractCgMLST\",\n    \"-i\", str(VAR_DIR / \"allelecall\"),\n    \"-o\", str(VAR_DIR / \"cgmlst\"),\n])"
+    },
+    "params": [
+      { "flag": "-g / --schema", "default": "必填", "note": "schema 目录；来源与版本必须记录，跨 schema 的编号与距离不可比较" },
+      { "flag": "--cpu", "default": "以版本为准", "note": "线程数；allele call 是最耗时阶段" },
+      { "flag": "未分类/缺失位点的输出选项", "default": "建议开启", "note": "把无法分配的位点单独输出，便于诊断异常代码比例；选项名以官方文档为准" },
+      { "flag": "未检出比例门槛", "default": "经验上应低于 5–10%", "note": "比例过高的样本应先改善组装再分型，否则距离矩阵不可靠；具体门槛按项目与文献确定" },
+      { "flag": "暴发判定距离阈值", "default": "物种/方案特异", "note": "不能跨物种照搬（不同物种与方案的等位基因差异尺度不同），必须依据本物种的流行病学一致性研究" }
+    ],
+    "pitfalls": [
+      "cgMLST 的等位基因编号只在同一 schema 内有效：换 schema（或 schema 版本）后编号、缺失位点定义与距离全部改变，历史数据必须用同一 schema 重新计算才能比较。",
+      "组装质量直接决定结果：碎片化组装会让位点落在 contig 边界或被拆开，表现为未检出或异常代码，系统性抬高样本间距离。分型前应统一过滤标准并报告未检出比例。",
+      "异常代码本身就是诊断信息：它们提示旁系同源、位点位于多个 contig、或组装错误。把这些代码当作「缺失」直接忽略，会掩盖真实的组装问题。",
+      "暴发阈值不能跨物种、跨方案照搬。不同物种的进化速率与方案位点数不同，判定同一暴发的等位基因差异阈值必须依据本物种的研究与官方指南。",
+      "cgMLST 距离是离散的等位基因差异，分辨率低于 core-SNP 的逐个碱基比较。对极近缘菌株（流行病学直接关联）有时需要 SNP 层面的证据补充；两者结论不一致时要解释原因（如重组、位点选择差异）。",
+      "不要把不同物种放进同一个 schema 分析。cgMLST 位点是物种特异的，混入其他物种会得到大面积缺失与毫无意义的距离；先用 ANI 或分类确认样本属于同一物种。"
+    ],
+    "related": [
+      { "id": "var_mlst", "note": "经典 7 位点分型；需要与历史数据衔接时保留它，需要分辨率时用 cgMLST" },
+      { "id": "var_snippy", "note": "core-SNP 路线；与 cgMLST 互为验证，分辨率更高但对参考更敏感" },
+      { "id": "comp_snp_dist", "note": "菌株间距离与传播推断的另一种实现" },
+      { "id": "tax_fastani", "note": "分型前先确认样本属于同一物种" },
+      { "id": "py_sklearn_cluster", "note": "对距离矩阵做聚类与降维" }
+    ],
+    "docs": [
+      { "label": "第 7 章 比较基因组与泛基因组", "path": "docs/guidebook/07-comparative-pangenome.md" }
+    ]
+  }
+]

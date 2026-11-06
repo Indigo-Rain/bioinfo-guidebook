@@ -1,0 +1,834 @@
+[
+  {
+    "id": "util_seqkit",
+    "name": "序列文件操作 (seqkit / seqtk)",
+    "category": "utility",
+    "layer": "engine",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics", "metagenomics", "transcriptomics"],
+    "tags": ["序列操作", "seqkit", "seqtk", "过滤", "统计", "子集"],
+    "summary": "读写、过滤、统计与拆分 FASTA/FASTQ 的瑞士军刀",
+    "what": [
+      "seqkit 与 seqtk 解决的是流程里最琐碎、又最频繁的一类需求：看看文件里有多少条序列、按长度过滤、随机抽取一部分做流程测试、按 ID 列表取子集、把多序列 FASTA 拆成每条一个文件、统一格式与大小写、在 FASTA 与 FASTQ 之间转换。它们不做任何生物学分析，但几乎每个项目都会用到，而且是少数几个能流式处理、内存占用极低、原生支持 gzip 的工具。",
+      "使用时要记住它们操作的是「格式」，不是「含义」。过滤与取子集不会校正任何统计偏差：随机抽 10% 的读长不等于 10% 的覆盖度（覆盖度分布不均匀），按长度筛掉短读长也不等于去掉了嵌合体。因此这些操作适合准备测试数据、整理中间文件、做质量抽查，而不适合被当作下游结论的依据。",
+      "两个工具的分工也值得说明：seqkit 子命令更全（paired 配对处理、common 比较 ID 集合、split 拆分、translate 翻译、amplicon 提取区间），是首选；seqtk 更老更小，在只装得起极简环境的场景下仍然好用。选哪个不影响结果，但同一项目里最好统一，避免同一件事有五种写法。"
+    ],
+    "inputs": [
+      { "type": "clean-reads", "name": "读长文件 (FASTQ)", "required": false, "note": "过滤、抽样、统计的常用输入" },
+      { "type": "genome-fasta", "name": "序列文件 (FASTA)", "required": false, "note": "核酸序列集合；拆分、重命名、提取子序列" },
+      { "type": "protein-faa", "name": "蛋白序列 (FASTA)", "required": false, "note": "氨基酸序列同样支持；注意长度与格式过滤参数的语义差异" }
+    ],
+    "outputs": [
+      { "type": "clean-reads", "name": "过滤或抽样后的读长", "ext": ".filt.fq.gz", "note": "长度/质量过滤、随机子集；不改变配对关系需两侧分别处理" },
+      { "type": "genome-fasta", "name": "整理后的序列文件", "ext": ".fasta", "note": "拆分、重命名、取子集、格式统一后的结果" },
+      { "type": "tsv-table", "name": "序列统计表", "ext": ".stats.tsv", "note": "条数、总长、N50、GC 等；批量核对数据量是否符合预期的第一手段" },
+      { "type": "log-report", "name": "操作日志", "ext": ".seqkit.log", "note": "记录子命令与参数；用于回溯某一步为什么少了读长" }
+    ],
+    "provides": [
+      { "tool": "seqkit", "version": "2.9.x", "access": "cli", "install": "conda", "note": "Go 实现，流式、低内存；子命令覆盖大部分日常格式操作" },
+      { "tool": "seqtk", "version": "1.4.x", "access": "cli", "install": "conda", "note": "极简 C 实现；seq -A、sample、subseq 是最常用的三个子命令" }
+    ],
+    "feeds": [
+      { "target": "qc_dedup_reads", "viaType": "clean-reads", "note": "长度过滤后常接着做去重与格式精简" },
+      { "target": "asm_filter_contigs", "viaType": "genome-fasta", "note": "按长度或覆盖度筛 contig 前的序列级整理" },
+      { "target": "qc_fastqc", "viaType": "clean-reads", "note": "过滤/抽样后重新做一次质量报告，确认操作没有引入异常" },
+      { "target": "py_biopython", "viaType": "genome-fasta", "note": "需要按条件改写 ID 或描述时交给脚本处理" }
+    ],
+    "usage": [
+      {
+        "label": "统计（批量核对数据量）",
+        "lang": "bash",
+        "code": "seqkit stats -a -T *.fq.gz > read_stats.tsv\ncolumn -t read_stats.tsv | head"
+      },
+      {
+        "label": "按长度过滤并保持压缩",
+        "lang": "bash",
+        "code": "seqkit seq -m 100 -M 300 --remove-gaps clean.fq.gz -o filtered.fq.gz"
+      },
+      {
+        "label": "按 ID 列表取子集（注意 -n 是按名字匹配）",
+        "lang": "bash",
+        "code": "seqkit grep -n -f ids.txt all.fasta -o subset.fasta\n# 不加 -n 时 pattern 会去匹配序列本身，结果通常不是你要的"
+      },
+      {
+        "label": "随机抽样做流程测试（固定种子以便复现）",
+        "lang": "bash",
+        "code": "seqkit sample -p 0.05 -s 42 reads.fq.gz -o reads_5pct.fq.gz"
+      }
+    ],
+    "recipes": {
+      "bash": "seqkit seq -m 100 01_clean/${SAMPLE}_R1.fq.gz -o 01_clean/${SAMPLE}_R1.filt.fq.gz\nseqkit seq -m 100 01_clean/${SAMPLE}_R2.fq.gz -o 01_clean/${SAMPLE}_R2.filt.fq.gz\nseqkit stats -a -T 01_clean/${SAMPLE}_R1.filt.fq.gz 01_clean/${SAMPLE}_R2.filt.fq.gz \\\n  > 10_logs/${SAMPLE}.read_stats.tsv",
+      "python": "for mate in (\"R1\", \"R2\"):\n    run([\"seqkit\", \"seq\", \"-m\", \"100\",\n         str(QC_DIR / f\"{sample}_{mate}.fq.gz\"),\n         \"-o\", str(QC_DIR / f\"{sample}_{mate}.filt.fq.gz\")])\nwith open(LOG_DIR / f\"{sample}.read_stats.tsv\", \"w\", encoding=\"utf-8\") as fh:\n    subprocess.run([\"seqkit\", \"stats\", \"-a\", \"-T\",\n                    str(QC_DIR / f\"{sample}_R1.filt.fq.gz\"),\n                    str(QC_DIR / f\"{sample}_R2.filt.fq.gz\")], check=True, stdout=fh)"
+    },
+    "params": [
+      { "flag": "seqkit grep -n", "default": "关闭", "note": "按序列名而非序列内容匹配；忘记加它是最常见的「结果为空」原因" },
+      { "flag": "seqkit seq -m / -M", "default": "0 / 0", "note": "最小与最大长度；过滤是无损的（只按长度判断），不会修正质量" },
+      { "flag": "seqkit seq -w", "default": "60", "note": "FASTA 折行宽度；设 0 表示不折行。假设「一序列一行」的脚本必须用 -w 0" },
+      { "flag": "seqkit sample -s", "default": "随机", "note": "随机种子；抽样用于测试或比较时必须固定，否则每次结果不同" },
+      { "flag": "seqkit rmdup", "default": "关闭", "note": "精确去重；对双端数据要分别处理，否则会破坏配对关系" },
+      { "flag": "seqkit translate 的遗传密码表", "default": "1", "note": "非标准密码子的物种（如支原体）必须显式指定，否则翻译结果整体错误" }
+    ],
+    "pitfalls": [
+      "seqkit grep 默认匹配序列内容而不是序列名。忘记 -n 时，用 ID 列表取子集会得到空结果或莫名其妙的匹配，而且不报错。",
+      "随机抽样不等于等比缩减覆盖度：读长在基因组上的分布本来就不均匀，抽 10% 的读长后某些区域可能完全没有覆盖。用它做流程测试可以，用它做定量结论不行。",
+      "对双端数据做过滤与去重必须两侧同步。只处理 R1 或两侧用了不同参数，都会让下游配对逻辑错位，而多数组装/比对工具不会因此报错。",
+      "默认折行会坑到「按行统计」的脚本。折叠成 60 列的 FASTA 会让 awk 算出的序列长度与 GC 完全错误；要么用 -w 0，要么改用真正的 FASTA 解析。",
+      "过滤掉短读长会改变长度分布，进而影响下游的覆盖度与组装。记录过滤前后的条数与总碱基数，别让「数据变少了」变成无法解释的现象。",
+      "seqkit 是格式工具，不做生物学判断。它无法识别嵌合体、接头残留或污染物种；这些问题要用专门的工具处理，不能靠长度过滤掩盖。"
+    ],
+    "related": [
+      { "id": "qc_dedup_reads", "note": "去重与格式精简；与本模块经常交替使用" },
+      { "id": "io_fastq_to_fasta", "note": "格式互转的专门模块；与本模块功能有重叠" },
+      { "id": "asm_filter_contigs", "note": "组装层面的序列过滤，语义不同于读长过滤" },
+      { "id": "py_biopython", "note": "需要按条件精细改写序列时改用脚本" }
+    ],
+    "docs": [
+      { "label": "第 11 章 流程与可复现性", "path": "docs/guidebook/11-workflow-reproducibility.md" }
+    ]
+  },
+  {
+    "id": "util_samtools",
+    "name": "比对文件操作 (SAMtools / BAM)",
+    "category": "utility",
+    "layer": "engine",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics", "metagenomics", "transcriptomics"],
+    "tags": ["sam", "bam", "samtools", "排序", "标志位", "覆盖度"],
+    "summary": "SAM/BAM/CRAM 的查看、排序、取子集与统计",
+    "what": [
+      "SAMtools 是比对文件的通用工具箱：view（按标志、区域、质量筛选）、sort（坐标或名字排序）、index、merge、flagstat 与 idxstats（统计）、depth 与 coverage（覆盖度）、faidx（参考序列索引）、fastq（把比对导回读长）、markdup（标记重复）、mpileup（碱基级汇总）、quickcheck（完整性检查）。流程里几乎每一步之后都会用到它，掌握它的几个子命令比记住十几个专用工具更划算。",
+      "它也是「统计口径」最容易出错的地方。flagstat 统计的是比对记录数而不是独立分子数，次要比对、补充比对与重复读长都会让数字虚高；depth 的默认输出只包含有覆盖的位置，用它算平均深度与用 -a 算出的全基因组平均深度是两个不同的量；mpileup 有默认的最大深度上限，高覆盖度的扩增子或质粒数据会被静默降采样。这些都不是 bug，但不写清参数的数字没法比较。",
+      "另一类问题是完整性。BAM 与索引必须成对且与数据匹配；被中断的拷贝可能留下缺少 EOF 标记的文件，而有些工具仍然能读到末尾、不报错，只是少算了一部分数据。因此处理任何比对文件之前先 samtools quickcheck，导出读长之前确认排序方式（配对导出需要按名字归拢），这些都是把「看起来跑通了」与「结果可信」区分开的最小动作。"
+    ],
+    "inputs": [
+      { "type": "bam", "name": "比对文件 (SAM / BAM / CRAM)", "required": true, "note": "CRAM 需要能访问对应的参考序列" },
+      { "type": "reference-genome", "name": "参考基因组", "required": false, "note": "建立 .fai 索引、处理 CRAM 或提取参考序列时需要" }
+    ],
+    "outputs": [
+      { "type": "bam", "name": "处理后的比对文件", "ext": ".sorted.bam", "note": "筛选、排序、合并或标记重复后的结果" },
+      { "type": "tsv-table", "name": "统计表", "ext": ".flagstat.tsv", "note": "比对率、重复率、按参考的读长数；质控与交付的常用证据" },
+      { "type": "clean-reads", "name": "导出回读长", "ext": ".fastq.gz", "note": "从比对中回收读长；配对导出需要注意排序方式" },
+      { "type": "log-report", "name": "操作与检查日志", "ext": ".samtools.log", "note": "quickcheck 结果、所用过滤标志与参数，便于复现" }
+    ],
+    "provides": [
+      { "tool": "SAMtools", "version": "1.1x", "access": "cli", "install": "conda", "note": "与 HTSlib 版本绑定；不同版本的默认过滤行为有差异" },
+      { "tool": "mosdepth", "version": "0.3.x", "access": "cli", "install": "conda", "note": "大样本覆盖度计算比 depth 快很多，适合批量统计" }
+    ],
+    "feeds": [
+      { "target": "var_bcftools_call", "viaType": "bam", "note": "变异检出的直接输入；必须是排序并建索引的 BAM" },
+      { "target": "meta_coverm", "viaType": "bam", "note": "MAG 与基因丰度定量消费比对文件" },
+      { "target": "io_bam_to_bed", "viaType": "bam", "note": "转成覆盖度与区间表做下游运算" },
+      { "target": "qc_multi_qc", "viaType": "log-report", "note": "把比对率、重复率纳入项目级质控总览" }
+    ],
+    "usage": [
+      {
+        "label": "完整性检查与基础统计（处理任何 BAM 之前都该做）",
+        "lang": "bash",
+        "code": "samtools quickcheck -v aligned.bam\nsamtools flagstat aligned.bam\nsamtools idxstats aligned.bam | head"
+      },
+      {
+        "label": "按标志与质量筛选（去掉未比对、次要比对与重复）",
+        "lang": "bash",
+        "code": "samtools view -b -F 0x904 -q 20 aligned.bam > filtered.bam\n# 0x904 = UNMAP + SECONDARY + SUPPLEMENTARY；按需增减，并把标志写进日志"
+      },
+      {
+        "label": "从比对导出配对读长（先按名字归拢）",
+        "lang": "bash",
+        "code": "samtools collate -@ 8 -O -u aligned.bam tmp_collate | \\\n  samtools fastq -@ 8 -1 R1.fq.gz -2 R2.fq.gz -0 /dev/null -s /dev/null -n -"
+      },
+      {
+        "label": "提取参考序列并建索引",
+        "lang": "bash",
+        "code": "samtools faidx reference.fna\nsamtools faidx reference.fna chr1:1-2000"
+      }
+    ],
+    "recipes": {
+      "bash": "samtools quickcheck -v 07_compare/${SAMPLE}.bam || echo \"BAM 不完整：${SAMPLE}\" >> 10_logs/${SAMPLE}.samtools.log\nsamtools sort -@ ${THREADS} -o 07_compare/${SAMPLE}.sorted.bam 07_compare/${SAMPLE}.bam\nsamtools index 07_compare/${SAMPLE}.sorted.bam\nsamtools flagstat 07_compare/${SAMPLE}.sorted.bam > 10_logs/${SAMPLE}.flagstat.tsv",
+      "python": "if subprocess.run([\"samtools\", \"quickcheck\", \"-v\", str(BAM_DIR / f\"{sample}.bam\")]).returncode != 0:\n    raise SystemExit(f\"BAM 不完整或缺少 EOF 标记：{sample}\")\nrun([\"samtools\", \"sort\", \"-@\", str(THREADS), \"-o\",\n     str(BAM_DIR / f\"{sample}.sorted.bam\"), str(BAM_DIR / f\"{sample}.bam\")])\nrun([\"samtools\", \"index\", str(BAM_DIR / f\"{sample}.sorted.bam\")])\nwith open(LOG_DIR / f\"{sample}.flagstat.tsv\", \"w\", encoding=\"utf-8\") as fh:\n    subprocess.run([\"samtools\", \"flagstat\", str(BAM_DIR / f\"{sample}.sorted.bam\")], check=True, stdout=fh)"
+    },
+    "params": [
+      { "flag": "-f / -F", "default": "0", "note": "包含/排除指定标志位。两者含义相反，写错会得到「全是重复读长」或「什么都没有」的结果，务必用 samtools flags 辅助确认" },
+      { "flag": "-q / --min-MAPQ", "default": "0", "note": "最小比对质量；重复区与多拷贝基因上的读长常被赋低 MAPQ，阈值过高会系统性丢失这些区域" },
+      { "flag": "samtools fastq 的输入排序", "default": "按名字归拢", "note": "坐标排序的 BAM 直接导出配对会破坏配对关系；应先 collate 或按名字排序" },
+      { "flag": "mpileup -d", "default": "8000", "note": "每个文件的最大深度；高覆盖度扩增子/质粒数据会在此被静默降采样，需要显式调高" },
+      { "flag": "samtools index -c", "default": "关闭", "note": "生成 CSI 索引；参考序列很长或 contig 很多时必须用" },
+      { "flag": "markdup 与 fixmate", "default": "关闭", "note": "标记重复前需要按名字排序并 fixmate，顺序错了会得到无效的重复标记" }
+    ],
+    "pitfalls": [
+      "flagstat 统计的是比对记录，不是独立分子。次要比对、补充比对与未标记的重复都会让「比对率」虚高，解释前先看清输出里的分项。",
+      "samtools fastq 在坐标排序的 BAM 上导出配对读长会破坏配对：R1/R2 会错位或数量不等。导出前必须先 collate 或按名字排序。",
+      "mpileup 有默认的最大深度上限（8000）。高覆盖度数据会被静默降采样，等位基因比例与变异检出随之失真；需要时显式调高并记录。",
+      "缺少 EOF 标记的 BAM 仍能被很多工具读取，只是数据在末尾被截断。网络盘拷贝中断是常见成因；处理前用 samtools quickcheck 检查。",
+      "BAM 与索引必须成对且版本一致。拷贝数据时漏掉索引、或留下旧索引，会表现为查询结果错位或工具报出难以理解的错误。",
+      "低 MAPQ 读长集中在重复区与多拷贝基因上。一刀切地按 MAPQ 过滤会系统性丢失这些区域的信息，对 rRNA 操纵子、IS 元件与质粒分析尤其致命。"
+    ],
+    "related": [
+      { "id": "io_bam_to_bed", "note": "把比对转换成覆盖度与区间表" },
+      { "id": "io_compress_index", "note": "排序、压缩与索引的专门模块" },
+      { "id": "py_pysam", "note": "需要按条件遍历比对记录时改用脚本" },
+      { "id": "meta_coverm", "note": "典型下游：消费 BAM 做丰度定量" }
+    ],
+    "docs": [
+      { "label": "第 11 章 流程与可复现性", "path": "docs/guidebook/11-workflow-reproducibility.md" }
+    ]
+  },
+  {
+    "id": "util_bedtools",
+    "name": "区间运算 (bedtools)",
+    "category": "utility",
+    "layer": "engine",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics", "metagenomics"],
+    "tags": ["区间", "bedtools", "交集", "窗口", "坐标", "覆盖"],
+    "summary": "对 BED/GFF/VCF 做交集、合并、覆盖与窗口统计",
+    "what": [
+      "bedtools 是基因组学里的「区间算术层」：哪些基因落在这些区块内（intersect）、两个区间集合的重叠总长是多少（coverage、jaccard）、这些区间能不能合并成连续区块（merge）、把基因组切成等长窗口（makewindows）、按基因提取对应序列（getfasta）、把数值从一套区间映射到另一套（map）。凡是「按坐标对齐两组注释」的需求，几乎都能用它一行命令完成。",
+      "它的两条隐式前提最容易出事。第一是坐标约定：bedtools 按 BED 的 0-based 半开区间理解输入，而 GFF 与 VCF 是 1-based，混用时边界会差一位。第二是排序：凡带 -sorted 的运算都要求输入按染色体与起点排好序，未排序时结果没有定义——工具不会报错，只会给出错误的交集，这是最难发现的一类问题。",
+      "输出形式也需要留意：-wa -wb 之类的输出是没有表头的纯位置列，下游脚本按列号取值时一旦列序理解错就会静默取错字段；区间超过参考末端时会得到截断或回绕的序列。因此这类运算的结果应当统一到一个规范表（带表头、明确列语义）再交给下游，而不是让每个脚本各自解析裸坐标。"
+    ],
+    "inputs": [
+      { "type": "tsv-table", "name": "待查询区间集 (BED/GFF/VCF)", "required": true, "note": "第一个区间集合；GFF/VCF 请使用对应的 -gff、-vcf 类参数或先转换坐标" },
+      { "type": "tsv-table", "name": "参考区间集", "required": false, "note": "第二个集合（如基因注释、目标区、掩蔽区）" },
+      { "type": "genome-fasta", "name": "基因组序列", "required": false, "note": "用 getfasta 提取序列时需要，且必须与区间文件的参考一致" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "区间运算结果表", "ext": ".intersect.tsv", "note": "交集/合并/最邻近等结果；建议补表头后再交付" },
+      { "type": "tsv-table", "name": "覆盖度与统计表", "ext": ".coverage.tsv", "note": "重叠长度、覆盖比例、计数等汇总量" },
+      { "type": "genome-fasta", "name": "提取出的序列", "ext": ".extract.fasta", "note": "getfasta 的输出；注意链方向与区间是否越界" },
+      { "type": "log-report", "name": "运算日志", "ext": ".bedtools.log", "note": "所用子命令、排序假设与参考文件版本" }
+    ],
+    "provides": [
+      { "tool": "bedtools", "version": "2.3x", "access": "cli", "install": "conda", "note": "区间运算的通用实现；对输入排序与坐标约定有硬要求" },
+      { "tool": "BEDOPS", "version": "2.4.x", "access": "cli", "install": "conda", "note": "大区间集合上的运算性能更好；语义与 bedtools 略有差异，不要混用结果" }
+    ],
+    "feeds": [
+      { "target": "comp_island_path", "viaType": "tsv-table", "note": "用区间交集把岛预测结果与基因注释对应起来" },
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "补表头并整理成可读的结果表" },
+      { "target": "viz_heatmap", "viaType": "tsv-table", "note": "按窗口汇总的覆盖度矩阵可直接画热图" }
+    ],
+    "usage": [
+      {
+        "label": "交集（保留两边的原始字段）",
+        "lang": "bash",
+        "code": "bedtools sort -i genes.bed > genes.sorted.bed\nbedtools sort -i islands.bed > islands.sorted.bed\nbedtools intersect -a genes.sorted.bed -b islands.sorted.bed -wa -wb > overlap.tsv"
+      },
+      {
+        "label": "合并与覆盖度",
+        "lang": "bash",
+        "code": "bedtools merge -i regions.sorted.bed > regions.merged.bed\nbedtools coverage -a windows.bed -b reads.bed > window_cov.tsv"
+      },
+      {
+        "label": "按区间提取序列（注意链方向）",
+        "lang": "bash",
+        "code": "bedtools getfasta -fi genome.fna -bed targets.bed -s -name -fo targets.fasta\n# -s 按链方向取反向互补；不加时一律返回正链序列"
+      }
+    ],
+    "recipes": {
+      "bash": "bedtools sort -i 07_compare/${SAMPLE}.islands.bed > 07_compare/${SAMPLE}.islands.sorted.bed\nbedtools sort -i 03_annotation/${SAMPLE}.genes.bed > 03_annotation/${SAMPLE}.genes.sorted.bed\nbedtools intersect -a 03_annotation/${SAMPLE}.genes.sorted.bed \\\n  -b 07_compare/${SAMPLE}.islands.sorted.bed -wa -wb \\\n  > 09_results/${SAMPLE}.island_genes.tsv",
+      "python": "run(f\"bedtools sort -i {cmp_dir}/{sample}.islands.bed > {cmp_dir}/{sample}.islands.sorted.bed\")\nrun(f\"bedtools intersect -a {anno_dir}/{sample}.genes.sorted.bed \"\n    f\"-b {cmp_dir}/{sample}.islands.sorted.bed -wa -wb > \"\n    f\"{res_dir}/{sample}.island_genes.tsv\")"
+    },
+    "params": [
+      { "flag": "-sorted", "default": "关闭", "note": "声明输入已排序以启用快速算法；输入实际未排序时结果没有定义，而且不会报错" },
+      { "flag": "-wa / -wb", "default": "关闭", "note": "输出 A/B 两侧的原始记录；不加时默认只输出重叠区段，字段数量完全不同" },
+      { "flag": "getfasta -s / -name", "default": "关闭", "note": "按链方向取反向互补、并在序列名中带上区间名；与下游按名字匹配的脚本强相关" },
+      { "flag": "makewindows -w / -n", "default": "无", "note": "按固定长度或固定段数切窗口；窗口方案一旦改变，所有窗口统计都不可比" },
+      { "flag": "-g / --genome", "default": "无", "note": "基因组文件（染色体长度表）；染色体排序顺序必须与区间文件一致，否则 -sorted 运算会出错" }
+    ],
+    "pitfalls": [
+      "带 -sorted 的运算默认输入已排序。未排序时结果没有定义且不会报错——这是 bedtools 最难发现的问题，所有带 -sorted 的命令都应先显式排序（或用 -g 指定一致的染色体顺序）。",
+      "坐标约定混用会差一位：bedtools 按 BED 的 0-based 半开区间理解输入，而 GFF 与 VCF 是 1-based。GFF/VCF 直接当 BED 用会让边界判定整体偏移。",
+      "染色体排序顺序必须一致。字典序会让 chr10 排在 chr2 之前，与 -g 指定的顺序不符时交集会静默漏掉整条染色体。",
+      "-wa -wb 的输出没有表头，列号语义完全依赖命令本身。下游脚本按列号取值时一旦命令改了参数就会取错字段，应补上表头或固定解析规则。",
+      "getfasta 遇到超出参考末端的区间会给出截断或回绕的序列。区间文件通常来自其他工具，先检查坐标范围再提取。",
+      "不同区间工具（bedtools 与 BEDOPS）对边界与合并语义的处理并不完全一致。同一项目应固定使用一种，不要把两者的结果混在同一张表里。"
+    ],
+    "related": [
+      { "id": "io_bam_to_bed", "note": "从比对生成区间与覆盖度，是本模块的常见上游" },
+      { "id": "comp_island_path", "note": "用区间交集把预测结果映射到基因" },
+      { "id": "res_mobilome", "note": "可移动元件区间与基因区间的交集分析" },
+      { "id": "util_awk_sed", "note": "对区间结果做进一步列级整理" }
+    ],
+    "docs": [
+      { "label": "第 11 章 流程与可复现性", "path": "docs/guidebook/11-workflow-reproducibility.md" }
+    ]
+  },
+  {
+    "id": "util_gnu_parallel",
+    "name": "并行执行与任务分发 (GNU parallel / xargs)",
+    "category": "utility",
+    "layer": "engine",
+    "kind": "template",
+    "maturity": "stable",
+    "domains": ["genomics", "metagenomics", "transcriptomics"],
+    "tags": ["并行", "parallel", "xargs", "任务分发", "日志", "断点续跑"],
+    "summary": "把逐样本命令并行化并控制资源占用",
+    "what": [
+      "大多数生信工具是「单样本内多线程」而不是「多样本并行」，所以在多核机器上最快的用法往往是「8 个样本 × 8 线程」而不是「1 个样本 × 64 线程」。GNU parallel 与 xargs -P 就是把同一条命令套在每个样本上的最小工具：从清单读入参数、按固定并发数分发、把每个任务的输出写到各自的日志，必要时还能用 --joblog 记录每个任务的耗时与退出码，并在失败后只重跑失败的部分。",
+      "它的价值在规模变大时才显现：几十个样本时手工写 for 循环也能忍，上百个样本时就需要并发控制（否则 200 个任务同时启动会把内存吃光）、需要每个任务独立的日志（否则输出交错成一团无法定位失败样本）、需要失败即停（否则一个样本的失败会被后续步骤掩盖成「结果少了几个」）。参数大致正确时它就是廉价的工作流引擎；一旦用错，最典型的表现是「任务都显示成功，但有几个样本的结果是空的」。",
+      "它的局限也要清楚：没有依赖关系表达（B 任务无法等待 A 任务）、没有断点续跑的标准语义（--resume-failed 依赖 joblog）、跨节点的资源调度要自己接集群提交系统。当流程步骤超过几个、或需要条件分支与检查点时，应该换成真正的流程引擎；把并行运行器当作临时加速手段，而不是长期架构。"
+    ],
+    "inputs": [
+      { "type": "tsv-table", "name": "样本/任务清单", "required": true, "note": "一行一个任务；列作为占位符传给命令，路径中不能有未转义的空白字符" },
+      { "type": "script", "name": "待并行执行的命令或脚本", "required": false, "note": "把命令写进脚本文件再调用，可以绕开大部分引号与转义问题" }
+    ],
+    "outputs": [
+      { "type": "any", "name": "并行任务的实际产物", "ext": "(由被包装的命令决定)", "note": "输出类型取决于包装的命令，所以这里用「任意」表达；不要用它来掩盖真实的类型不匹配" },
+      { "type": "log-report", "name": "任务日志与 joblog", "ext": ".joblog", "note": "每个任务的退出码、耗时与输出；失败排查与断点续跑的依据" }
+    ],
+    "provides": [
+      { "tool": "GNU parallel", "version": "2024.x", "access": "cli", "install": "conda", "note": "版本号按发布日期编号（形如 20240722），这里只固定年份，以实际安装版本为准" },
+      { "tool": "GNU xargs (coreutils)", "version": "9.4.x", "access": "cli", "install": "builtin", "note": "任何系统都有；功能少，且默认按空白字符切分参数，容易踩坑" }
+    ],
+    "feeds": [
+      { "target": "qc_multi_qc", "viaType": "log-report", "note": "把批量任务的日志汇总进项目级质控总览" },
+      { "target": "wf_snakemake", "viaType": "any", "note": "手工并行到一定规模后应迁移到真正的流程引擎，由它接管依赖与重跑" }
+    ],
+    "usage": [
+      {
+        "label": "按清单并行执行（每个任务独立日志）",
+        "lang": "bash",
+        "code": "parallel -j 8 --joblog logs/run.joblog --halt now,fail=1 \\\n  'fastp -i 00_raw/{}_R1.fq.gz -I 00_raw/{}_R2.fq.gz \\\n        -o 01_clean/{}_R1.fq.gz -O 01_clean/{}_R2.fq.gz \\\n        -w 4 > logs/{}.fastp.log 2>&1' :::: samples.txt"
+      },
+      {
+        "label": "失败重跑（依赖 joblog）",
+        "lang": "bash",
+        "code": "parallel -j 8 --joblog logs/run.joblog --resume-failed --halt now,fail=1 \\\n  'bash scripts/per_sample.sh {}' :::: samples.txt"
+      },
+      {
+        "label": "xargs 路线：必须用 -0 或 -d 处理文件名（含空格也安全）",
+        "lang": "bash",
+        "code": "find 00_raw -name '*_R1.fq.gz' -print0 | \\\n  xargs -0 -n 1 -P 8 bash scripts/per_sample.sh"
+      }
+    ],
+    "recipes": {
+      "bash": "parallel -j ${JOBS} --joblog 10_logs/${PROJECT}.joblog --halt now,fail=1 \\\n  'bash 11_scripts/per_sample.sh {} ${THREADS_PER_JOB} > 10_logs/{}.out 2>&1' \\\n  :::: samples.txt",
+      "python": "# 用 Python 做并发控制时，显式限制并发数并保留每个任务的日志\nfrom concurrent.futures import ThreadPoolExecutor\n\ndef one(sample):\n    log = open(LOG_DIR / f\"{sample}.out\", \"w\", encoding=\"utf-8\")\n    try:\n        subprocess.run([\"bash\", \"11_scripts/per_sample.sh\", sample, str(THREADS_PER_JOB)],\n                       check=True, stdout=log, stderr=subprocess.STDOUT)\n    finally:\n        log.close()\n\nwith ThreadPoolExecutor(max_workers=JOBS) as pool:\n    list(pool.map(one, samples))"
+    },
+    "params": [
+      { "flag": "-j / -P", "default": "全部核心", "note": "并发任务数。默认按 CPU 核数启动，在共享节点上会抢资源；显式设置并保证 并发数 × 每任务线程数 ≤ 可用核心数" },
+      { "flag": "--joblog", "default": "无", "note": "记录每个任务的退出码与耗时；没有它就难以判断哪个样本失败、也无法断点续跑" },
+      { "flag": "--halt now,fail=1", "default": "关闭", "note": "任一任务失败立即终止其余任务；否则失败会被淹没在几百行输出里，变成「结果少了几个样本」" },
+      { "flag": "--keep-order / --line-buffer", "default": "关闭", "note": "控制输出顺序与缓冲；并发任务的输出交错时，日志几乎无法阅读" },
+      { "flag": "xargs -0 / -d", "default": "按空白切分", "note": "默认按空白与引号规则切分参数，文件名中的空格会让一个样本变成两个参数" },
+      { "flag": "内存配额", "default": "无", "note": "并发任务共享内存；按每任务峰值内存 × 并发数估算，必要时改用 --load 或降低并发" }
+    ],
+    "pitfalls": [
+      "引号与转义是头号失败原因。占位符嵌在多层引号的命令里时很容易被 shell 提前展开；把命令写进脚本文件再传参数，比在命令行里拼字符串可靠得多。",
+      "xargs 默认按空白字符切分，还会自行处理引号规则。文件名里有空格时，一个样本会被拆成两个参数，结果是「命令成功但输出文件不存在」；一律使用 -0 配合 find -print0。",
+      "并发数乘以每任务线程数超过核心数会导致严重抖动。8 个任务各开 8 线程跑在 8 核机器上，比串行还慢；两者必须一起规划。",
+      "set -euo pipefail 不会自动传播到并行子任务里。需要显式用 --halt now,fail=1，否则失败的任务只体现在日志里，而流程本身返回成功。",
+      "并发任务的输出如果共用一个日志文件会交错成不可读的乱码，失败的样本也定位不到；每个任务一个日志文件是基本要求。",
+      "内存是共享资源：N 个任务同时跑，峰值内存是单任务的 N 倍，OOM 被杀的任务往往只表现为「没有输出」而不是明确报错。开始前按每任务峰值内存估算并发数。"
+    ],
+    "related": [
+      { "id": "wf_batch_loop", "note": "批量循环的结构化写法；与本模块是同一问题的两种层次" },
+      { "id": "wf_snakemake", "note": "需要依赖关系、检查点与重跑语义时应迁移到流程引擎" },
+      { "id": "util_args_validate", "note": "在并行启动前校验清单与输入文件，避免几百个任务同时失败" },
+      { "id": "wf_cluster_submit", "note": "需要跨节点调度时改由集群提交系统管理资源" }
+    ],
+    "docs": [
+      { "label": "第 11 章 流程与可复现性", "path": "docs/guidebook/11-workflow-reproducibility.md" }
+    ]
+  },
+  {
+    "id": "util_awk_sed",
+    "name": "文本流处理 (awk / sed / grep)",
+    "category": "utility",
+    "layer": "engine",
+    "kind": "template",
+    "maturity": "stable",
+    "domains": ["genomics", "metagenomics", "transcriptomics"],
+    "tags": ["awk", "sed", "grep", "文本处理", "列操作", "locale"],
+    "summary": "在命令行里做列抽取、过滤、汇总与改写",
+    "what": [
+      "相当一部分「一次性分析」根本不需要 pandas 或 R：按条件筛行、抽几列、按分组求和、按 key 合并两张表、把制表符换成逗号、把一个大文件按染色体拆开。awk、sed 与 grep 是唯一在每台集群登录节点上必然存在的工具，也是把工具输出接成流程时最常用的粘合层；把它们用对，可以让很多步骤不必写脚本也不必装依赖。",
+      "它们同时也是静默错误的温床，原因几乎都出在默认行为上：awk 的默认字段分隔符是「连续空白」而不是制表符，遇到含空字段的 TSV 时后续列会整体左移，缺失值把数据挪了一列却毫无提示；字段在没有强制数值上下文时按字符串比较，于是 \"10\" 大于 \"9\" 的判断是假的；sort 受 locale 影响，大写字母与数字的排序顺序会变，chr10 会排在 chr2 前面；Windows 上编辑过的文件带 CRLF 行尾，最后一个字段会多出一个不可见的 \\r，让 ID 匹配全部失败。",
+      "规范做法并不复杂：显式写 -F'\\t' 与 OFS，排序与求和前设 LC_ALL=C，比较数字时用 +0 或算术上下文强制数值化，处理来自 Windows 的文件时先去掉 \\r。更重要的是一条纪律：超过几行的 awk 程序应当写进版本化的脚本文件并注释，而不是留在终端历史里——那类命令半年后没人能解释它做了什么。"
+    ],
+    "inputs": [
+      { "type": "tsv-table", "name": "待处理的文本表", "required": true, "note": "工具输出、统计表、注释表；列语义需要事先确认" },
+      { "type": "csv-table", "name": "逗号分隔表", "required": false, "note": "需要处理分隔符不一致的输入时使用" },
+      { "type": "log-report", "name": "日志文本", "required": false, "note": "从日志中抽取关键指标；注意多行记录与缩进的干扰" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "整理后的表", "ext": ".tsv", "note": "筛选、重排、汇总后的结果；建议同时输出表头" },
+      { "type": "gene-list", "name": "筛选出的 ID 列表", "ext": ".txt", "note": "每行一个 ID；供富集分析、取子集或交集运算使用" },
+      { "type": "log-report", "name": "处理报告", "ext": ".txt", "note": "输入输出行数、被过滤掉的行数与原因；数字对不上时才能定位" }
+    ],
+    "provides": [
+      { "tool": "GNU awk (gawk)", "version": "5.3.x", "access": "cli", "install": "conda", "note": "支持更多内建函数；注意 macOS 自带的是 BSD awk，行为有差异" },
+      { "tool": "GNU sed", "version": "4.9.x", "access": "cli", "install": "conda", "note": "sed -i 在 GNU 与 BSD 上语法不同（BSD 需要 -i ''）" },
+      { "tool": "GNU grep", "version": "3.11.x", "access": "cli", "install": "conda", "note": "-P（PCRE）与 -w、-F 的语义差异会影响匹配结果" }
+    ],
+    "feeds": [
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "整理好的表进入 Python 做进一步分析" },
+      { "target": "r_read_import", "viaType": "tsv-table", "note": "交给 R 做统计与绘图前的清洗" },
+      { "target": "tran_go_enrich", "viaType": "gene-list", "note": "筛出的基因 ID 列表用于富集分析" }
+    ],
+    "usage": [
+      {
+        "label": "TSV 列抽取与筛选（显式指定分隔符）",
+        "lang": "bash",
+        "code": "awk -F'\\t' 'BEGIN{OFS=\"\\t\"} NR==1{print $1,$3,$7} NR>1 && $7+0 >= 100 {print $1,$3,$7}' in.tsv > out.tsv"
+      },
+      {
+        "label": "按 key 合并两张表（先各自排序，locale 固定为 C）",
+        "lang": "bash",
+        "code": "LC_ALL=C sort -k1,1 a.tsv > a.sorted\nLC_ALL=C sort -k1,1 b.tsv > b.sorted\nLC_ALL=C join -t $'\\t' -1 1 -2 1 a.sorted b.sorted > joined.tsv"
+      },
+      {
+        "label": "清理 Windows 行尾（CRLF 会让最后一个字段匹配失败）",
+        "lang": "bash",
+        "code": "sed -i 's/\\r$//' table.tsv\nawk -F'\\t' '{print NF}' table.tsv | sort -u   # 列数应恒定，出现两种值说明行尾或引号还有问题"
+      },
+      {
+        "label": "按分组求和（awk 关联数组）",
+        "lang": "bash",
+        "code": "awk -F'\\t' 'NR>1{sum[$2]+=$4} END{for (k in sum) print k, sum[k]}' OFS='\\t' stats.tsv | sort"
+      }
+    ],
+    "recipes": {
+      "bash": "awk -F'\\t' 'BEGIN{OFS=\"\\t\"} NR>1 && $8+0 >= 0.05 {print $1, $2, $8}' \\\n  09_results/${PROJECT}.stats.tsv > 09_results/${PROJECT}.filtered.tsv\ncut -f1 09_results/${PROJECT}.filtered.tsv | tail -n +2 | sort -u \\\n  > 09_results/${PROJECT}.ids.txt\nprintf 'rows_in\\t%s\\nrows_out\\t%s\\n' \\\n  \"$(wc -l < 09_results/${PROJECT}.stats.tsv)\" \\\n  \"$(wc -l < 09_results/${PROJECT}.filtered.tsv)\" > 10_logs/${PROJECT}.filter.log",
+      "python": "# 复杂逻辑不要硬塞进 awk：超过几行的程序应当写成脚本\nwith open(RES_DIR / f\"{project}.stats.tsv\", encoding=\"utf-8\", newline=\"\") as fh:\n    header = fh.readline().rstrip(\"\\n\").split(\"\\t\")\n    value_col = header.index(\"qvalue\")\n    kept = [line for line in fh if float(line.split(\"\\t\")[value_col]) < 0.05]\n(RES_DIR / f\"{project}.filtered.tsv\").write_text(\"\".join(kept), encoding=\"utf-8\")"
+    },
+    "params": [
+      { "flag": "awk -F'\\t'", "default": "连续空白", "note": "默认分隔符是空白而不是制表符；TSV 里有空字段时后续列会整体左移，必须显式指定" },
+      { "flag": "awk OFS", "default": "空格", "note": "输出分隔符；不在 BEGIN 里设 OFS 会得到空格分隔的「TSV」，下游按制表符切分就全错" },
+      { "flag": "LC_ALL=C", "default": "系统 locale", "note": "影响 sort 与字符比较顺序；坐标排序、ID 去重前必须固定为 C" },
+      { "flag": "awk 的数值比较", "default": "字符串", "note": "字段本身没有数值类型；比较大小要用 $n+0 或算术上下文强制数值化" },
+      { "flag": "sed -i", "default": "就地修改", "note": "GNU 与 BSD 语法不同；更重要的是就地修改会覆盖原文件，重要数据先备份" },
+      { "flag": "grep -w / -F / -P", "default": "基本正则", "note": "-w 全词匹配、-F 固定字符串、-P Perl 正则；模式里含点号或竖线时用错会大面积误匹配" }
+    ],
+    "pitfalls": [
+      "awk 默认按连续空白分列。TSV 中一旦有空字段，后续所有列都会左移，数据被静默读错列——这类错误不会报任何警告，且统计结果看起来合理。",
+      "Windows 上编辑或传输产生的 CRLF 行尾会在最后一个字段留下不可见的 \\r。表现是「ID 明明一样却匹配不上」，排查往往耗时很久；处理外部文件前先清理行尾。",
+      "sort 受 locale 影响：同一批文件在不同机器上可能得到不同的顺序，chr10 与 chr2 的相对次序也会变。坐标排序与 ID 去重前统一设 LC_ALL=C。",
+      "字符串比较与数值比较容易混淆：没有数值上下文的字段按字典序比较，\"10\" > \"9\" 为假，筛选阈值时会静默漏掉数据。",
+      "sed -i 会直接覆盖原文件，且在 macOS 与 Linux 上语法不同。对重要数据一律先输出到新文件，确认无误再替换。",
+      "复杂 awk 程序写在命令行里无法评审也无法复现。超过几行的逻辑应落入版本化脚本，并在注释里写清输入列语义。"
+    ],
+    "related": [
+      { "id": "util_rename_manifest", "note": "同样以文本处理为主，但关注命名与清单的一致性" },
+      { "id": "py_pandas_io", "note": "超过几行的处理逻辑改用 pandas 更可维护" },
+      { "id": "io_interop_standard", "note": "跨语言传输表格时避免用文本格式，减少类型失真" },
+      { "id": "util_args_validate", "note": "对文本表做前置检查（列数恒定、行数与预期一致）" }
+    ],
+    "docs": [
+      { "label": "第 11 章 流程与可复现性", "path": "docs/guidebook/11-workflow-reproducibility.md" }
+    ]
+  },
+  {
+    "id": "util_rename_manifest",
+    "name": "重命名、样本清单与路径整理",
+    "category": "utility",
+    "layer": "engine",
+    "kind": "adapter",
+    "maturity": "stable",
+    "domains": ["genomics", "metagenomics", "transcriptomics"],
+    "tags": ["命名", "清单", "manifest", "配对", "路径", "可追溯"],
+    "summary": "统一样本命名并生成可校验的任务清单",
+    "what": [
+      "样本命名是流程里最容易「把数据接到错误元数据上」的环节：测序仪输出的是 S1_L001_R1_001.fastq.gz 或 Sample_23_S45_L002_R1_001.fastq.gz 这类名字，元数据表里却常写成 \"Sample 23\"、sample23 或实验室内部编号。重命名因此不是整理洁癖，而是一次**数据定义操作**：重命名之后，「哪个文件对应哪个样本」这件事如果不写下来，就只存在于执行者的记忆里。",
+      "所以这一步真正的交付物不是被改名的文件，而是一份 manifest：不可变的样本 ID、原始路径、新路径、R1/R2 配对关系、文件大小与校验和。有了它，后续任何一步都能回答「这个结果来自哪个原始文件」，也能在数据被移动或重新下载后被验证。重命名脚本本身也应当是可重跑（幂等）的，并且能由 manifest 反向还原名称。",
+      "具体风险集中在配对与排序上：按通配符推导 R1/R2 时容易把 _R1_001.fastq.gz.md5 之类的附属文件一起匹配进来；用字母序而不是自然序排序时，sample10 会排在 sample2 前面，若 R1 与 R2 两份列表的排序规则不同，就会出现「A 样本的 R1 配 B 样本的 R2」——很多工具对错配的配对文件毫无察觉，只会给出难以解释的结果。此外还要注意文件系统差异：Windows/macOS 大小写不敏感而 Linux 敏感，只在大小写上不同的「重命名」在迁移后会静默合并。"
+    ],
+    "inputs": [
+      { "type": "tsv-table", "name": "元数据表", "required": false, "note": "样本 ID 与分组、来源、时间等信息；是建立映射的依据" },
+      { "type": "raw-reads", "name": "原始读长文件集合", "required": false, "note": "用于推导 R1/R2 配对与生成校验和" },
+      { "type": "gene-list", "name": "待整理的 ID 清单", "required": false, "note": "关键结果清单等纯 ID 列表；用于按清单取子集，或为交付物建立可追溯的命名映射" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "样本清单 (manifest)", "ext": ".manifest.tsv", "note": "样本 ID、原始路径、新路径、配对关系、大小与校验和；本模块的核心产物" },
+      { "type": "script", "name": "重命名脚本", "ext": ".rename.sh", "note": "由 manifest 生成的幂等脚本；可重跑，也能反向还原" },
+      { "type": "log-report", "name": "命名冲突与配对报告", "ext": ".rename.log", "note": "重名、未配对、被忽略的文件清单；必须在重命名前看一遍" }
+    ],
+    "provides": [
+      { "tool": "GNU coreutils", "version": "9.4.x", "access": "cli", "install": "builtin", "note": "mv/ln/sort/sha256sum；用符号链接代替复制可同时省磁盘并保留来源" },
+      { "tool": "Python", "version": "3.12.x", "access": "python-api", "install": "builtin", "note": "pathlib 与 hashlib 写清单脚本；比 shell 更不容易在空格与转义上出错" }
+    ],
+    "feeds": [
+      { "target": "util_args_validate", "viaType": "tsv-table", "note": "清单是下一步输入校验的直接依据" },
+      { "target": "util_checksum", "viaType": "tsv-table", "note": "在清单中补齐校验和，作为数据不可篡改的证据" },
+      { "target": "wf_batch_loop", "viaType": "tsv-table", "note": "批量循环按清单逐行派发任务，而不是按目录通配符猜测" }
+    ],
+    "usage": [
+      {
+        "label": "生成清单（配对推导 + 命名冲突检查）",
+        "lang": "python",
+        "code": "from pathlib import Path\nimport hashlib, csv\nraw = Path(\"00_raw\")\nrows = []\nfor f in sorted(raw.glob(\"*.fq.gz\")):\n    stem = f.name.replace(\".fq.gz\", \"\")\n    sample, mate = stem.rsplit(\"_\", 1)          # 命名规则必须与实际一致\n    rows.append({\"sample\": sample, \"mate\": mate, \"path\": str(f),\n                 \"size\": f.stat().st_size})\nwith open(\"manifest.tsv\", \"w\", newline=\"\", encoding=\"utf-8\") as fh:\n    writer = csv.DictWriter(fh, fieldnames=list(rows[0]), delimiter=\"\\t\")\n    writer.writeheader(); writer.writerows(rows)\n# 检查：每个样本是否恰好有 R1 与 R2"
+      },
+      {
+        "label": "用符号链接建立统一命名（不复制数据）",
+        "lang": "bash",
+        "code": "mkdir -p 00_raw_renamed\nwhile IFS=$'\\t' read -r sample mate path rest; do\n  ln -sf \"$path\" \"00_raw_renamed/${sample}_${mate}.fq.gz\"\ndone < manifest.tsv"
+      },
+      {
+        "label": "核对配对完整性（这一步不能省）",
+        "lang": "bash",
+        "code": "awk -F'\\t' 'NR>1{count[$1]++} END{for (s in count) if (count[s] != 2) print s, count[s]}' manifest.tsv\n# 空输出表示每个样本恰好两个文件；有输出就说明配对规则有问题"
+      }
+    ],
+    "recipes": {
+      "python": "import csv\nfrom pathlib import Path\nrows = list(csv.DictReader(open(MANIFEST_IN, encoding=\"utf-8\"), delimiter=\"\\t\"))\nby_sample = {}\nfor row in rows:\n    by_sample.setdefault(row[\"sample\"], {})[row[\"mate\"]] = row[\"path\"]\nbad = {s: m for s, m in by_sample.items() if set(m) != {\"R1\", \"R2\"}}\nif bad:\n    raise SystemExit(f\"配对不完整，先修数据再继续：{bad}\")\nwith open(RES_DIR / f\"{project}.manifest.tsv\", \"w\", newline=\"\", encoding=\"utf-8\") as fh:\n    writer = csv.writer(fh, delimiter=\"\\t\")\n    writer.writerow([\"sample\", \"r1\", \"r2\", \"r1_size\", \"r2_size\"])\n    for sample in sorted(by_sample, key=lambda s: (len(s), s)):   # 自然序，避免 sample10 < sample2\n        m = by_sample[sample]\n        writer.writerow([sample, m[\"R1\"], m[\"R2\"],\n                         Path(m[\"R1\"]).stat().st_size, Path(m[\"R2\"]).stat().st_size])",
+      "bash": "python 11_scripts/build_manifest.py --raw 00_raw --out 00_raw/manifest.tsv\nawk -F'\\t' 'NR>1{print $1}' 00_raw/manifest.tsv | sort | uniq -d   # 检查重名\nwc -l < 00_raw/manifest.tsv   # 样本数 + 1"
+    },
+    "params": [
+      { "flag": "命名规则", "default": "改动前先确认", "note": "R1/R2 的后缀写法（_R1/_R2、_1/_2、R1_001）因测序平台而异；规则写进脚本文档而不是靠记忆" },
+      { "flag": "排序方式", "default": "自然序", "note": "字母序会把 sample10 排在 sample2 前面；R1 与 R2 列表必须使用同一种排序，否则会静默错配样本" },
+      { "flag": "复制还是符号链接", "default": "符号链接", "note": "链接省磁盘且保留来源；但归档与迁移时必须展开链接，否则到新环境会全部失效" },
+      { "flag": "大小写处理", "default": "避免仅大小写差异", "note": "Windows/macOS 文件系统大小写不敏感而 Linux 敏感，仅在大小写上不同的名字迁移后会合并" },
+      { "flag": "是否就地重命名", "default": "否", "note": "只对唯一副本做就地改名风险极高；正确做法是新建目录用链接，原数据保持不动" }
+    ],
+    "pitfalls": [
+      "配对规则出错是最严重的失败模式：若 R1 与 R2 列表的排序或通配符不同，就会出现 A 样本的 R1 配 B 样本的 R2。多数工具不会察觉，只会给出难以解释的比对率或变异结果。",
+      "通配符会连附属文件一起匹配：_R1_001.fastq.gz.md5、.tmp、旧版本文件都可能被当成读长文件；命名规则应基于 manifest 而不是 glob。",
+      "重命名之后没有清单等于丢失了映射。任何重命名操作都必须先产出 manifest（原始路径 + 新路径 + 校验和），否则结果将无法追溯到原始数据。",
+      "文件系统差异会造成静默合并：只在大小写上不同的名字在 Windows/macOS 上无法共存，迁移到 Linux 后可能表现为「文件少了几个」。",
+      "符号链接的坑在另一端：归档时若不展开链接，打包出来的数据在新环境全部失效；若用 scp/rsync 的默认参数复制链接，也会得到一堆指向不存在路径的文件。",
+      "不要在唯一一份原始数据上做就地重命名。正确做法是保留原始目录，用链接或新目录建立统一命名，并保证脚本幂等、可重跑。"
+    ],
+    "related": [
+      { "id": "util_args_validate", "note": "把清单交给校验步骤，在流程开始前拦住缺文件与错配对" },
+      { "id": "util_checksum", "note": "为清单补齐校验和，构成数据不可篡改的证据链" },
+      { "id": "wf_batch_loop", "note": "按清单逐行派发批量任务" },
+      { "id": "wf_reproducibility", "note": "清单是结果可追溯链条的起点" }
+    ],
+    "docs": [
+      { "label": "第 11 章 流程与可复现性", "path": "docs/guidebook/11-workflow-reproducibility.md" }
+    ]
+  },
+  {
+    "id": "util_args_validate",
+    "name": "参数校验与输入检查",
+    "category": "utility",
+    "layer": "engine",
+    "kind": "template",
+    "maturity": "stable",
+    "domains": ["genomics", "metagenomics", "transcriptomics"],
+    "tags": ["输入校验", "前置检查", "快速失败", "工具版本", "日志"],
+    "summary": "在流程开头拦住缺文件、错参数与错配样本",
+    "what": [
+      "大部分「流程崩溃」其实是输入问题：某个文件不存在、某个文件是空的、R1 与 R2 条数不一致、参考基因组的索引没建、输出目录没有写权限、磁盘空间不够、PATH 上的工具版本与预期不符。这些问题如果不在开头暴露，就会在几小时后由某个工具抛出一句毫无指向性的错误。校验步骤的价值就是把几小时的失败变成几秒钟的失败。",
+      "要检查的东西可以很具体：清单里每个文件是否存在、大小是否大于零、是否真的是 gzip（下载失败时常见的「HTML 错误页被存成 .gz」就是靠这一步发现）、双端读长条数是否一致、样本 ID 在清单与文件名之间是否一致、参考与索引是否成对存在、所需工具是否在 PATH 上并满足版本要求、输出目录是否可写、剩余空间是否够本次运行。全部检查应在一两分钟内跑完，否则会被使用者绕过。",
+      "工程上有两条纪律：一是**只报错不自作主张**。校验脚本不应该自动重新下载、自动改名或自动跳过问题样本——那会让问题在更晚、更贵的地方才暴露；应该打印出解析后的绝对路径与原始错误，然后失败退出。二是**把校验结果写进日志**：解析后的绝对路径、每个工具的版本、数据文件的校验和与大小，这是最廉价的溯源信息，也是半年后回答「这次运行为什么和上次不一样」的唯一依据。上游步骤（尤其是格式适配与转换）已经产出的校验报告也应在这里一并纳入记录，避免同一件事被检查两次、却留下两份互相矛盾的说法。"
+    ],
+    "inputs": [
+      { "type": "tsv-table", "name": "样本清单 / 参数表", "required": true, "note": "校验的对象；通常来自重命名与清单整理步骤" },
+      { "type": "script", "name": "流程配置", "required": false, "note": "配置文件或流程定义；用于提取需要检查的路径与参数" },
+      { "type": "log-report", "name": "上游校验 / 转换报告", "required": false, "note": "格式适配与转换步骤产出的校验报告；纳入同一次运行记录，并在进入分析前确认转换没有异常" }
+    ],
+    "outputs": [
+      { "type": "log-report", "name": "校验报告", "ext": ".validate.log", "note": "解析后的绝对路径、工具版本、检查项通过/失败明细" },
+      { "type": "tsv-table", "name": "校验后的输入清单", "ext": ".validated.tsv", "note": "附上文件大小与校验和；作为流程其余步骤的唯一输入来源" }
+    ],
+    "provides": [
+      { "tool": "Python", "version": "3.12.x", "access": "python-api", "install": "builtin", "note": "写校验脚本；pathlib、gzip、hashlib 都不需要额外依赖" },
+      { "tool": "GNU bash", "version": "5.2.x", "access": "cli", "install": "builtin", "note": "适合做轻量检查（test -s、command -v）；复杂逻辑建议改用 Python" }
+    ],
+    "feeds": [
+      { "target": "util_checksum", "viaType": "tsv-table", "note": "把解析后的清单交给校验和步骤，补齐完整性证据" },
+      { "target": "wf_reproducibility", "viaType": "log-report", "note": "校验日志（绝对路径与工具版本）是运行记录的第一段" }
+    ],
+    "usage": [
+      {
+        "label": "轻量检查：文件存在、非空、工具可用",
+        "lang": "bash",
+        "code": "set -euo pipefail\nfor f in $(cut -f2 manifest.tsv | tail -n +2); do\n  [[ -s \"$f\" ]] || { echo \"缺失或空文件: $f\" >&2; exit 1; }\ndone\nfor t in fastp bwa-mem2 samtools; do command -v \"$t\" >/dev/null || { echo \"缺少工具: $t\" >&2; exit 1; }; done"
+      },
+      {
+        "label": "确认 .gz 文件真的是 gzip（防止把错误页当数据）",
+        "lang": "bash",
+        "code": "for f in 00_raw/*.gz; do\n  magic=$(head -c 2 \"$f\" | od -An -tx1 | tr -d ' \\n')\n  [[ \"$magic\" == \"1f8b\" ]] || echo \"不是 gzip: $f\"\ndone"
+      },
+      {
+        "label": "记录环境快照（溯源的最小代价）",
+        "lang": "bash",
+        "code": "{ echo \"# run: $(date -Iseconds)\"; echo \"# host: $(hostname)\";\n  for t in fastp samtools kraken2; do printf '%s\\t' \"$t\"; \"$t\" --version 2>&1 | head -1; done; } \\\n  > 10_logs/env_snapshot.txt"
+      }
+    ],
+    "recipes": {
+      "bash": "python 11_scripts/validate_inputs.py \\\n  --manifest 00_raw/manifest.tsv \\\n  --config config.yaml \\\n  --log 10_logs/${PROJECT}.validate.log \\\n  --out-manifest 00_raw/validated.tsv\n{ echo \"# run: $(date -Iseconds)\"; for t in fastp samtools; do printf '%s\\t' \"$t\"; \"$t\" --version 2>&1 | head -1; done; } \\\n  >> 10_logs/${PROJECT}.validate.log",
+      "python": "import gzip, shutil\nfrom pathlib import Path\n\nproblems = []\nfor row in rows:\n    for key in (\"r1\", \"r2\"):\n        path = Path(row[key]).resolve()\n        if not path.exists() or path.stat().st_size == 0:\n            problems.append(f\"{key} 缺失或为空: {path}\")\n            continue\n        with open(path, \"rb\") as fh:\n            if fh.read(2) != b\"\\x1f\\x8b\":\n                problems.append(f\"{key} 不是 gzip（可能是下载失败的页面）: {path}\")\nif shutil.disk_usage(RES_DIR).free < MIN_FREE_BYTES:\n    problems.append(f\"剩余空间不足: {shutil.disk_usage(RES_DIR).free}\")\nif problems:\n    raise SystemExit(\"输入校验失败：\\n\" + \"\\n\".join(problems))"
+    },
+    "params": [
+      { "flag": "检查项范围", "default": "存在性 + 非空 + gzip 魔数 + 配对数 + 磁盘空间", "note": "这几项覆盖了绝大多数「跑到一半才失败」的情形，成本很低" },
+      { "flag": "是否检查工具版本", "default": "检查", "note": "只记录版本号并做主要版本断言；不要求完全一致，但版本漂移必须可见" },
+      { "flag": "失败行为", "default": "立即失败", "note": "不要自动修复或跳过；自动重下载、自动改名会把问题推迟到更贵的位置" },
+      { "flag": "大文件校验深度", "default": "只读头部", "note": "为速度考虑只读前几个字节；完整性验证交给校验和步骤，而不是在这里读全文件" },
+      { "flag": "运行时长", "default": "秒级", "note": "校验超过一两分钟就会被使用者绕过；宁可分两级（快检 + 完整校验）" }
+    ],
+    "pitfalls": [
+      "校验脚本自动「修复」问题（重新下载、改名、跳过样本）会让错误在更晚、更贵的地方暴露；正确行为是打印解析后的绝对路径与原始错误，然后失败退出。",
+      "只检查文件是否存在是不够的：下载失败留下的 HTML 错误页、被中断的空文件都能通过存在性检查。至少要检查大小大于零与 gzip 魔数。",
+      "配置里的相对路径会在不同工作目录下解析成不同文件。校验报告应始终打印 resolve() 后的绝对路径，这是排查「我这里能跑你那里不能」的最快方式。",
+      "忘记检查磁盘空间是最常见的批量失败原因：几百个样本的中间文件很容易把盘写满，而磁盘满的表现往往是某个工具抛出莫名其妙的写入错误。",
+      "工具版本检查要么断言主要版本、要么只记录。写死完整版本号会让环境升级后流程立即失败，而完全不记录又会让半年后的结果无法解释。",
+      "校验通过不等于数据可用：条数一致、文件完整只能排除输入错误，样本层面的污染、覆盖度不足与批次效应仍要靠质控环节判断。"
+    ],
+    "related": [
+      { "id": "util_rename_manifest", "note": "提供校验所依据的样本清单" },
+      { "id": "util_checksum", "note": "完整性与不可篡改性的深层校验" },
+      { "id": "util_install_tools", "note": "校验发现工具缺失或版本不符时的下一步" },
+      { "id": "wf_reproducibility", "note": "校验日志是运行记录与溯源链条的起点" }
+    ],
+    "docs": [
+      { "label": "第 11 章 流程与可复现性", "path": "docs/guidebook/11-workflow-reproducibility.md" }
+    ]
+  },
+  {
+    "id": "util_install_tools",
+    "name": "工具安装与环境准备",
+    "category": "utility",
+    "layer": "engine",
+    "kind": "standard",
+    "maturity": "active",
+    "domains": ["genomics", "metagenomics", "transcriptomics"],
+    "tags": ["环境", "conda", "mamba", "锁文件", "容器", "可复现"],
+    "summary": "用 conda / 容器按锁定版本安装生信工具",
+    "what": [
+      "这不是分析步骤，而是让分析可复现的前提。同一份数据跑出不同结果，最常见的原因不是参数写错，而是环境不同：mamba 与经典求解器给出的依赖组合不同、Bioconda 上某个包在两个时间点解析到不同 build、有人在环境里又 pip install 了一个新版本，把 conda 管理的共享库覆盖掉。因此专业做法是：每条流程一个环境，版本在文件里锁定，环境用绝对路径引用，安装完把实际版本导出存档。",
+      "具体实践可以用三层来理解。第一层是环境文件：environment.yml 写清通道与主要工具版本，求解器（mamba 或 pixi）负责生成锁文件（conda-lock.yml、pixi.lock），锁文件记录全部传递依赖与平台相关的构建号，是真正可复现的那一份。第二层是使用方式：用 `conda run -p <prefix>` 或容器镜像引用环境，而不是依赖调用者当时激活了哪个环境——「我这能跑」几乎总是环境激活状态的差异。第三层是归档：环境稳定后导出容器镜像，因为容器是唯一不依赖仓库是否还存在的形态。",
+      "容易忽略的细节有几处。通道优先级必须是 conda-forge 高于 bioconda 且使用严格优先级，否则会解析出混搭的、运行时报错的组合；在 conda 环境里用 pip 覆盖 numpy、htslib、pysam 这类共享库是经典的自伤行为，出问题时错误信息与真正原因相隔极远；不同工具对 python 版本的约束会迫使求解器悄悄降级某个工具，因此安装后必须核对实际版本（conda list --export）而不是相信求解结果。共享集群上不要往 base 环境安装任何东西，每个项目或每条流程一个独立前缀。"
+    ],
+    "inputs": [
+      { "type": "tsv-table", "name": "工具与版本清单", "required": false, "note": "流程需要哪些工具、期望版本；用于生成环境文件与安装后核对" },
+      { "type": "script", "name": "环境文件 (environment.yml / lock)", "required": false, "note": "已有锁文件时直接用它创建环境，避免重新求解带来的漂移" }
+    ],
+    "outputs": [
+      { "type": "log-report", "name": "环境构建日志", "ext": ".env_build.log", "note": "求解器输出、实际安装版本、失败与警告；归档时必须保留" },
+      { "type": "tsv-table", "name": "实际安装版本表", "ext": ".versions.tsv", "note": "工具、版本、build 字符串与来源通道；论文方法部分与复现的证据" },
+      { "type": "script", "name": "锁定的环境文件", "ext": ".lock", "note": "锁文件或导出的环境定义；下次创建环境应直接用它，而不是重新求解" }
+    ],
+    "provides": [
+      { "tool": "mamba", "version": "1.5.x", "access": "cli", "install": "binary", "note": "C++ 实现的快速求解器；与经典 conda 求解结果可能不同，固定使用其中一种" },
+      { "tool": "micromamba", "version": "1.5.x", "access": "cli", "install": "binary", "note": "单文件可执行、无需 base 环境；适合容器与共享集群" },
+      { "tool": "conda-lock", "version": "2.5.x", "access": "cli", "install": "pip", "note": "从 environment.yml 生成跨平台锁文件；锁文件才是可复现的那一份" },
+      { "tool": "Apptainer", "version": "1.3.x", "access": "cli", "install": "binary", "note": "把稳定环境固化成镜像归档；Docker 亦可，HPC 上更常用 Apptainer" }
+    ],
+    "feeds": [
+      { "target": "util_args_validate", "viaType": "tsv-table", "note": "用实际安装版本表反过来校验 PATH 上的版本是否符合预期" },
+      { "target": "wf_conda_env", "viaType": "script", "note": "把锁文件交给流程引擎的依赖管理环节" },
+      { "target": "wf_container", "viaType": "script", "note": "需要长期归档时把环境定义构建成容器镜像" }
+    ],
+    "usage": [
+      {
+        "label": "从环境文件创建独立环境（固定通道优先级）",
+        "lang": "bash",
+        "code": "mamba create -y -p ./envs/pipeline -c conda-forge -c bioconda \\\n  --strict-channel-priority \\\n  fastp=0.23 samtools=1.19 kraken2=2.1\n# 通道顺序必须是 conda-forge 在 bioconda 之前"
+      },
+      {
+        "label": "生成锁文件并在别处重建（真正的可复现路径）",
+        "lang": "bash",
+        "code": "conda-lock lock -f environment.yml -p linux-64\nmamba create -y -p ./envs/pipeline --file conda-lock.yml"
+      },
+      {
+        "label": "安装后导出实际版本（不要相信求解结果）",
+        "lang": "bash",
+        "code": "conda list -p ./envs/pipeline --export > 10_logs/env.versions.txt\nconda run -p ./envs/pipeline fastp --version"
+      },
+      {
+        "label": "固化到容器（环境稳定后做一次）",
+        "lang": "bash",
+        "code": "apptainer build pipeline.sif docker://quay.io/condaforge/miniforge3:latest\n# 更常见的做法是从 Dockerfile/定义文件构建，把锁文件复制进镜像"
+      }
+    ],
+    "recipes": {
+      "bash": "set -euo pipefail\nmamba create -y -p ./envs/${PROJECT} --file envs/${PROJECT}.lock\nconda list -p ./envs/${PROJECT} --export > 10_logs/${PROJECT}.env.versions.txt\nconda run -p ./envs/${PROJECT} python -c \"import sys; print(sys.version)\" \\\n  >> 10_logs/${PROJECT}.env_build.log",
+      "python": "env_prefix = PROJECT_ROOT / \"envs\" / project\nrun([\"mamba\", \"create\", \"-y\", \"-p\", str(env_prefix), \"--file\", str(lock_file)],\n    log_name=f\"{project}.env_build.log\")\nwith open(LOG_DIR / f\"{project}.env.versions.txt\", \"w\", encoding=\"utf-8\") as fh:\n    subprocess.run([\"conda\", \"list\", \"-p\", str(env_prefix), \"--export\"], check=True, stdout=fh)\n# 之后所有步骤都用 conda run -p <prefix> 调用，避免依赖调用者的激活状态\nrun([\"conda\", \"run\", \"-p\", str(env_prefix), \"fastp\", \"--version\"],\n    log_name=f\"{project}.env_build.log\")"
+    },
+    "params": [
+      { "flag": "通道与顺序", "default": "conda-forge > bioconda", "note": "配合 --strict-channel-priority；顺序或优先级错误会解析出混搭组合，问题在运行期才暴露" },
+      { "flag": "版本约束方式", "default": "锁文件固定", "note": "environment.yml 里用 =（精确）而不是 >=；真正的可复现性来自锁文件里的全部传递依赖与构建号" },
+      { "flag": "环境前缀", "default": "项目内 ./envs/<name>", "note": "独立前缀避免互相污染；共享集群上绝不要装进 base" },
+      { "flag": "是否用 pip 补装", "default": "尽量避免", "note": "pip 覆盖 conda 管理的共享库（numpy、htslib、pysam）会产生难以定位的运行时错误" },
+      { "flag": "归档形态", "default": "容器镜像", "note": "仓库可能下线或改版，镜像与锁文件一起归档才真正长期可用" }
+    ],
+    "pitfalls": [
+      "在 conda 环境里 pip install 覆盖共享库（numpy、htslib、pysam）是经典的隐性破坏：安装过程不会报错，之后出现的是随机崩溃或结果异常，排查成本极高。",
+      "通道优先级写错会解析出混搭的构建组合。Bioconda 的包依赖 conda-forge 的底层库，顺序或优先级设置不当会得到能装上但运行时报错的组合。",
+      "「装上了」不等于「版本对」：不同工具对 python 版本的约束会迫使求解器悄悄降级某个工具，因此必须用 conda list --export 核对实际版本，而不是相信求解输出的摘要。",
+      "依赖调用者已激活环境是流程不可复现的主要原因之一。应统一用 conda run -p <prefix> 或容器调用，让环境选择写在流程里而不是人的记忆里。",
+      "共享集群上往 base 环境装包会影响所有人的任务，且极难回滚。每个项目或每条流程一个独立前缀是底线。",
+      "锁文件必须进版本库，环境本身不必。只有 environment.yml 而没有锁文件时，一年后重建会解析到不同的依赖组合，结果随之漂移。"
+    ],
+    "related": [
+      { "id": "wf_conda_env", "note": "流程层面的环境与依赖锁定模块" },
+      { "id": "wf_container", "note": "把稳定环境固化为镜像以便长期归档" },
+      { "id": "util_args_validate", "note": "安装完成后用校验步骤确认 PATH 上的版本与锁定表一致" },
+      { "id": "wf_reproducibility", "note": "版本表与构建日志是结果可追溯的必要组成" }
+    ],
+    "docs": [
+      { "label": "第 11 章 流程与可复现性", "path": "docs/guidebook/11-workflow-reproducibility.md" }
+    ]
+  },
+  {
+    "id": "util_download_ref",
+    "name": "参考数据库下载与版本管理",
+    "category": "utility",
+    "layer": "engine",
+    "kind": "reference-data",
+    "maturity": "stable",
+    "domains": ["genomics", "metagenomics", "transcriptomics"],
+    "tags": ["数据库", "版本管理", "校验和", "索引", "可复现", "参考数据"],
+    "summary": "下载参考库并锁定版本与校验和",
+    "what": [
+      "几乎每个结果都依赖某个外部数据库：物种分类的索引库、分类学注释的参考基因组集合、BUSCO 的直系同源基因集、扩增子的参考序列库、耐药与毒力基因库、宿主基因组。数据库版本对结果的影响往往大于工具版本——换一个分类学数据库版本，物种名与归属会变；换一个耐药基因库版本，耐药判定会变。但数据库通常是「当初下载了一次，放在共享盘 db/ 目录里」，没有版本、没有校验和、没有下载日期。",
+      "把这个步骤显式化的做法是：固定到具体发布版本（绝不用「latest」），记录来源地址、发布标识、下载时间、体积与校验和，记录构建索引所用的工具及版本，并保留一个能重建该数据库的脚本。这样任何结果都能回答「你分析时用的是哪一版」。这不只是形式主义：提供方会在同名文件下重新发布内容，而 latest 链接会随时间指向新版本，一年后重跑同一流程得到不同结论是完全可能的。",
+      "工程细节同样重要。下载后必须验证提供方公布的校验和，而不只是确认「下载完成了」——大压缩包解压失败会立刻暴露，但索引目录的不完整下载可能结构上看起来完好，只在分类或比对时表现为命中率莫名偏低。解压通常需要两倍磁盘空间；有些数据库需要注册或许可（例如某些耐药基因库），要遵守其条款、不要二次分发。索引最好用与消费端相同版本的工具在本地重建，并放在快速本地存储上：网络文件系统会让分类与比对工具因随机读而慢一个数量级，个别工具还会因为内存映射失败而直接报错。"
+    ],
+    "inputs": [
+      { "type": "tsv-table", "name": "数据库清单", "required": true, "note": "名称、发布版本、来源地址、期望校验和；这份清单本身应与结果一起归档" },
+      { "type": "script", "name": "下载与建库脚本", "required": false, "note": "已有脚本时按其执行，并把脚本一起纳入版本控制" }
+    ],
+    "outputs": [
+      { "type": "reference-genome", "name": "参考序列集合", "ext": "(目录)", "note": "参考基因组、标志基因集或宿主序列；常作为比对与注释的基准" },
+      { "type": "sqlite-db", "name": "预建索引数据库", "ext": "(目录)", "note": "分类库、比对索引或 HMM 库；一次构建、多次复用，必须记录构建工具版本" },
+      { "type": "tsv-table", "name": "数据库版本与校验清单", "ext": "_db_manifest.tsv", "note": "版本、来源、日期、大小与校验和；结果归档时必须带上它" },
+      { "type": "log-report", "name": "下载与建库日志", "ext": ".download.log", "note": "下载过程中的重试、校验结果与建库命令" }
+    ],
+    "provides": [
+      { "tool": "curl", "version": "8.7.x", "access": "cli", "install": "builtin", "note": "支持断点续传与失败重试；下载大文件的基本工具" },
+      { "tool": "aria2", "version": "1.37.x", "access": "cli", "install": "conda", "note": "多连接下载，适合几十 GB 的数据库；同样要校验结果" },
+      { "tool": "Kraken 2", "version": "2.1.x", "access": "cli", "install": "conda", "note": "用于本地构建分类索引；索引必须与消费端的工具版本匹配" },
+      { "tool": "DIAMOND", "version": "2.1.x", "access": "cli", "install": "conda", "note": "为蛋白参考集建立比对索引；makedb 的版本会影响比对灵敏度" }
+    ],
+    "feeds": [
+      { "target": "qc_remove_host", "viaType": "reference-genome", "note": "宿主参考基因组的版本必须与项目记录一致，否则去宿主比例变化无法解释" },
+      { "target": "tax_gtdbtk", "viaType": "reference-genome", "note": "分类学注释依赖特定版本的参考基因组集合" },
+      { "target": "util_checksum", "viaType": "tsv-table", "note": "对下载物建立校验和，作为完整性与未被替换的证据" },
+      { "target": "wf_reproducibility", "viaType": "tsv-table", "note": "数据库版本清单是结果可复现记录的必要部分" }
+    ],
+    "usage": [
+      {
+        "label": "带重试与断点续传的下载 + 校验",
+        "lang": "bash",
+        "code": "curl -L --retry 5 --retry-delay 10 -C - -o db.tar.gz \"${DB_URL}\"\nsha256sum db.tar.gz > db.tar.gz.sha256\nsha256sum -c db.tar.gz.sha256   # 必须与提供方公布的值一致"
+      },
+      {
+        "label": "解压前确认磁盘空间（解压需要约两倍体积）",
+        "lang": "bash",
+        "code": "df -h .\ndu -sh db.tar.gz\n# 索引目录通常比原始数据更大；分类库常见几十 GB 量级"
+      },
+      {
+        "label": "本地重建索引（用与消费端一致的版本）",
+        "lang": "bash",
+        "code": "kraken2-build --download-taxonomy --db kraken_db\nkraken2-build --build --db kraken_db --threads 8\n{ echo \"built: $(date -Iseconds)\"; kraken2 --version | head -1; } > kraken_db/BUILD_INFO.txt"
+      },
+      {
+        "label": "记录版本清单（与结果一起归档）",
+        "lang": "bash",
+        "code": "printf 'name\\tversion\\tsource\\tdate\\tsha256\\n' > db_manifest.tsv\nprintf 'kraken2_standard\\t%s\\t%s\\t%s\\t%s\\n' \"$KRAKEN_RELEASE\" \"$DB_URL\" \"$(date -I)\" \\\n  \"$(sha256sum db.tar.gz | cut -d' ' -f1)\" >> db_manifest.tsv"
+      }
+    ],
+    "recipes": {
+      "bash": "mkdir -p db/${DB_NAME}\ncurl -L --retry 5 -C - -o db/${DB_NAME}.tar.gz \"${DB_URL}\"\nsha256sum db/${DB_NAME}.tar.gz >> 10_logs/${PROJECT}.download.log\nsha256sum -c <(grep \" ${DB_NAME}.tar.gz$\" 10_logs/${PROJECT}.download.log) \\\n  >> 10_logs/${PROJECT}.download.log\ntar -xzf db/${DB_NAME}.tar.gz -C db/${DB_NAME}\nprintf '%s\\t%s\\t%s\\n' \"${DB_NAME}\" \"${DB_RELEASE}\" \"$(date -I)\" > db/${DB_NAME}/VERSION.tsv",
+      "python": "import hashlib, subprocess\nrun([\"curl\", \"-L\", \"--retry\", \"5\", \"-C\", \"-\", \"-o\", str(archive), db_url],\n    log_name=f\"{db_name}.download.log\")\ndigest = hashlib.sha256(archive.read_bytes()).hexdigest()\nif expected_sha256 and digest != expected_sha256:\n    raise SystemExit(f\"校验和不匹配，拒绝使用：{digest}\")\nrun([\"tar\", \"-xzf\", str(archive), \"-C\", str(DB_DIR / db_name)],\n    log_name=f\"{db_name}.download.log\")"
+    },
+    "params": [
+      { "flag": "版本标识", "default": "固定发布版本", "note": "不要用 latest；提供方会在同名文件下更新内容，latest 会让一年后的重跑得到不同结果" },
+      { "flag": "--retry / -C -", "default": "启用", "note": "大文件下载中断很常见；断点续传配合重试能显著减少失败，但重试后仍必须校验" },
+      { "flag": "校验和来源", "default": "提供方公布值", "note": "自行计算的校验和只能证明「没变」，只有与提供方公布值比对才能证明「下载正确」" },
+      { "flag": "索引构建工具版本", "default": "与消费端一致", "note": "用 A 版本建的索引交给 B 版本消费可能失败或结果偏差；构建信息必须写在库里" },
+      { "flag": "存储位置", "default": "本地快速盘", "note": "网络文件系统会让分类与比对慢一个数量级，个别工具还会因内存映射失败而报错" }
+    ],
+    "pitfalls": [
+      "「latest」链接是版本漂移的主要来源：提供方更新内容后，同一流程在一年后得到不同的物种注释或耐药判定，而流程本身没有任何变化。必须固定到具体发布版本。",
+      "只确认「下载完成」而不比对提供方公布的校验和是不够的：索引目录的不完整下载可能结构完好，只在运行时表现为命中率异常偏低，几乎不可能反查原因。",
+      "解压通常需要两倍磁盘空间，分类索引又常比原始数据更大。磁盘规划要在项目开始前完成，而不是跑到一半发现空间不足。",
+      "索引必须与消费端工具版本匹配。用不同版本构建与使用索引，轻则报错重则结果偏差；把构建工具与版本写进数据库目录里是最低要求。",
+      "部署在共享盘上的数据库会让分类与比对工具慢一个数量级（随机读 + 内存映射）；这类「性能问题」常被误判为工具本身慢。",
+      "部分数据库有许可与注册要求，不允许二次分发。使用前确认条款，不要把受限数据库打包进交付物或镜像里公开分享。",
+      "**离线 / 内网环境要把数据库当作项目资产预先搬运，而不是等流程跑到那一步才下载**。这类环境（医院内网、涉密网络、无外网的测序仪工作站）里最典型的失败是：流程前几步顺利跑完、几小时后卡在需要下载数据库的步骤上，而且失败发生在「看起来应该没问题」的地方。做法是把数据库与工具环境一起做成本地归档（含 VERSION.txt 与校验和），并在项目开始前确认所有外部依赖都已在本地可用。"
+    ],
+    "related": [
+      { "id": "util_checksum", "note": "为下载物建立与验证校验和" },
+      { "id": "util_install_tools", "note": "工具环境与数据库一样需要版本锁定，两者应一起归档" },
+      { "id": "qc_remove_host", "note": "宿主参考基因组的版本直接影响去宿主结果" },
+      { "id": "wf_reproducibility", "note": "数据库版本清单是可复现记录的必要组成" }
+    ],
+    "docs": [
+      { "label": "第 11 章 流程与可复现性", "path": "docs/guidebook/11-workflow-reproducibility.md" }
+    ]
+  },
+  {
+    "id": "util_checksum",
+    "name": "文件校验与完整性确认 (md5 / sha256)",
+    "category": "utility",
+    "layer": "engine",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics", "metagenomics", "transcriptomics"],
+    "tags": ["校验和", "md5", "sha256", "完整性", "可复现", "归档"],
+    "summary": "用校验和确认文件完整、未被替换与可复现",
+    "what": [
+      "校验和回答三个彼此独立的问题，而且没有更便宜的办法回答它们：下载或拷贝是否完整（被截断的 FASTQ 依然「存在」，多数解析器也照读不误）；这个文件是不是我上个月用的那一份（把 sha256 与结果一起归档，等于给每次运行留下指纹）；共享目录里的参考文件有没有被人悄悄替换（数据库与参考序列被更新会让结果不可比，而文件名一点没变）。",
+      "实践上分三层落地。入口层：数据下载或从测序公司拿到文件后，立刻计算校验和并与提供方公布的值比对（提供方通常给 md5，很多项目在邮件或页面里给出）；内部层：流程的每个中间产物都记录校验和，便于判断某一步是否真的重跑过；归档层：交付结果时附带校验和列表，接收方可以直接验证。这三层加起来成本极低，但能挡掉相当一部分「结果不一致」的争论。",
+      "几个技术细节决定校验和是否可信。不要在文件仍被写入时计算（得到的是某一瞬间的部分内容）；网络文件系统上建议在写入完成后稍作等待再校验；压缩文件的校验和会随压缩方式与级别变化，即使解压后的内容完全相同——所以「解压后内容是否一致」要用 `gzip -dc file.gz | sha256sum` 这类流式校验来判断；文本文件经 Windows 传输或编辑器改写后行尾从 LF 变成 CRLF，校验和必然不同，这类「文件被改了」往往是换行符差异而不是内容损坏。"
+    ],
+    "inputs": [
+      { "type": "tsv-table", "name": "文件清单", "required": true, "note": "至少含路径，可含期望校验和；与本模块的输出构成可验证的闭环" },
+      { "type": "any", "name": "单个待校验文件", "required": false, "note": "校验和不关心内容格式，因此这里用「任意」表达；事实上不限制类型" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "校验结果表", "ext": ".checksums.tsv", "note": "路径、大小、mtime、sha256、md5 与比对状态；归档的核心附件" },
+      { "type": "log-report", "name": "校验日志", "ext": ".checksum.log", "note": "不一致项会显式列出；有失败项时进程应以非零码退出" }
+    ],
+    "provides": [
+      { "tool": "GNU coreutils", "version": "9.4.x", "access": "cli", "install": "builtin", "note": "sha256sum / md5sum / sha256sum -c；跨平台行为一致，是首选" },
+      { "tool": "Python", "version": "3.12.x", "access": "python-api", "install": "builtin", "note": "hashlib 分块读取，适合大文件与脚本化流水线" },
+      { "tool": "xxHash", "version": "0.8.x", "access": "cli", "install": "conda", "note": "极快的非加密哈希；适合 TB 级中间文件的自检，但不用于安全或防篡改场景" }
+    ],
+    "feeds": [
+      { "target": "util_args_validate", "viaType": "tsv-table", "note": "校验结果合并进输入校验清单，构成完整的前置检查" },
+      { "target": "wf_reproducibility", "viaType": "tsv-table", "note": "校验和列表是可复现记录中证明「用的是同一份数据」的证据" }
+    ],
+    "usage": [
+      {
+        "label": "批量生成校验和列表",
+        "lang": "bash",
+        "code": "find 00_raw -type f -name '*.gz' -print0 | sort -z | xargs -0 sha256sum > 10_logs/raw.sha256\nsha256sum -c 10_logs/raw.sha256"
+      },
+      {
+        "label": "与提供方公布的 md5 比对（大小写需先统一）",
+        "lang": "bash",
+        "code": "md5sum raw_R1.fq.gz | awk '{print tolower($1)}' > got.md5\nawk '{print tolower($1)}' provider.md5 > want.md5\ndiff got.md5 want.md5 && echo \"校验通过\""
+      },
+      {
+        "label": "比较两份压缩方式不同的文件的内容是否相同",
+        "lang": "bash",
+        "code": "gzip -dc a.fq.gz | sha256sum\ngzip -dc b.fq.gz | sha256sum\n# 压缩文件本身的校验和不同并不代表内容不同；比较解压后的流才准确"
+      }
+    ],
+    "recipes": {
+      "bash": "find 00_raw -type f -name '*.fq.gz' -print0 | sort -z | xargs -0 sha256sum \\\n  > 10_logs/${PROJECT}.raw.sha256\nsha256sum -c 10_logs/${PROJECT}.raw.sha256 > 10_logs/${PROJECT}.checksum.log 2>&1 \\\n  || { echo \"校验失败：详见 checksum.log\" >&2; exit 1; }",
+      "python": "import hashlib\n\ndef sha256_of(path, chunk=8 << 20):\n    h = hashlib.sha256()\n    with open(path, \"rb\") as fh:\n        for block in iter(lambda: fh.read(chunk), b\"\"):\n            h.update(block)\n    return h.hexdigest()\n\nrows = []\nfor path in sorted(RAW_DIR.glob(\"*.fq.gz\")):\n    rows.append({\"path\": str(path.resolve()), \"size\": path.stat().st_size,\n                 \"sha256\": sha256_of(path)})\npd.DataFrame(rows).to_csv(LOG_DIR / f\"{project}.checksums.tsv\", sep=\"\\t\", index=False)"
+    },
+    "params": [
+      { "flag": "sha256 还是 md5", "default": "sha256", "note": "两者都能检测传输损坏；md5 更快但已不适合安全场景，提供方常只公布 md5，此时按提供方的来" },
+      { "flag": "校验时机", "default": "写入完成后", "note": "对正在写入的文件计算得到的是部分内容的哈希；网络盘上建议写入关闭后稍等片刻再校验" },
+      { "flag": "压缩文件还是解压流", "default": "按提供方", "note": "压缩文件的哈希随压缩级别变化；要判断内容是否相同应校验解压后的流" },
+      { "flag": "行尾差异", "default": "注意 CRLF", "note": "文本文件经 Windows 传输后哈希必然不同；这类「被改动」通常只是换行符差异，可用 git 的 autocrlf 或统一转换避免" },
+      { "flag": "是否放入版本库", "default": "校验和入库，数据不入库", "note": "大数据不放 git（用 LFS 或清单）；校验和列表体积极小，应当随代码一起提交" }
+    ],
+    "pitfalls": [
+      "在文件仍被写入或拷贝过程中校验，会得到「部分内容」的哈希，而这个值看起来完全正常；只在校验失败时才可能被察觉，且很容易被误判为文件损坏。",
+      "压缩文件的哈希随压缩方式与级别变化。两份解压后完全相同的 FASTQ 会有不同的 sha256；判断内容是否相同必须比较解压后的流。",
+      "文本文件的行尾差异会造成哈希不匹配。Windows 传输、编辑器另存、git 的 autocrlf 都可能把 LF 变成 CRLF，这类问题常被误当成数据被替换。",
+      "不同工具输出的十六进制大小写不同（例如 PowerShell 的 Get-FileHash 默认大写），与提供方的小写清单直接 diff 会失败。比对前统一大小写可以省下大量无谓排查。",
+      "只校验下载物而不校验共享目录里的参考数据，会漏掉「数据库被人更新但文件名没变」这类问题；参考数据与索引同样需要校验和，并在每次运行时核对。",
+      "校验和只证明两个文件相同，不证明数据可用：一份内容完整但污染严重的 FASTQ 校验和完全正确。完整性检查不能替代质控。"
+    ],
+    "related": [
+      { "id": "util_download_ref", "note": "下载数据库后立即校验，是校验和最重要的使用场景" },
+      { "id": "util_args_validate", "note": "把校验结果纳入流程的前置检查" },
+      { "id": "wf_reproducibility", "note": "校验和是「用的是同一份数据」这一主张的证据" },
+      { "id": "util_rename_manifest", "note": "清单中记录校验和，重命名与迁移后仍可验证来源" }
+    ],
+    "docs": [
+      { "label": "第 11 章 流程与可复现性", "path": "docs/guidebook/11-workflow-reproducibility.md" }
+    ]
+  }
+]

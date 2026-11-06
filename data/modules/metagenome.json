@@ -1,0 +1,997 @@
+[
+  {
+    "id": "meta_kraken2",
+    "name": "读长物种分类 (Kraken 2)",
+    "category": "metagenome",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["metagenomics"],
+    "tags": ["kraken2", "k-mer", "物种分类", "宏基因组", "lca", "数据库"],
+    "summary": "k-mer 快速分类：先看群落里有什么",
+    "what": [
+      "Kraken 2 把每条读长切成 k-mer（默认 k=35），在预先建好的哈希索引里查每个 k-mer 对应的最低共同祖先（LCA），再按所有 k-mer 的投票把读长分配到分类节点。它的优势是速度：在几十核机器上，一个宏基因组样本几分钟就能跑完，因此适合做大批量样本的组成初筛与总览。输出是一份分层级的报告（每个节点的读长数与占比）、读长级分类结果，以及可用 Krona 转成的交互式组成图。",
+      "**宏基因组的物种分类有三条根本不同的路线，选错会让问题本身变得不可回答**。Kraken 2 是「k-mer 精确匹配」路线：快、覆盖面取决于数据库、能识别数据库里有近缘参考的类群；但读长比例受基因组大小、重复序列与数据库完整度影响，所以 kraken 报告里的百分比**不是丰度**，只是「读长被分给了谁」。MetaPhlAn 是「标志基因」路线：只用约百万条物种特异标记基因比对，丰度经过标记基因长度归一，跨样本更可比，但只能看到数据库里带标记基因的已知物种（对未描述类群只能说「没检出」）。第三条是组装 + 分箱（MAG）路线：能得到数据库里完全没有的新物种以及功能基因，但受组装与分箱质量限制，低丰度物种通常根本组装不出来。",
+      "选择依据应该由问题决定：想快速知道样本里大致有什么、样本量很大、或要做污染/宿主占比初筛 → Kraken 2（联合 Bracken 出丰度）；要跨队列比较物种丰度、做病例对照统计 → MetaPhlAn（标记基因归一化让不同样本的数字可比）；要新物种、功能基因、菌株级信息 → 组装 + MAG 路线。**三条路线的数字不可互相换算**：把 Kraken 百分比当作 MetaPhlAn 丰度来比较、或用 MAG 的数量去推断群落丰度，都是常见的严重误用。",
+      "两个参数决定结果的偏倚程度：数据库（标准库 / plusPF / 自定义库，含哪些界、什么日期）和置信度阈值（--confidence）。默认 --confidence 0 最灵敏也最容易产生假阳性；提到 0.1–0.5 会明显减少误分类，代价是 unclassified 比例上升。数据库版本是结果可复现性的前提——换一次库，同一批数据的物种占比就会明显变化。"
+    ],
+    "inputs": [
+      { "type": "clean-reads", "name": "清理后读长", "required": true, "note": "建议先做过去宿主的读长；宿主 DNA 残留会被分配到近缘微生物，制造假阳性" }
+    ],
+    "outputs": [
+      { "type": "abundance-table", "name": "分层级物种组成报告", "ext": ".kraken.report", "note": "百分比 / 该节点读长数 / 直接命中数 / 层级 / taxid / 名称；这是 Bracken 与 Krona 的输入" },
+      { "type": "tsv-table", "name": "读长级分类结果", "ext": ".kraken.out", "note": "每行一条读长的分类与 k-mer 命中情况；用于提取特定类群的读长做进一步确认" },
+      { "type": "report", "name": "交互式组成图", "ext": ".krona.html", "note": "Krona 的分层饼图；汇报与人工浏览用" },
+      { "type": "log-report", "name": "分类摘要统计", "ext": ".kraken.stats.txt", "note": "含 unclassified 比例、运行参数与数据库信息；是判断结果可信度的关键记录" }
+    ],
+    "provides": [
+      { "tool": "Kraken 2", "version": "2.1.x", "access": "cli", "install": "conda", "note": "需要预建索引；标准库体积很大，内存需求数十 GB 起" },
+      { "tool": "Krona", "version": "2.8.x", "access": "cli", "install": "conda", "note": "把分层报告转成交互式组成图（ktImportTaxonomy）" }
+    ],
+    "feeds": [
+      { "target": "meta_bracken", "viaType": "abundance-table", "note": "把读长分配重估为物种丰度；只有经过 Bracken 才能谈「丰度」" },
+      { "target": "qc_multi_qc", "viaType": "log-report", "note": "把 unclassified 比例、目标物种占比等指标纳入项目级质控总览" },
+      { "target": "viz_composition_bar", "viaType": "abundance-table", "note": "画群落组成图；需注明这是读长占比而不是丰度" }
+    ],
+    "usage": [
+      {
+        "label": "分类 + 生成报告（单样本）",
+        "lang": "bash",
+        "code": "kraken2 --db $KRAKEN_DB --threads 32 \\\n  --confidence 0.1 --minimum-hit-groups 2 \\\n  --use-names \\\n  --report sample.kraken.report \\\n  --output sample.kraken.out \\\n  clean_R1.fq.gz clean_R2.fq.gz"
+      },
+      {
+        "label": "阅读报告的三个要点",
+        "lang": "bash",
+        "code": "head -30 sample.kraken.report\n# 1) 目标域/界（Bacteria/Archaea/Eukaryota/Viruses）各占多少\n# 2) unclassified 的比例（环境样本高是常态）\n# 3) 是否出现与实验设计无关的物种（污染或数据库缺参考的信号）"
+      },
+      {
+        "label": "建库：标准库 / 自定义库",
+        "lang": "bash",
+        "code": "# 标准库（约数十 GB，需较大磁盘与内存）\nkraken2-build --standard --db $KRAKEN_DB --threads 32\n# 或用 --download-taxonomy / --download-library / --build 组合出自定义库\n# 库的内容与日期必须与结果一起记录"
+      }
+    ],
+    "recipes": {
+      "bash": "mkdir -p 06_metagenome 10_logs\nkraken2 --db ${KRAKEN_DB} --threads ${THREADS} --confidence 0.1 --use-names \\\n  --report 06_metagenome/${SAMPLE}.kraken.report \\\n  --output 06_metagenome/${SAMPLE}.kraken.out \\\n  01_clean/${SAMPLE}_R1.fq.gz 01_clean/${SAMPLE}_R2.fq.gz \\\n  > 10_logs/${SAMPLE}.kraken.stats.txt 2>&1",
+      "python": "run([\n    \"kraken2\", \"--db\", str(kraken_db), \"--threads\", str(THREADS),\n    \"--confidence\", \"0.1\", \"--use-names\",\n    \"--report\", str(META_DIR / f\"{sample}.kraken.report\"),\n    \"--output\", str(META_DIR / f\"{sample}.kraken.out\"),\n    str(QC_DIR / f\"{sample}_R1.fq.gz\"), str(QC_DIR / f\"{sample}_R2.fq.gz\"),\n])"
+    },
+    "params": [
+      { "flag": "--db", "default": "无（必填）", "note": "索引库。必须记录是标准库、plusPF 还是自定义库，以及构建日期；不同库的结果不可比" },
+      { "flag": "--confidence", "default": "0.0", "note": "分类置信度门槛。默认 0 最灵敏、假阳性最多；0.1–0.5 是常用折中，调高会同时抬高 unclassified" },
+      { "flag": "--minimum-hit-groups", "default": "2", "note": "至少几个独立 k-mer 命中组才允许分类；这是控制假阳性的实用参数，降到 1 会明显增加误分类" },
+      { "flag": "--use-names", "default": "关闭", "note": "报告里写物种名而不是只有 taxid；人工阅读必须加，否则报告几乎不可读" },
+      { "flag": "--memory-mapping", "default": "关闭", "note": "用内存映射而不是把整个库读进 RAM；能大幅降低内存峰值，但依赖磁盘随机读性能，SSD 上才实用" },
+      { "flag": "-k / --threads", "default": "k=35", "note": "k-mer 长度在建库时固定，运行时不能改；k 越大越特异但对测序错误越敏感，一般保持默认" }
+    ],
+    "pitfalls": [
+      "**读长百分比不是丰度**。Kraken 的百分比受基因组大小、rRNA 拷贝数、k-mer 独特性影响：一个测序深度相同但基因组更大的物种会拿到更多读长。要做丰度必须接 Bracken，或改用 MetaPhlAn。",
+      "**数据库版本与内容必须记录**。标准库、plusPF（含真核与病毒）、自定义库的结果差异很大；同一批样本换库后「物种占比」变化属于预期，但如果没记录版本，这个变化会被误读成生物学差异。",
+      "unclassified 比例高不一定是数据差。缺参考基因组的环境样本、病毒与新物种占比高的样本，unclassified 高是正常的；反过来，unclassified 极低也可能是数据库过度膨胀导致读长被强行分配。",
+      "去宿主不彻底会让宿主读长被分到近缘微生物上，产生稳定的假阳性物种。宿主占比高的样本应先做去宿主并复核。",
+      "不要把 Kraken 结果与 MetaPhlAn 结果逐物种比较。两者的定义、归一化与数据库完全不同，出现「某个属在两种方法里差好几倍」是常态而不是矛盾，需要比较时应统一到其中一条路线。",
+      "内存规划要在跑之前完成：标准库需要数十 GB 内存，plusPF 更大。跑到一半 OOM 会浪费大量时间；磁盘与内存不足时改用 --memory-mapping 或裁剪自定义库。",
+      "k-mer 匹配本质上不区分「序列相似」与「序列同源」。近缘物种共享大量 k-mer 时，读长会被推到 LCA 节点（常常只到属或科），这不是 bug，而是这条路线分辨率的真实上限。"
+    ],
+    "related": [
+      { "id": "meta_bracken", "note": "紧接着的丰度重估步骤；缺了它就得不到可用丰度" },
+      { "id": "meta_metaphlan", "note": "另一种物种谱路线，跨样本更可比但覆盖面受标记基因限制" },
+      { "id": "qc_contamination_screen", "note": "同一个工具在质控场景下的用法" },
+      { "id": "meta_mag_taxonomy", "note": "组装+分箱路线的分类，能给出数据库外的新物种" }
+    ],
+    "docs": [
+      { "label": "第 8 章 宏基因组与微生物组", "path": "docs/guidebook/08-metagenome-microbiome.md" }
+    ]
+  },
+  {
+    "id": "meta_bracken",
+    "name": "物种丰度重估计 (Bracken)",
+    "category": "metagenome",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["metagenomics"],
+    "tags": ["bracken", "丰度", "贝叶斯", "kraken2", "物种", "幽灵物种"],
+    "summary": "把 Kraken 读长分配重估为物种丰度",
+    "what": [
+      "Kraken 2 只会在有把握时把读长下推到种，其余停在属或科，因此直接读报告会系统性低估物种丰度。Bracken 用 Kraken 的分配结果加上「每个分类单元基因组里有多少独特 k-mer」这一先验，按概率把停在高层级的读长重新分配到物种，给出重估后的丰度表。它是从 Kraken 结果出发得到可用丰度的标准步骤。",
+      "它有一个硬性前提：Bracken 索引（k-mer 分布文件）必须与 Kraken 库**同一次构建**产生，用 bracken-build 生成。库与索引版本不匹配时程序可能仍然能跑，但给出的丰度是错的——这是最危险的一类错误，因为结果看起来完全正常。另一个必填参数是读长（-r），它必须接近实际读长，用 150 去处理 100 bp 数据会让丰度系统性偏移。",
+      "**重估的可靠性取决于数据库里该属的基因组覆盖度**。如果一个属在数据库里只收录了一个基因组，Bracken 会把这个属的全部读长都归给这一个物种，产生「幽灵物种」——它在样本里可能根本不存在。因此读结果时应养成习惯：高丰度物种先回查数据库里该属有几个代表基因组、它们的完整度如何。数据库越不完整，物种级结果越不可信；此时退到属水平（-l G）通常更稳。",
+      "与 MetaPhlAn 的分工要说清楚：Bracken 灵敏度高、覆盖「数据库里有基因组的类群」，能发现 MetaPhlAn 标记基因覆盖不到的物种；但它的丰度估计带有数据库完整度带来的系统偏倚，跨队列比较不如 MetaPhlAn 的标记基因归一化可靠。两者都输出相对丰度，都不做组成性校正——**相对丰度上的常规统计检验同样会产生大量假阳性**，需要 CLR/ILR 变换或 ANCOM-BC、ALDEx2 这类方法。"
+    ],
+    "inputs": [
+      { "type": "abundance-table", "name": "Kraken 2 分层报告", "required": true, "note": "--report 产出的报告文件；不要用读长级的 .out 文件" }
+    ],
+    "outputs": [
+      { "type": "abundance-table", "name": "重估后的物种丰度表", "ext": ".bracken.tsv", "note": "每样本一份，列含该层级下的丰度（百分比与读长数）" },
+      { "type": "tsv-table", "name": "多样本合并丰度矩阵", "ext": ".bracken.combined.tsv", "note": "用 Bracken 自带的合并脚本生成；进入统计与可视化的实际入口" }
+    ],
+    "provides": [
+      { "tool": "Bracken", "version": "2.9.x", "access": "cli", "install": "conda", "note": "含 bracken、bracken-build 与合并脚本；索引必须与 Kraken 库同源同版本" }
+    ],
+    "feeds": [
+      { "target": "viz_composition_bar", "viaType": "abundance-table", "note": "物种水平的组成图；需注明是相对丰度且依赖数据库版本" },
+      { "target": "r_vegan_diversity", "viaType": "abundance-table", "note": "在 R 里做多样性、排序与置换检验" },
+      { "target": "py_pandas_io", "viaType": "abundance-table", "note": "把合并矩阵读进 Python 做过滤、汇总与统计整理" }
+    ],
+    "usage": [
+      {
+        "label": "为 Kraken 库建立 Bracken 索引（一次即可）",
+        "lang": "bash",
+        "code": "bracken-build -d $KRAKEN_DB -t 32 -k 35 -l 150\n# -k 必须与建库时的 k 一致，-l 是你要支持的读长；生成的数据库文件与 Kraken 库放在一起"
+      },
+      {
+        "label": "重估丰度（物种水平）",
+        "lang": "bash",
+        "code": "bracken -d $KRAKEN_DB \\\n  -i sample.kraken.report \\\n  -o sample.bracken.species.tsv \\\n  -r 150 -l S -t 10\n# -r 必须接近实际读长；-l S 是种水平，数据库覆盖差时改用 -l G（属）"
+      },
+      {
+        "label": "合并多样本结果",
+        "lang": "bash",
+        "code": "combine_bracken_outputs.py --files *.bracken.species.tsv -o bracken.combined.tsv\n# 脚本名与参数以官方文档为准；合并前确认所有样本用的是同一个库与同一套参数"
+      }
+    ],
+    "recipes": {
+      "bash": "for s in $(cat samples.txt); do\n  bracken -d ${KRAKEN_DB} -i 06_metagenome/${s}.kraken.report \\\n    -o 06_metagenome/${s}.bracken.tsv -r 150 -l S -t ${THREADS}\ndone\ncombine_bracken_outputs.py --files 06_metagenome/*.bracken.tsv -o 06_metagenome/bracken.combined.tsv",
+      "python": "run([\n    \"bracken\", \"-d\", str(kraken_db),\n    \"-i\", str(META_DIR / f\"{sample}.kraken.report\"),\n    \"-o\", str(META_DIR / f\"{sample}.bracken.tsv\"),\n    \"-r\", \"150\", \"-l\", \"S\", \"-t\", str(THREADS),\n])"
+    },
+    "params": [
+      { "flag": "-r", "default": "无（必填）", "note": "读长长度。必须与数据一致：用 150 处理 100 bp 数据、或用平均长度代替实际长度，都会让丰度系统性偏移" },
+      { "flag": "-l", "default": "S", "note": "重估到的分类层级。S 最常用，但数据库种级基因组不全时会出现幽灵物种；G（属）通常更稳，选择必须写进方法" },
+      { "flag": "-t", "default": "10", "note": "分类层级下保留的最低读长数门槛；调高会过滤掉低丰度物种，让结果更干净但更不完整" },
+      { "flag": "bracken-build -k / -l", "default": "35 / 无", "note": "-k 必须与 Kraken 库的 k 一致；-l 决定支持哪些读长，实际分析读长不在其中时会报错或需要重建" }
+    ],
+    "pitfalls": [
+      "**Bracken 索引与 Kraken 库版本不一致是最危险的错误**：程序不报错，结果看起来正常，但丰度是错的。每次换库都要重建索引，并把两者的构建日期一起记录。",
+      "**幽灵物种**：数据库里某个属只有一两个基因组时，该属的全部读长会被归到这少数物种上，制造出样本里并不存在的高丰度物种。看到高丰度物种时先查数据库里它的同属代表基因组有几个。",
+      "-r 与真实读长不符会让所有丰度系统性偏移。双端数据要确认用的是插入片段还是单端读长口径，别默认 150。",
+      "100 bp 左右的短读长对物种的分辨力有限，很多近缘种共享 k-mer；此时物种级 Bracken 相对属级并没有多少额外信息，却更容易出错。",
+      "Bracken 输出是相对丰度，具有组成性：一个物种升高会让其他所有物种的比例下降。用 t 检验/Wilcoxon 直接比较相对丰度会产生大量假阳性，应使用 CLR/ILR 变换或组成性感知方法。",
+      "不要把 Bracken 丰度当成绝对定量或细胞数。16S 拷贝数、基因组大小与提取效率差异可达数倍，跨物种的绝对量不可比；需要绝对量应使用 qPCR 或加入内标（spike-in）。",
+      "样本间比较前先确认测序深度与去宿主处理一致。深度差异很大的样本，即使做了相对丰度归一，低丰度物种的检出情况也不可比。"
+    ],
+    "related": [
+      { "id": "meta_kraken2", "note": "上游分类；Bracken 的输入就是它的报告" },
+      { "id": "meta_metaphlan", "note": "另一条丰度路线，跨样本可比性更好但覆盖面窄" },
+      { "id": "viz_composition_bar", "note": "结果展示" },
+      { "id": "r_vegan_diversity", "note": "在物种矩阵上做多样性分析" }
+    ],
+    "docs": [
+      { "label": "第 8 章 宏基因组与微生物组", "path": "docs/guidebook/08-metagenome-microbiome.md" }
+    ]
+  },
+  {
+    "id": "meta_metaphlan",
+    "name": "标志基因物种谱 (MetaPhlAn)",
+    "category": "metagenome",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "active",
+    "domains": ["metagenomics"],
+    "tags": ["metaphlan", "marker gene", "物种谱", "相对丰度", "组成性", "跨队列"],
+    "summary": "标志基因物种谱：跨队列可比的丰度",
+    "what": [
+      "MetaPhlAn 4 只用物种特异的标志基因（marker genes，来自数万个已测序基因组、其中很大一部分来自未培养的 MAG）来做比对，并用标志基因的长度做归一化，因此给出的是物种级、跨样本可比的相对丰度谱。它不需要先做组装，直接从读长出发，几十分钟就能跑完一个样本。",
+      "**它和 Kraken 的分歧可以一句话概括：Kraken 回答「这些读长像谁」，MetaPhlAn 回答「这些标记基因属于谁、各占多少」**。前者的数字受基因组大小、重复序列、数据库完整度影响；后者因为只统计物种特异的单拷贝标记基因，丰度估计更接近真实的相对比例，而且「没检出」意味着数据库里没有对应标记基因，而不是被错误地分给了别人。代价是覆盖面：没有标记基因的类群（大量新物种、病毒、多数真核微生物）MetaPhlAn 完全看不到，所以它**不适合**用来发现新物种或评估病毒组成。",
+      "使用上的三个要点：第一，输入类型要明确（--input_type fastq / bam / bowtie2out），已比对到 marker 库的 BAM 可以省掉重复比对；第二，数据库版本必须记录（不同版本的物种名、物种集合与丰度都可能变，跨版本结果不可直接比较），索引名称随版本更新，以官方文档与 metaphlan --install 的结果为准；第三，样本应先做去接头，并视情况去宿主，因为宿主读长会占用比对资源但不产生结果。",
+      "统计上要特别小心：MetaPhlAn 输出的是**相对丰度**，具有组成性——一个物种比例上升会机械地压低其他物种。用 t 检验/Wilcoxon 直接比较两组相对丰度会产生大量假阳性，必须用 CLR/ILR 变换或 ANCOM-BC、ALDEx2 这类组成性感知方法。此外，总样本数少于 14（每组 7 个左右）时物种差异分析几乎不可靠，同一受试者的多次采样也不能当独立样本（伪重复）。这些陷阱与扩增子分析完全一样，换方法学不会让它们消失。"
+    ],
+    "inputs": [
+      { "type": "clean-reads", "name": "清理后读长", "required": true, "note": "去接头后的 FASTQ；宿主占比高的样本建议先去宿主，减少无效比对" },
+      { "type": "bam", "name": "已比对到 marker 库的比对结果", "required": false, "note": "有现成的 BAM / bowtie2out 时可跳过比对直接定量，也便于复用同一次比对做其它分析" }
+    ],
+    "outputs": [
+      { "type": "abundance-table", "name": "物种相对丰度表", "ext": ".metaphlan.tsv", "note": "分层的物种谱（含各分类层级），百分比之和在每一层级各自为 100%，不是全部加起来 100%" },
+      { "type": "tsv-table", "name": "多样本合并丰度矩阵", "ext": ".metaphlan.merged.tsv", "note": "用官方合并脚本生成；进入统计与可视化的入口" },
+      { "type": "log-report", "name": "比对率与检出统计", "ext": ".metaphlan.log", "note": "含总比对率、检出物种数与数据库版本；比对率异常低时要先查是否用了错误的索引或样本被宿主主导" }
+    ],
+    "provides": [
+      { "tool": "MetaPhlAn", "version": "4.1.x", "access": "cli", "install": "conda", "note": "内部依赖 bowtie2 与 marker 数据库；索引名称随版本更新，以官方文档为准" },
+      { "tool": "StrainPhlAn", "version": "4.1.x", "access": "cli", "install": "conda", "note": "同一物种内的菌株水平分析；与物种丰度是两件不同的事，不要混用" }
+    ],
+    "feeds": [
+      { "target": "meta_humann", "viaType": "abundance-table", "note": "把物种谱作为 HUMAnN 的输入，跳过内部物种注释，速度与内存都明显更省" },
+      { "target": "viz_composition_bar", "viaType": "abundance-table", "note": "物种/属水平组成图；需声明数据库版本与汇总层级" },
+      { "target": "r_vegan_diversity", "viaType": "abundance-table", "note": "在物种矩阵上做多样性、排序与置换检验" }
+    ],
+    "usage": [
+      {
+        "label": "从读长出发生成物种谱",
+        "lang": "bash",
+        "code": "metaphlan clean_R1.fq.gz,clean_R2.fq.gz \\\n  --input_type fastq \\\n  --index $MPA_INDEX \\\n  --nproc 16 \\\n  --bowtie2out sample.bowtie2.bz2 \\\n  -o sample.metaphlan.tsv\n# 索引/数据库名称随版本变化，用 metaphlan --install 后显示的默认库名，以官方文档为准"
+      },
+      {
+        "label": "复用已有比对结果",
+        "lang": "bash",
+        "code": "metaphlan sample.bowtie2.bz2 --input_type bowtie2out --nproc 16 -o sample.metaphlan.tsv"
+      },
+      {
+        "label": "合并多样本",
+        "lang": "bash",
+        "code": "merge_metaphlan_tables.py *.metaphlan.tsv > metaphlan.merged.tsv\n# 合并脚本随 MetaPhlAn 发行版提供；合并前确认所有样本用的是同一个数据库版本"
+      },
+      {
+        "label": "统计前的组成性变换（R）",
+        "lang": "bash",
+        "code": "library(ANCOMBC)\n# 相对丰度不能直接做 t 检验；用 CLR/ILR 变换或 ancombc2()，并在方法里写明变换方式"
+      }
+    ],
+    "recipes": {
+      "bash": "metaphlan 01_clean/${SAMPLE}_R1.fq.gz,01_clean/${SAMPLE}_R2.fq.gz \\\n  --input_type fastq --index ${MPA_INDEX} --nproc ${THREADS} \\\n  --bowtie2out 06_metagenome/${SAMPLE}.bowtie2.bz2 \\\n  -o 06_metagenome/${SAMPLE}.metaphlan.tsv \\\n  > 10_logs/${SAMPLE}.metaphlan.log 2>&1",
+      "python": "run([\n    \"metaphlan\",\n    f\"{QC_DIR}/{sample}_R1.fq.gz,{QC_DIR}/{sample}_R2.fq.gz\",\n    \"--input_type\", \"fastq\", \"--index\", mpa_index,\n    \"--nproc\", str(THREADS),\n    \"-o\", str(META_DIR / f\"{sample}.metaphlan.tsv\"),\n])"
+    },
+    "params": [
+      { "flag": "--input_type", "default": "fastq", "note": "fastq / bam / bowtie2out；有现成比对结果时用后两者可以省掉重复比对，但比对必须是对同一个 marker 库做的" },
+      { "flag": "--index", "default": "随安装版本", "note": "数据库索引名。必须与结果一起记录：不同版本的物种集合与命名会变，跨版本结果不可直接比较" },
+      { "flag": "--nproc", "default": "1", "note": "并行线程数；批量样本时务必设置，否则整批运行时间会不可接受" },
+      { "flag": "--bowtie2out", "default": "关闭", "note": "保存比对结果以便复用；体积不小，但重跑分析时能省下大量时间" },
+      { "flag": "--min_cu_len / 其它过滤参数", "default": "以官方文档为准", "note": "影响低丰度类群是否被报告；改动它会改变「检出物种数」，必须写进方法" }
+    ],
+    "pitfalls": [
+      "**只能看到数据库里的已知物种**。「没检出」不等于不存在：低丰度物种、没有参考基因组的类群、病毒与多数真核微生物都不在覆盖范围内。要发现新物种必须走组装 + 分箱路线。",
+      "数据库版本必须记录。不同版本的 MetaPhlAn 数据库在物种命名、SGB 划分与丰度上都有差异；跨版本合并结果（例如把去年和今年的样本放在一起分析）会引入看不见的系统偏差。",
+      "**相对丰度 + 组成性 = 常规检验假阳性**。ANCOM-BC、ALDEx2 或 CLR 变换后的统计是为这类数据设计的；直接对相对丰度做 t 检验/Wilcoxon、或对物种表做 DESeq2 却不检查归一化假设，都会得到大量假阳性。",
+      "**样本量少于 14（每组 7 个左右）时，物种差异分析的结论高度依赖方法选择**。同一批数据换 ANCOM-BC / ALDEx2 / DESeq2，显著清单重叠常常很低。小样本应报告效应量与置信区间，把结果当探索性假设。",
+      "伪重复：同一受试者的多时间点/多部位样本被当作独立样本会系统性放大显著性。必须用混合效应模型或限制置换。",
+      "不要用 MetaPhlAn 回答功能问题。它只给物种；「有没有某个基因/通路」要用 HUMAnN 或组装后的基因注释，用物种去推断功能只是间接证据。",
+      "低生物量样本里试剂污染物（如 Ralstonia、Bradyrhizobium 等，随实验室而变）会稳定出现并被当作真实物种。有空白对照时必须先判断污染，再进入统计。",
+      "病毒与真核生物的覆盖度差，病毒组分析不要用 MetaPhlAn 的病毒条目下结论；那属于专门的病毒组流程。",
+      "合并多样本时注意各层级（界/门/属/种）的相对丰度是分别在各自层级内归一的：把不同层级的行混在一起求和或比较是常见错误。"
+    ],
+    "related": [
+      { "id": "meta_kraken2", "note": "k-mer 路线的对照；灵敏但丰度受数据库完整度影响" },
+      { "id": "meta_bracken", "note": "从 Kraken 结果出发的另一条丰度路线" },
+      { "id": "meta_humann", "note": "下游功能谱；可直接消费 MetaPhlAn 的物种谱" },
+      { "id": "meta_mag_taxonomy", "note": "组装+分箱路线，能给出数据库外的新物种" }
+    ],
+    "docs": [
+      { "label": "第 8 章 宏基因组与微生物组", "path": "docs/guidebook/08-metagenome-microbiome.md" }
+    ]
+  },
+  {
+    "id": "meta_humann",
+    "name": "通路与功能谱 (HUMAnN)",
+    "category": "metagenome",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "active",
+    "domains": ["metagenomics"],
+    "tags": ["humann", "功能谱", "通路", "metacyc", "uniref", "组成性"],
+    "summary": "基因家族与 MetaCyc 通路的功能谱",
+    "what": [
+      "HUMAnN 把宏基因组读长（或已有的物种谱）转成功能谱，分三步：先用核苷酸级比对把读长映射到物种泛基因组（ChocoPhlAn），未比中的读长再做翻译比对（DIAMOND 对 UniRef），然后把基因家族汇总成 EC/KO 编号与 MetaCyc 通路，并给出每个通路的完整度（coverage，即该通路有多少步骤被检测到）。输出包括基因家族表与通路丰度表。",
+      "**功能谱有三条不同的技术路线，结果不能混着比**。第一条是「从物种推断功能」：把 MetaPhlAn 物种谱交给 HUMAnN，用泛基因组把物种展开成基因家族——快、省资源，但功能是从物种推断的，只在少数未比中的读长上做实际比对。第二条是「读长直接比对」：所有读长都做核酸/翻译比对，更贴近真实的基因含量，但慢、内存大，且受限（受参考数据库覆盖度限制，也更容易把近缘同源基因混在一起）。第三条是「先组装再注释基因」：先 MEGAHIT/metaSPAdes 组装，再在 contig 上预测基因并注释，能得到参考库里没有的新基因，但受组装与丰度限制，低丰度物种的基因会系统性缺失。三条路线在同一批数据上会给出不同答案，方法里必须写清楚用的是哪条。",
+      "**归一化是这块最容易出错的地方**。HUMAnN 输出里同时有 RPKM（按基因长度与测序深度校正）和「相对丰度」（按每个样本的总和归一）两类列。做跨样本比较时必须统一：用相对丰度比较通路构成，用 RPKM 比较具体基因的量，但不要把两者的数字放在同一张图里，也不要在同一张表里混用。此外通路丰度是相对量，具有组成性——某条通路升高会让其他通路比例下降。",
+      "计算成本要有心理准备：读长模式下每个样本可能数小时、内存几十 GB，建议先跑一个样本评估可行性，再批量用队列系统提交。参考数据库（ChocoPhlAn 与 UniRef 的 DIAMOND 索引）构建是一次性的大工程，不要在流程里对每个样本重建。"
+    ],
+    "inputs": [
+      { "type": "clean-reads", "name": "清理后读长", "required": true, "note": "建议去宿主后的读长；宿主读长不会带来功能信息，只会拖慢流程" },
+      { "type": "abundance-table", "name": "MetaPhlAn 物种谱", "required": false, "note": "提供时会跳过内部物种注释，改用泛基因组展开功能（更快、更省内存，但功能是从物种推断的）" }
+    ],
+    "outputs": [
+      { "type": "abundance-table", "name": "通路丰度表", "ext": "_pathabundance.tsv", "note": "含 MetaCyc 通路丰度与完整度（coverage）；完整度低的通路不应判定为「存在」" },
+      { "type": "tsv-table", "name": "基因家族与酶学编号表", "ext": "_genefamilies.tsv", "note": "UniRef 基因家族 / EC / KO 层级的丰度；后续可做 KO 汇总与富集" },
+      { "type": "log-report", "name": "比对率与未比中统计", "ext": ".humann.log", "note": "含各阶段比对率（物种比对 / 翻译比对 / 未比中）；未比中比例过高说明数据库不覆盖这个群落" }
+    ],
+    "provides": [
+      { "tool": "HUMAnN", "version": "3.8.x", "access": "cli", "install": "conda", "note": "3.x 是长期稳定版本；若使用 4.x 请记录具体版本与其数据库版本" },
+      { "tool": "DIAMOND", "version": "2.1.x", "access": "cli", "install": "conda", "note": "翻译比对引擎；需自建 UniRef 索引，构建耗时且占用大量磁盘" },
+      { "tool": "MetaPhlAn", "version": "4.1.x", "access": "cli", "install": "conda", "note": "HUMAnN 内部用它做物种注释；也可由外部提供物种谱" }
+    ],
+    "feeds": [
+      { "target": "viz_heatmap", "viaType": "abundance-table", "note": "通路/基因家族在样本间的分布热图" },
+      { "target": "viz_composition_bar", "viaType": "abundance-table", "note": "功能层级的组成图；必须注明用的是相对丰度还是 RPKM" },
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "把基因家族表读进 Python 做 KO/EC 汇总与统计整理" }
+    ],
+    "usage": [
+      {
+        "label": "从读长跑功能谱",
+        "lang": "bash",
+        "code": "humann --input clean_R1.fastq.gz --output humann_out --threads 16\n# 双端数据可分别指定 --input / --input2；具体选项以官方文档为准"
+      },
+      {
+        "label": "用已有的物种谱跳过物种注释",
+        "lang": "bash",
+        "code": "humann --input sample.metaphlan.tsv --output humann_out_sample --threads 16\n# 功能由物种推断而来，速度快很多；方法里必须说明这是推断而非读长直接比对"
+      },
+      {
+        "label": "合并多样本并统一归一化",
+        "lang": "bash",
+        "code": "humann_join_tables -i humann_out -o joined_pathabundance.tsv --file_name pathabundance\nhumann_renorm_table -i joined_pathabundance.tsv -o joined_pathabundance_relab.tsv --units relab\n# 相对丰度与 RPKM 是两套口径，不要混用；再归一化前先确认下游用的是哪一种"
+      }
+    ],
+    "recipes": {
+      "bash": "mkdir -p 07_function 10_logs\nhumann --input 01_clean/${SAMPLE}_R1.fq.gz \\\n  --output 07_function/${SAMPLE} --threads ${THREADS} \\\n  > 10_logs/${SAMPLE}.humann.log 2>&1\nhumann_join_tables -i 07_function -o 07_function/pathabundance_joined.tsv --file_name pathabundance\nhumann_renorm_table -i 07_function/pathabundance_joined.tsv \\\n  -o 07_function/pathabundance_relab.tsv --units relab",
+      "python": "run([\n    \"humann\",\n    \"--input\", str(QC_DIR / f\"{sample}_R1.fq.gz\"),\n    \"--output\", str(FUNC_DIR / sample),\n    \"--threads\", str(THREADS),\n])"
+    },
+    "params": [
+      { "flag": "--input / --input2", "default": "无", "note": "单端/双端读长或物种谱；双端如果只给 R1，会丢掉一部分可比中的读长，比对率虚低" },
+      { "flag": "--threads", "default": "1", "note": "并行线程数；读长模式下必须设置，否则单样本可能要跑一整天" },
+      { "flag": "--taxometric / 物种级输出", "default": "关闭", "note": "按物种拆分功能贡献，用于回答「这条通路是谁在做」；会显著增加输出体积与运行时间" },
+      { "flag": "--prescreen-threshold", "default": "以官方文档为准", "note": "预筛阈值影响哪些读长进入翻译比对，直接改变灵敏度与运行时间；小规模试点后再定" },
+      { "flag": "归一化单位（--units）", "default": "cpm（RPKM 口径）", "note": "relab 是相对丰度、cpm 是长度与深度校正后的量；**同一分析内必须统一**，并在方法里写明" }
+    ],
+    "pitfalls": [
+      "**混用 RPKM 与相对丰度**是最常见的错误：两者量纲不同，放在同一张热图或同一个统计里做比较，结论没有意义。分析一开始就要确定用哪一种。",
+      "**--input 给物种谱时，功能是「推断」出来的**，不是在该样本的读长上实测到的。如果结论依赖「这个基因确实存在」，必须用读长模式复核；把推断结果写成实测结果属于方法学错误。",
+      "通路的 coverage（完整度）低就不要说「该通路存在」。coverage 表示检测到该通路多少比例的步骤；低 coverage 通常只意味着零散基因被匹配上，甚至可能来自远缘同源基因。",
+      "计算量与内存被严重低估：读长模式单样本数小时、数十 GB 内存是常态。批量提交前先用一个样本评估，并按内存而不是核数规划并发。",
+      "UniRef / ChocoPhlAn 数据库版本变化会改变基因家族编号与通路映射，**不同版本的结果不能直接合并**。跨批次分析时数据库版本必须一致。",
+      "通路与基因家族丰度都是相对量，组成性陷阱同样适用：用 t 检验直接比较相对丰度会产生大量假阳性；需要 CLR/ILR 变换或组成性感知方法。",
+      "过度解读「未比中（unmapped）」读长：它反映的是参考数据库覆盖度不足（新物种、病毒、非模式类群），不是数据质量差；把未比中比例当质控指标会误导判断。",
+      "基因家族表里有大量低丰度条目，直接做富集分析会被噪声主导；应先在 KO/通路层级汇总并按丰度过滤，过滤阈值要写进方法。"
+    ],
+    "related": [
+      { "id": "meta_metaphlan", "note": "上游物种谱；两者常一起使用" },
+      { "id": "meta_megahit", "note": "「先组装再注释基因」的功能路线，能得到新基因" },
+      { "id": "anno_eggnog", "note": "对组装得到的基因做同源群与功能归类" },
+      { "id": "viz_heatmap", "note": "功能谱的展示" }
+    ],
+    "docs": [
+      { "label": "第 8 章 宏基因组与微生物组", "path": "docs/guidebook/08-metagenome-microbiome.md" }
+    ]
+  },
+  {
+    "id": "meta_megahit",
+    "name": "宏基因组组装 (MEGAHIT)",
+    "category": "metagenome",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["metagenomics"],
+    "tags": ["megahit", "组装", "contig", "覆盖度", "co-assembly", "内存"],
+    "summary": "低内存组装宏基因组并产出分箱用覆盖度",
+    "what": [
+      "MEGAHIT 用简洁 de Bruijn 图（succinct dBG）在有限内存下组装宏基因组，通过多轮递增的 k-mer（默认从小 k 迭代到大 k）把短读长拼成 contig。它的内存效率明显优于 metaSPAdes，是复杂群落（土壤、水体、肠道大队列）与大样本量项目里的常用起点。产物是 contig 集合，后面可以分箱成 MAG、预测基因做功能注释，或用来找病毒序列。",
+      "**先想清楚「该不该组装」**。读长级分类（Kraken/MetaPhlAn）回答「谁在、大概多少」，不需要组装；组装回答的是「它们有什么基因」以及「能不能拿到新物种的基因组」。组装对低丰度物种基本无效：覆盖度低于组装阈值的物种根本拼不出来，因此**MAG 路线的物种名录天然偏向高丰度类群，不能拿它做群落丰度比较**。如果项目只需要物种组成，组装是多余的算力开销；如果需要新物种、基因、MAG，组装就是必经之路。",
+      "**覆盖度必须自己补上**：分箱依赖「每个样本的回贴覆盖度」，而 MEGAHIT 只产出 contig。因此本模块把组装与随后的读长回贴（bowtie2 建索引 + 比对 + samtools 排序）算作一个步骤组——把这一步拆开，绝大多数项目都会漏掉覆盖度计算，导致分箱退化成只靠序列组成（四核苷酸频率）猜，质量会明显下降。",
+      "策略选择上还有一个关键分歧：**单样本组装 vs co-assembly（多样本合并组装）**。co-assembly 能提高低丰度物种的覆盖度、减少总 contig 数，但不同样本的同种不同菌株会被拼成一个「平均基因组」，造成菌株塌缩与嵌合，掩盖真实的菌株差异。除非样本来自高度相似的群落（例如同一受试者的连续时间点），优先单样本组装 + 后续用 dRep 去冗余。"
+    ],
+    "inputs": [
+      { "type": "clean-reads", "name": "清理后读长", "required": true, "note": "建议做过宿主去除；宿主基因组会占掉大量 contig 与算力。多样本各自组装时逐样本输入" }
+    ],
+    "outputs": [
+      { "type": "contigs", "name": "组装 contig", "ext": ".contigs.fa", "note": "分箱、基因预测与病毒识别的共同输入；建议保留未经长度过滤的原始版本" },
+      { "type": "bam", "name": "读长回贴覆盖度比对文件", "ext": ".sorted.bam", "note": "每样本一份，供 MetaBAT2 等分箱工具计算覆盖度；没有它分箱质量会明显下降" },
+      { "type": "log-report", "name": "组装统计日志", "ext": ".megahit.log", "note": "含 contig 数、总长、N50 与各 k 轮的统计；用于判断组装是否可用" }
+    ],
+    "provides": [
+      { "tool": "MEGAHIT", "version": "1.2.x", "access": "cli", "install": "conda", "note": "内存友好；--presets meta-large 针对高复杂度群落" },
+      { "tool": "Bowtie2", "version": "2.5.x", "access": "cli", "install": "conda", "note": "把各样本读长回贴到 contig，生成覆盖度信息" },
+      { "tool": "SAMtools", "version": "1.21.x", "access": "cli", "install": "conda", "note": "比对结果的排序与格式处理" }
+    ],
+    "feeds": [
+      { "target": "meta_binning_metabat", "viaType": "contigs", "note": "contig 与同时产出的覆盖度 BAM 一起进入分箱（MetaBAT2 需要 depth 文件）" },
+      { "target": "meta_assembly_qc", "viaType": "contigs", "note": "先评估组装质量，再决定是否值得分箱" },
+      { "target": "meta_virome", "viaType": "contigs", "note": "从 contig 里识别病毒与质粒序列" }
+    ],
+    "usage": [
+      {
+        "label": "单样本组装",
+        "lang": "bash",
+        "code": "megahit -1 clean_R1.fq.gz -2 clean_R2.fq.gz \\\n  -o megahit_out -t 32 -m 0.8 \\\n  --min-contig-len 1000\n# 复杂群落（土壤/水体）可加 --presets meta-large；k 列表也可用 --k-list 指定"
+      },
+      {
+        "label": "读长回贴得到分箱所需的覆盖度",
+        "lang": "bash",
+        "code": "bowtie2-build megahit_out/final.contigs.fa contigs_idx\nbowtie2 -x contigs_idx -1 clean_R1.fq.gz -2 clean_R2.fq.gz \\\n  -p 32 --no-unal 2> bowtie2.log | \\\n  samtools sort -@ 8 -o sample.sorted.bam -\nsamtools index sample.sorted.bam"
+      },
+      {
+        "label": "生成分箱工具要的 depth 文件",
+        "lang": "bash",
+        "code": "jgi_summarize_bam_contig_depths --outputDepth depth.txt *.sorted.bam\n# 该脚本由 MetaBAT2 提供；多个样本的 BAM 一起传入才能得到多样本覆盖度"
+      }
+    ],
+    "recipes": {
+      "bash": "mkdir -p 02_assembly 10_logs\nmegahit -1 01_clean/${SAMPLE}_R1.fq.gz -2 01_clean/${SAMPLE}_R2.fq.gz \\\n  -o 02_assembly/${SAMPLE}_megahit -t ${THREADS} -m 0.8 \\\n  --min-contig-len 1000 > 10_logs/${SAMPLE}.megahit.log 2>&1\nbowtie2-build 02_assembly/${SAMPLE}_megahit/final.contigs.fa 02_assembly/${SAMPLE}_idx\nbowtie2 -x 02_assembly/${SAMPLE}_idx -1 01_clean/${SAMPLE}_R1.fq.gz -2 01_clean/${SAMPLE}_R2.fq.gz \\\n  -p ${THREADS} --no-unal 2>> 10_logs/${SAMPLE}.bowtie2.log | \\\n  samtools sort -@ 8 -o 02_assembly/${SAMPLE}.sorted.bam -",
+      "python": "run([\n    \"megahit\", \"-1\", str(QC_DIR / f\"{sample}_R1.fq.gz\"),\n    \"-2\", str(QC_DIR / f\"{sample}_R2.fq.gz\"),\n    \"-o\", str(ASM_DIR / f\"{sample}_megahit\"),\n    \"-t\", str(THREADS), \"-m\", \"0.8\", \"--min-contig-len\", \"1000\",\n])"
+    },
+    "params": [
+      { "flag": "--min-contig-len", "default": "200（MEGAHIT 默认保留较短 contig）", "note": "分箱前通常过滤到 1000–2500 bp：短 contig 的四核苷酸频率噪声大，会把 bin 拉偏。建议在分箱前过滤而不是在组装时硬删，以保留原始 contig 用于追查" },
+      { "flag": "-m / --memory", "default": "0.9（可用内存比例）", "note": "控制内存上限；设得太低会中途失败，设得太高在多任务并发时容易把机器打爆" },
+      { "flag": "--presets", "default": "无", "note": "meta-large 针对高复杂度群落（土壤、水体），会使用更大的 k 值范围；用错预设会得到更碎的 contig" },
+      { "flag": "--k-list / --k-min --k-max --k-step", "default": "自动（小 k 到大 k 递增）", "note": "多 k 迭代是 MEGAHIT 的核心机制；手工指定过窄的 k 范围会显著增加碎片化" },
+      { "flag": "-t / --num-cpu-threads", "default": "全部核", "note": "线程数；de Bruijn 图构建是内存瓶颈而非纯 CPU 瓶颈，盲目加线程收益有限" }
+    ],
+    "pitfalls": [
+      "**只组装不回贴 = 没有覆盖度**。分箱必须同时使用序列组成与多样本覆盖度；缺了覆盖度，分箱质量会明显下降，而且这种下降在结果里看不出来（bin 仍然是「正常」的 fasta）。",
+      "**co-assembly 会造成菌株塌缩与嵌合**：不同样本里同一物种的不同菌株会被拼成一个平均基因组，掩盖菌株差异，还可能把不同菌株的基因拼到同一条 contig 上。除非样本群落高度相似，优先单样本组装再用 dRep 去冗余。",
+      "contig N50 不是宏基因组组装的质量指标。土壤样本 N50 可能只有几 kb，肠道样本可到几十 kb，跨样本比较 N50 毫无意义；真正要看的指标是回贴率与最终 MAG 的完整度/污染度。",
+      "组装前不去宿主是浪费：宿主基因组会被大量拼出来占据 contig 与算力，还会在下游分箱时形成「宿主 bin」。宿主占比高的样本必须先去宿主。",
+      "MEGAHIT 的默认输出保留了较短 contig。直接把全部 contig 丢给 MetaBAT2 会明显降低分箱质量；正确做法是先按长度过滤（常用 ≥ 1000–2500 bp）再做分箱，并记录阈值。",
+      "把组装好的 contig 数当成「物种数」是错的：一条 contig 可能横跨多个物种（嵌合），一个物种也可能有几百条 contig。物种层面的结论必须来自分箱 + 分类注释。",
+      "不同组装工具（MEGAHIT vs metaSPAdes）的输出 contig 命名、长度过滤阈值都不同，混用会让「contig 数」这类统计失去意义；同一项目内应保持一致的组装策略。"
+    ],
+    "related": [
+      { "id": "meta_metaspades", "note": "另一种宏基因组组装路线，内存需求高但 contig 常更长" },
+      { "id": "meta_binning_metabat", "note": "直接消费 contig 与覆盖度的下游步骤" },
+      { "id": "meta_assembly_qc", "note": "组装与 MAG 的质量评估" },
+      { "id": "qc_remove_host", "note": "组装前的去宿主步骤" }
+    ],
+    "docs": [
+      { "label": "第 8 章 宏基因组与微生物组", "path": "docs/guidebook/08-metagenome-microbiome.md" }
+    ]
+  },
+  {
+    "id": "meta_metaspades",
+    "name": "宏基因组组装：metaSPAdes",
+    "category": "metagenome",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["metagenomics"],
+    "tags": ["metaspades", "spades", "组装", "菌株", "内存", "contig"],
+    "summary": "高内存高精度：复杂菌株群落的组装",
+    "what": [
+      "metaSPAdes 是 SPAdes 的宏基因组模式，通过多轮 k-mer 迭代与图简化，在菌株复杂度高的样本（同一物种有多个菌株共存，典型如肠道）上通常给出比 MEGAHIT 更长的 contig 与更少的嵌合。它也是分箱与基因预测的起点，同样需要自己补上读长回贴以得到覆盖度。",
+      "**与 MEGAHIT 的分歧主要在资源与收益的权衡上**。metaSPAdes 的内存需求随时间与数据量快速增长，数十到数百 GB 内存是常见量级，运行时间通常也是 MEGAHIT 的数倍；MEGAHIT 内存友好、速度快，适合大队列。经验判断：样本菌株复杂度高、单样本数据量适中（几十 Gb 以内）、机器内存充裕（100 GB 以上）→ 值得用 metaSPAdes；高度多样（土壤、水体）或数据量巨大 → 从 MEGAHIT 起步，必要时挑关键样本用 metaSPAdes 复核。**同一项目里不要混用两种组装结果**，除非在方法里说明并做了敏感性分析。",
+      "一个容易致命的误用是模式选择：SPAdes 有 --isolate / --careful / --meta / --rna 等模型，它们对图结构的假设完全不同。用 --isolate 跑宏基因组会严重低估群落复杂度，得到又少又短的 contig；反过来用 --meta 跑单菌基因组则会引入不必要的复杂度并可能产生假重复。",
+      "与 MEGAHIT 一样，本模块把组装与读长回贴算作一个步骤组：分箱必须有覆盖度，而覆盖度只能通过把各样本读长回贴到同一套 contig 上得到。多样本一起回贴、一起计算 depth，才能让覆盖度差异反映真实的丰度差异。"
+    ],
+    "inputs": [
+      { "type": "clean-reads", "name": "清理后读长", "required": true, "note": "建议去宿主后使用；单样本数据量过大时先评估内存是否够用" }
+    ],
+    "outputs": [
+      { "type": "contigs", "name": "组装 contig", "ext": ".contigs.fa", "note": "SPAdes 会自行过滤很短的 contig；与 MEGAHIT 的输出命名与长度分布不同，不要混着统计" },
+      { "type": "bam", "name": "读长回贴覆盖度比对文件", "ext": ".sorted.bam", "note": "每样本一份，供分箱计算覆盖度" },
+      { "type": "log-report", "name": "组装日志与统计", "ext": ".spades.log", "note": "含各 k 轮统计与内存使用情况；OOM 被系统杀掉时这里是唯一线索" }
+    ],
+    "provides": [
+      { "tool": "SPAdes (metaSPAdes)", "version": "3.15.x", "access": "cli", "install": "conda", "note": "以 --meta 模式运行；模式用错会让结果完全偏离" },
+      { "tool": "Bowtie2", "version": "2.5.x", "access": "cli", "install": "conda", "note": "读长回贴以生成覆盖度" },
+      { "tool": "SAMtools", "version": "1.21.x", "access": "cli", "install": "conda", "note": "比对结果排序与索引" }
+    ],
+    "feeds": [
+      { "target": "meta_binning_metabat", "viaType": "contigs", "note": "contig 与覆盖度 BAM 一起进入分箱" },
+      { "target": "meta_assembly_qc", "viaType": "contigs", "note": "评估组装与后续 MAG 质量" },
+      { "target": "meta_virome", "viaType": "contigs", "note": "从 contig 里识别病毒与质粒" }
+    ],
+    "usage": [
+      {
+        "label": "单样本宏基因组组装",
+        "lang": "bash",
+        "code": "spades.py --meta \\\n  -1 clean_R1.fq.gz -2 clean_R2.fq.gz \\\n  -o metaspades_out -t 32 -m 500\n# -m 是以 GB 为单位的内存上限；内存不足时会被系统杀掉"
+      },
+      {
+        "label": "中断后从上次的 k 继续",
+        "lang": "bash",
+        "code": "spades.py --meta -1 clean_R1.fq.gz -2 clean_R2.fq.gz \\\n  -o metaspades_out -t 32 -m 500 --continue\n# --continue 复用输出目录里已完成的结果；只有正在跑的 k 轮会被重做"
+      },
+      {
+        "label": "读长回贴生成覆盖度",
+        "lang": "bash",
+        "code": "bowtie2-build metaspades_out/contigs.fasta contigs_idx\nbowtie2 -x contigs_idx -1 clean_R1.fq.gz -2 clean_R2.fq.gz -p 32 --no-unal 2> bowtie2.log | \\\n  samtools sort -@ 8 -o sample.sorted.bam -"
+      }
+    ],
+    "recipes": {
+      "bash": "mkdir -p 02_assembly 10_logs\nspades.py --meta -1 01_clean/${SAMPLE}_R1.fq.gz -2 01_clean/${SAMPLE}_R2.fq.gz \\\n  -o 02_assembly/${SAMPLE}_metaspades -t ${THREADS} -m ${MEM_GB} \\\n  > 10_logs/${SAMPLE}.spades.log 2>&1\nbowtie2-build 02_assembly/${SAMPLE}_metaspades/contigs.fasta 02_assembly/${SAMPLE}_idx\nbowtie2 -x 02_assembly/${SAMPLE}_idx -1 01_clean/${SAMPLE}_R1.fq.gz -2 01_clean/${SAMPLE}_R2.fq.gz \\\n  -p ${THREADS} --no-unal 2>> 10_logs/${SAMPLE}.bowtie2.log | \\\n  samtools sort -@ 8 -o 02_assembly/${SAMPLE}.sorted.bam -",
+      "python": "run([\n    \"spades.py\", \"--meta\",\n    \"-1\", str(QC_DIR / f\"{sample}_R1.fq.gz\"),\n    \"-2\", str(QC_DIR / f\"{sample}_R2.fq.gz\"),\n    \"-o\", str(ASM_DIR / f\"{sample}_metaspades\"),\n    \"-t\", str(THREADS), \"-m\", str(MEM_GB),\n])"
+    },
+    "params": [
+      { "flag": "--meta", "default": "无（必选）", "note": "宏基因组模式。用 --isolate 或 --careful 跑宏基因组会严重低估复杂度；这是最常见的模式误用" },
+      { "flag": "-m / --memory", "default": "自动（按可用内存）", "note": "内存上限（GB）。设得超过物理内存不会让程序变快，只会在某个 k 轮被 OOM 杀掉；并发样本数必须按内存规划" },
+      { "flag": "-t / --threads", "default": "16", "note": "线程数；metaSPAdes 的并行效率随 k 轮变化，核数很多时收益递减" },
+      { "flag": "--continue", "default": "关闭", "note": "从输出目录里已有的结果继续；长任务被中断时能省下大量时间，但前提是输出目录没有被清理" },
+      { "flag": "--only-assembler", "default": "关闭", "note": "跳过读长纠错步骤（宏基因组模式下纠错的收益与代价需要按样本权衡）；是否使用以官方文档为准" }
+    ],
+    "pitfalls": [
+      "**内存被低估是 metaSPAdes 最典型的失败方式**：进程被 OOM killer 杀掉，日志末尾可能没有明确报错，只留下不完整的输出目录。跑了几个小时才发现失败很常见，务必按内存规划并发并检查退出状态。",
+      "**模式选择错误比参数错误更致命**：--isolate 会把宏基因组的复杂图「强行简化」，输出看起来正常但严重丢失了群落多样性；反过来 --meta 用于单菌也会产生不必要的复杂度。",
+      "不要在同一项目里混用 metaSPAdes 与 MEGAHIT 的结果。两者 contig 命名、长度过滤、图处理策略都不同，混合后「contig 数」「N50」这类比较失去意义，分箱的覆盖度特征也会不一致。",
+      "与 MEGAHIT 一样，组装完必须自己回贴读长生成覆盖度，分箱才能同时利用序列组成与丰度信息；这一步经常在「用 SPAdes 拼完就完事」的流程里被漏掉。",
+      "把长读长或混合数据直接套到 --meta 上不是成熟用法：宏基因组的短+长混合组装支持有限，使用前请确认官方文档中对模式与长读长参数的说明，不要凭经验拼参数。",
+      "contig 变长不等于 MAG 变好。真正决定 MAG 质量的是分箱结果（完整度/污染度）与覆盖度信息的质量；组装只是上限，不是结果。"
+    ],
+    "related": [
+      { "id": "meta_megahit", "note": "内存友好的替代路线；大队列优先" },
+      { "id": "meta_binning_metabat", "note": "下游分箱" },
+      { "id": "meta_assembly_qc", "note": "组装与 MAG 质量评估" },
+      { "id": "asm_spades", "note": "单菌基因组组装，模式不同，输出目标也不同" }
+    ],
+    "docs": [
+      { "label": "第 8 章 宏基因组与微生物组", "path": "docs/guidebook/08-metagenome-microbiome.md" }
+    ]
+  },
+  {
+    "id": "meta_binning_metabat",
+    "name": "MAG 分箱 (MetaBAT2 / MaxBin2 / SemiBin)",
+    "category": "metagenome",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "active",
+    "domains": ["metagenomics"],
+    "tags": ["分箱", "metabat2", "maxbin2", "semibin", "mag", "覆盖度", "四核苷酸"],
+    "summary": "按组成与覆盖度把 contig 聚成 MAG",
+    "what": [
+      "分箱把组装得到的 contig 按两类信号聚成一个个基因组草图（bin）：序列组成（四核苷酸频率，TNF）与样本间覆盖度（同一物种的 contig 在各样本中应有相似的丰度变化）。MetaBAT2 把这两类特征组合成一个概率距离做图划分，快且稳定，是当前最常用的默认选择；MaxBin2 用单拷贝标记基因加丰度做期望最大化，对低覆盖度更敏感但更容易产生碎片；SemiBin（SemiBin2）用自监督深度学习，在单样本与多样本模式下通常优于前两者，尤其是低丰度物种。",
+      "**分箱质量的上限由组装质量与覆盖度决定，分箱本身不能凭空创造基因组**。物种没有被组装出来（丰度低于组装阈值、基因组重复区过多、菌株高度混杂），分箱就只能把它分碎或错误地并入别的 bin。多样本共分箱（co-binning，用同一群落多个样本的覆盖度矩阵）能显著改善低丰度物种的分箱，但前提是样本来自可比的群落；把不同生境的样本硬凑在一起，覆盖度信号会被生境差异主导，反而更差。",
+      "**输出是一堆候选而不是一个答案**。不同工具、不同参数给出的 bin 集合并不相同，没有哪个工具「更正确」；常规做法是多工具并行 + DAS Tool 合并，再用 CheckM2 评估质量、用 dRep 去冗余。因此本模块的产物应当被视为「待筛选的候选 MAG 集合」，而不是最终结果。",
+      "质量门槛要事先定好：MIMAG 草案把高质量 MAG 定为完整度 > 90%、污染度 < 5%（并含 rRNA 与 tRNA，但短读长宏基因组几乎检不到 rRNA 操纵子），中等质量为完整度 ≥ 50%、污染度 < 10%。**为什么用这套阈值**：完整度低意味着成块的基因系统性缺失，用它做「某基因是否存在」或通路完整度的比较会产生大量假阴性；污染度高意味着混入了其他生物，会凭空制造基因、错误地抬高某些功能。阈值不是真理，但低于它时结论必须打折扣并明确说明。"
+    ],
+    "inputs": [
+      { "type": "contigs", "name": "组装 contig", "required": true, "note": "建议先按长度过滤（常用 ≥ 1000–2500 bp）；短 contig 会显著拉低分箱质量" },
+      { "type": "bam", "name": "各样本读长回贴的覆盖度比对", "required": true, "note": "每样本一份（由组装模块产出）；分箱会用它们计算多样本覆盖度，缺失时质量明显下降" }
+    ],
+    "outputs": [
+      { "type": "bins", "name": "候选 MAG 集合", "ext": "_bins/", "note": "一个 bin 一个 FASTA；文件名通常带工具与编号，不要在此阶段改名以免丢失来源信息" },
+      { "type": "tsv-table", "name": "contig 到 bin 的归属表", "ext": ".scaffolds2bin.tsv", "note": "合并与去冗余都要用；也是回查「某个 contig 被分到哪里」的唯一依据" },
+      { "type": "log-report", "name": "分箱统计日志", "ext": ".binning.log", "note": "含 bin 数、各 bin 的 contig 数与总长；用于判断是否出现异常碎裂或巨型 bin" }
+    ],
+    "provides": [
+      { "tool": "MetaBAT2", "version": "2.15.x", "access": "cli", "install": "conda", "note": "同时提供 jgi_summarize_bam_contig_depths 生成 depth 文件" },
+      { "tool": "MaxBin2", "version": "2.2.x", "access": "cli", "install": "conda", "note": "标记基因 + 丰度的 EM 算法；低覆盖度敏感但易碎" },
+      { "tool": "SemiBin", "version": "1.4.x", "access": "cli", "install": "conda", "note": "自监督深度学习分箱；新版本命令名为 SemiBin2，具体命令与版本以官方文档为准" }
+    ],
+    "feeds": [
+      { "target": "meta_bin_refine", "viaType": "bins", "note": "多工具结果合并与去冗余；单工具输出不应作为最终 MAG 集" },
+      { "target": "meta_assembly_qc", "viaType": "bins", "note": "用 CheckM2/GUNC 评估完整度、污染度与嵌合，决定哪些 bin 可以保留" },
+      { "target": "meta_mag_taxonomy", "viaType": "bins", "note": "对质量合格的 bin 做 GTDB 分类与新物种识别" }
+    ],
+    "usage": [
+      {
+        "label": "MetaBAT2：多样本覆盖度 + 序列组成",
+        "lang": "bash",
+        "code": "jgi_summarize_bam_contig_depths --outputDepth depth.txt *.sorted.bam\nmetabat2 -i contigs.fa -a depth.txt -o bins/bin -m 1500 -t 32\n# -m 是纳入分箱的最小 contig 长度；阈值选择会直接影响 bin 数与质量"
+      },
+      {
+        "label": "MaxBin2：标记基因 + 丰度",
+        "lang": "bash",
+        "code": "run_MaxBin.pl -contig contigs.fa -abund depth.txt -out maxbin_out -thread 32\n# 需要提供覆盖度文件；输出文件名会带编号，后续需自行整理成 bins 目录"
+      },
+      {
+        "label": "SemiBin2：单样本与多样本模式",
+        "lang": "bash",
+        "code": "SemiBin2 single_easy_bin -i contigs.fa -b sample.sorted.bam -o semibin_out --threads 32\n# 多样本用 multi_easy_bin 并传入全部 BAM；命令名随版本变化，以官方文档为准"
+      }
+    ],
+    "recipes": {
+      "bash": "mkdir -p 03_bins\njgi_summarize_bam_contig_depths --outputDepth 03_bins/depth.txt 02_assembly/*.sorted.bam\nmetabat2 -i 02_assembly/final.contigs.fa -a 03_bins/depth.txt \\\n  -o 03_bins/metabat2/bin -m 1500 -t ${THREADS} \\\n  > 10_logs/metabat2.log 2>&1",
+      "python": "run([\n    \"metabat2\", \"-i\", str(ASM_DIR / \"final.contigs.fa\"),\n    \"-a\", str(BIN_DIR / \"depth.txt\"),\n    \"-o\", str(BIN_DIR / \"metabat2\" / \"bin\"),\n    \"-m\", \"1500\", \"-t\", str(THREADS),\n])"
+    },
+    "params": [
+      { "flag": "-m / --minContig（MetaBAT2）", "default": "2500", "note": "纳入分箱的最小 contig 长度。分箱后再过滤已经晚了：短 contig 会被分错并污染 bin，应在分箱前用它排除" },
+      { "flag": "-a / --abdFile", "default": "无（必填）", "note": "jgi_summarize_bam_contig_depths 生成的覆盖度文件；单样本覆盖度会让低丰度物种分箱质量明显变差" },
+      { "flag": "--min_contig_length（MaxBin2）", "default": "1000", "note": "最小 contig 长度；与 MetaBAT2 的阈值应保持一致，否则两个工具的分箱结果不可比" },
+      { "flag": "多样本 vs 单样本模式（SemiBin）", "default": "单样本", "note": "多样本模式利用跨样本覆盖度，低丰度物种更好分；但样本必须来自可比群落，否则覆盖度信号会被生境差异主导" },
+      { "flag": "bin 数量 / 期望基因组大小", "default": "无", "note": "部分工具允许指定期望 bin 数或最小 bin 大小；这些先验会直接改变结果，使用时应说明依据" }
+    ],
+    "pitfalls": [
+      "**只给 contig 不给覆盖度**（或只用一个样本的覆盖度）会让分箱质量明显下降。多样本覆盖度是区分「组成相似但丰度不同的物种」的关键信号，缺了它，分箱基本退化为按四核苷酸频率聚类。",
+      "**短 contig 是分箱的主要污染源**：它们的四核苷酸频率估计噪声大，容易把不同物种的 contig 拉进同一个 bin。分箱前必须按长度过滤，并把阈值写进方法。",
+      "**不要用 bin 数量判断分箱好坏**。把一个大基因组拆成几个小 bin 会让每个 bin 的完整度与污染度「看起来都还行」，但生物学结论完全错了；反之，把两个物种合成一个 bin 会同时出现高完整度与高污染度。判断依据是 CheckM2 的完整度/污染度分布，而不是数量。",
+      "单个工具的输出不能当最终 MAG 集。不同工具的偏倚不同（MetaBAT2 偏稳、MaxBin2 偏碎、SemiBin 偏灵敏），至少要用 CheckM2 评估，推荐多工具 + DAS Tool 合并 + dRep 去冗余。",
+      "低丰度物种（覆盖度 ≲ 1×）基本分不出来；报告里应说明检出限，而不是把「没分出来」解释成「不存在」。",
+      "质粒、病毒与前噬体 contig 的覆盖度与宿主基因组不同，常被分到别的 bin 里，污染宿主 MAG；真核污染序列同理。做关键结论前应检查 bin 内是否有异常 GC/覆盖度或非细菌标记基因。",
+      "换一批样本重新分箱会得到不同的 bin 集合（即使 contigs 相同）。多样本共分箱的样本组成必须与最终分析口径一致，事后增删样本需要重跑分箱。"
+    ],
+    "related": [
+      { "id": "meta_megahit", "note": "上游组装与覆盖度来源" },
+      { "id": "meta_bin_refine", "note": "合并多工具结果并去冗余" },
+      { "id": "meta_assembly_qc", "note": "判断哪些 bin 达到质量门槛" },
+      { "id": "meta_coverm", "note": "对最终 MAG 集做逐样本定量" }
+    ],
+    "docs": [
+      { "label": "第 8 章 宏基因组与微生物组", "path": "docs/guidebook/08-metagenome-microbiome.md" }
+    ]
+  },
+  {
+    "id": "meta_bin_refine",
+    "name": "分箱优化与去冗余 (DAS Tool / dRep)",
+    "category": "metagenome",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "active",
+    "domains": ["metagenomics"],
+    "tags": ["das tool", "drep", "去冗余", "ani", "mag", "代表基因组"],
+    "summary": "多工具分箱合并与 MAG 去冗余",
+    "what": [
+      "这一步把两个不同的问题一起解决。第一是**合并**：DAS Tool 读取多个分箱工具的输出与 contig 归属，按每个候选 bin 的单拷贝标记基因完整度/污染度打分，选出一组互不重叠、分数最高的 bin 集合，从而把「MetaBAT2 更稳、MaxBin2 更细、SemiBin 更灵敏」的差异变成互补。值得强调的是，DAS Tool 消费的本质上只是「contig → 分组标签」的归属表，因此除了标准分箱工具，自定义聚类脚本产出的分组也可以作为一路候选参与合并——只是它没有经过标记基因与覆盖度优化，质量通常更低，只应作为候选项之一。第二是**去冗余**：dRep 在多样本、多批次之间把近似同种的 MAG 聚类，按 ANI（物种级惯例 95%）归簇并选出质量最好的作为代表，避免同一个物种在 100 个样本里出现 100 次。",
+      "**为什么必须做**：不去冗余的 MAG 集合不能用于比较——同一基因组以多个副本出现，会让「某基因在多少 MAG 中出现」这类统计被严重放大，也会让泛基因组曲线完全失真。做完去冗余又要付出代价：一个物种只剩一个代表，样本层面的信息就丢了。因此**必须保留 dRep 的聚类成员表**（每个代表对应哪些原 bin），它是后续做「物种流行度（prevalence）」与逐样本定量的桥梁。",
+      "**质量过滤要放在去冗余之前**。dRep 用「完整度 − 5×污染度」一类打分挑选代表，并且 ANI 估计需要足够的重叠长度；如果低质量的碎片 bin 也参与聚类，会把高质量 MAG 的聚类边界带偏。因此先用 CheckM2 过滤（例如只保留完整度 > 50%、污染度 < 10% 的 bin，关键分析进一步收紧到 > 90%/< 5%），再进入 dRep，并把两级阈值都写进方法。注意 DAS Tool 的标记基因得分与 CheckM2 的完整度/污染度不是同一套数值，阈值不可互换。",
+      "阈值的选择直接改变 MAG 数量与后续所有统计：ANI 用 95% 还是 90%、污染度门槛用 5% 还是 10%、是否要求最小基因组大小，都会改变最终集合。这些决定必须在看结果之前定好，并在方法里明确写出。"
+    ],
+    "inputs": [
+      { "type": "bins", "name": "多工具/多样本的候选 bin 集合", "required": true, "note": "例如同一套 contig 上 MetaBAT2、MaxBin2、SemiBin 的输出；不同工具的输出目录结构不同，先整理成统一的 bins 目录" },
+      { "type": "tsv-table", "name": "bin 质量评估表", "required": false, "note": "CheckM2 的完整度/污染度结果；提供它可以按质量先过滤再聚类，避免低质量碎片带偏聚类" },
+      { "type": "cluster-dist", "name": "外部 contig 聚类/分组表", "required": false, "note": "来自自定义聚类（按序列组成、降维后分组等）的 contig → 分组标签表。DAS Tool 消费的本来就是 contig→bin 归属表，所以任何来源的分组都可以作为一路候选；但它没有经过标记基因与覆盖度优化，只应作为候选项之一，不能替代标准分箱工具的输出" }
+    ],
+    "outputs": [
+      { "type": "bins", "name": "去冗余后的代表性 MAG 集合", "ext": "_mags/", "note": "一个代表一个 FASTA；这是后续分类、定量与比较分析的正式输入" },
+      { "type": "tsv-table", "name": "聚类与成员对照表", "ext": ".clusters.tsv", "note": "代表 MAG ↔ 原始 bin 的映射，失去它就等于失去了多样本流行度信息" },
+      { "type": "log-report", "name": "合并与去冗余统计", "ext": ".refine.log", "note": "含输入 bin 数、合并后 bin 数、聚类数与阈值设置；这些数字必须能与其他流程对齐" }
+    ],
+    "provides": [
+      { "tool": "DAS Tool", "version": "1.1.x", "access": "cli", "install": "conda", "note": "多工具分箱结果的无冗余合并；依赖比对引擎（diamond/blast）" },
+      { "tool": "dRep", "version": "3.4.x", "access": "cli", "install": "conda", "note": "MAG 去冗余与代表选择；内部需要质量评估工具" },
+      { "tool": "CheckM2", "version": "1.0.x", "access": "cli", "install": "conda", "note": "本模块内用于过滤与选代表；正式的质量报告仍应来自质量评估模块" }
+    ],
+    "feeds": [
+      { "target": "meta_mag_taxonomy", "viaType": "bins", "note": "对去冗余后的代表 MAG 做 GTDB 分类" },
+      { "target": "meta_coverm", "viaType": "bins", "note": "用同一套代表 MAG 对每个样本重新定量，得到丰度矩阵" },
+      { "target": "meta_assembly_qc", "viaType": "bins", "note": "对最终 MAG 集再评估一次质量分布" }
+    ],
+    "usage": [
+      {
+        "label": "DAS Tool：合并多工具分箱结果",
+        "lang": "bash",
+        "code": "DAS_Tool -i metabat2.scaffolds2bin.tsv,maxbin.tsv,semibin.tsv \\\n  -c contigs.fa -o dastool_out \\\n  -l metabat2,maxbin,semibin \\\n  --threads 32 --write_bins\n# 输入是 contig→bin 的归属表而不是 FASTA 目录；具体选项名以官方文档为准"
+      },
+      {
+        "label": "dRep：去冗余并选代表",
+        "lang": "bash",
+        "code": "dRep dereplicate drep_out \\\n  -g bins/*.fa \\\n  -comp 90 -con 5 \\\n  -pa 0.9 -sa 0.95 \\\n  -p 32\n# -comp/-con 是质量门槛，-pa/-sa 是初级/次级 ANI 阈值；阈值改变会直接改变 MAG 数量"
+      },
+      {
+        "label": "核对聚类成员（做流行度分析的前置）",
+        "lang": "bash",
+        "code": "ls drep_out/dereplicated_genomes/ | wc -l\ncat drep_out/data_tables/Cdb.csv\n# Cdb.csv 记录每个代表与成员的关系；具体文件名以官方文档为准，务必归档"
+      }
+    ],
+    "recipes": {
+      "bash": "mkdir -p 03_bins/refined\nDAS_Tool -i 03_bins/metabat2.tsv,03_bins/maxbin.tsv -c 02_assembly/final.contigs.fa \\\n  -o 03_bins/dastool --threads ${THREADS} --write_bins \\\n  > 10_logs/dastool.log 2>&1\ndRep dereplicate 03_bins/drep_out -g 03_bins/dastool_DASTool_bins/*.fa \\\n  -comp 90 -con 5 -pa 0.9 -sa 0.95 -p ${THREADS} \\\n  > 10_logs/drep.log 2>&1",
+      "python": "run([\n    \"dRep\", \"dereplicate\", str(BIN_DIR / \"drep_out\"),\n    \"-g\", *[str(p) for p in sorted((BIN_DIR / \"dastool_bins\").glob(\"*.fa\"))],\n    \"-comp\", \"90\", \"-con\", \"5\", \"-pa\", \"0.9\", \"-sa\", \"0.95\",\n    \"-p\", str(THREADS),\n])"
+    },
+    "params": [
+      { "flag": "-comp / -con（dRep）", "default": "75 / 10（视版本）", "note": "纳入去冗余的完整度与污染度门槛。关键分析建议收紧到 90/5；门槛必须在方法里写明，并与质量评估模块的报告一致" },
+      { "flag": "-pa / -sa（dRep）", "default": "0.90 / 0.95", "note": "初级与次级 ANI 阈值。95% 是物种级惯例；用 90% 会把更多近缘 MAG 合成一个代表，直接减少「物种数」" },
+      { "flag": "--write_bins（DAS Tool）", "default": "开启", "note": "是否实际写出 bin FASTA；不写只得到归属表，后续去冗余就没法直接跑" },
+      { "flag": "--search_engine（DAS Tool）", "default": "diamond", "note": "标记基因比对的引擎；只影响速度，但必须与环境中已安装的引擎一致" },
+      { "flag": "-g 输入顺序", "default": "无", "note": "去冗余结果与输入顺序无关，但代表选择依赖质量打分；务必保留聚类表，否则无法回溯代表来自哪一批样本" }
+    ],
+    "pitfalls": [
+      "**去冗余之前不做质量过滤**：低完整度的碎片 bin 会参与 ANI 聚类（重叠区不足时 ANI 估计不稳），把高质量 MAG 的聚类边界带偏，还可能被选成某些簇的代表。先过滤，再聚类。",
+      "**去冗余后仍把代表当成「该物种在某样本里的丰度」**是常见错误。代表只是一个序列实体；丰度必须回到每个样本单独定量（读长回贴/覆盖度），并用聚类成员表把成员样本的丰度归并到代表上。",
+      "**90% 与 95% ANI 给出完全不同的「物种数」**。用 90% 会把近缘物种合并，用 97% 会拆出更多「物种」。阈值必须与研究问题匹配并写进方法，且不要与文献里的数字直接比较。",
+      "DAS Tool 的标记基因得分与 CheckM2 的完整度/污染度**不是同一套数值**。DAS Tool 分数高不代表 CheckM2 完整度 > 90%，两套阈值不可互换，报告时要注明来源。",
+      "ANI 的边界情况不稳定：处于 94%–96% 之间的 MAG 归属会随工具与参数变化。做关键结论时应单独报告这些边界案例，而不是当作确定的分组。",
+      "把不同批次、不同生境的样本一起做 dRep 有风险：批次差异（组装质量、测序深度）会影响 ANI 估计，可能把同一物种拆开或把不同物种合并。跨批次去冗余时应先检查质量分布是否可比。",
+      "去冗余会减少 MAG 数量，看起来「丢数据」，但不去冗余的统计结果是错的。方法里要同时给出「去冗余前/后的 MAG 数」与质量分布，让读者能判断取舍。"
+    ],
+    "related": [
+      { "id": "meta_binning_metabat", "note": "上游分箱，产出多个工具的候选 bin" },
+      { "id": "meta_assembly_qc", "note": "质量评估；决定过滤阈值" },
+      { "id": "meta_coverm", "note": "用去冗余后的代表 MAG 做逐样本定量" },
+      { "id": "meta_mag_taxonomy", "note": "对代表 MAG 做分类与新物种识别" }
+    ],
+    "docs": [
+      { "label": "第 8 章 宏基因组与微生物组", "path": "docs/guidebook/08-metagenome-microbiome.md" }
+    ]
+  },
+  {
+    "id": "meta_mag_taxonomy",
+    "name": "MAG 分类注释与命名 (GTDB-Tk)",
+    "category": "metagenome",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "active",
+    "domains": ["metagenomics", "phylogenetics"],
+    "tags": ["gtdb-tk", "mag", "分类注释", "新物种", "ani", "标记基因"],
+    "summary": "GTDB-Tk 给 MAG 分类并发现新物种",
+    "what": [
+      "GTDB-Tk 用细菌的 120 个（或古菌的 53 个）单拷贝标记基因，把 MAG 的蛋白序列比对到 GTDB 参考集，再用系统发育放置（pplacer/EPA-ng 一类）确定它在参考树上的位置，输出分类路径与最近的参考基因组及其 ANI。它同时给出用户基因组与参考基因组一起构建的树，以及标记基因比对结果，两者都可以继续用于建树与可视化。",
+      "**这条路线与读长级分类的分工是本次方法学分歧的核心**。Kraken/MetaPhlAn 只能把读长分配到数据库里**已有参考**的类群上，遇到没有近缘参考的物种只能说「unclassified」或就近错分；MAG + GTDB-Tk 则能给数据库里完全没有的类群一个位置（例如「属于某个未描述属、与最近参考的 ANI 只有 78%」），这是发现新物种的现实途径。代价有两层：第一，只有被成功组装并分箱的物种才能进入分析，低丰度类群系统性缺席，**因此 MAG 的物种名录不能用来比较群落丰度**；第二，结果依赖 MAG 本身的质量，污染或碎片化的 MAG 会得到错误或不确定的分类位置。",
+      "**GTDB 是一套与 NCBI/SILVA 不同的分类体系**，许多高级分类单元被重新划分（例如把原来的梭菌纲拆成多个纲、把肠杆菌科并入肠杆菌目），因此 GTDB 的名字不能直接与 SILVA 注释结果或 NCBI 分类逐条对比。GTDB 每年发布新版本，**版本之间分类与命名会变**，跨版本结果不可直接比较，必须记录版本号。未培养类群在 GTDB 里使用带编号的占位名（UBA 系列、sp 编号等），**这些编号不是物种名**，引用时应连同 GTDB 版本一起说明，或表述为「与某参考基因组 ANI 为 X% 的未描述类群」。",
+      "值得注意的是 GTDB-Tk 输出的 ANI 是「相对最近参考基因组」的估计值，用途是判断「是不是新种」；它与 fastANI 那种两两基因组比较不是同一件事，不能互相替代。判断两个 MAG 是否同种应使用成对的 ANI 工具，或在去冗余步骤里用统一的 ANI 阈值处理。"
+    ],
+    "inputs": [
+      { "type": "bins", "name": "去冗余后的 MAG 集合", "required": true, "note": "建议只提交完整度 ≥ 50%（理想 ≥ 90%）且污染度低的 MAG；低质量 MAG 的分类结果不可靠" },
+      { "type": "genome-fasta", "name": "单菌基因组", "required": false, "note": "同一批分析里也可以把分离株基因组一起提交，用于与 MAG 放到同一棵参考树上比较" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "MAG 分类与最近参考 ANI 表", "ext": ".gtdbtk.summary.tsv", "note": "每个 MAG 的分类路径、最近参考基因组与 ANI、以及标记基因数量；是命名与比较的依据" },
+      { "type": "tree", "name": "含用户基因组的参考树", "ext": ".classify.tree", "note": "GTDB-Tk 输出的树文件；可直接用于可视化与拓扑检查" },
+      { "type": "alignment-fasta", "name": "标记基因比对", "ext": ".user_msa.fasta", "note": "用户基因组的标记基因比对，可接自建树流程（如 IQ-TREE）做独立的系统发育分析" }
+    ],
+    "provides": [
+      { "tool": "GTDB-Tk", "version": "2.4.x", "access": "cli", "install": "conda", "note": "依赖 GTDB 参考数据（R2xx 版本，约数十 GB）；版本必须记录" },
+      { "tool": "Prodigal", "version": "2.6.x", "access": "cli", "install": "conda", "note": "GTDB-Tk 内部用它做基因预测" },
+      { "tool": "HMMER", "version": "3.3.x", "access": "cli", "install": "conda", "note": "标记基因的 HMM 搜索；版本需满足 GTDB-Tk 的要求" }
+    ],
+    "feeds": [
+      { "target": "phy_iqtree", "viaType": "alignment-fasta", "note": "用标记基因比对自建系统发育树，做独立于 GTDB 参考树的拓扑分析" },
+      { "target": "viz_tree_plot", "viaType": "tree", "note": "把分类结果标注到树上做可视化" }
+    ],
+    "usage": [
+      {
+        "label": "完整分类流程（基因预测 + 比对 + 放置）",
+        "lang": "bash",
+        "code": "gtdbtk classify_wf \\\n  --genome_dir mags/ \\\n  --out_dir gtdb_out \\\n  --extension fa \\\n  --cpus 32\n# 具体选项与参考数据版本以官方文档为准；输出含细菌与古菌两份 summary"
+      },
+      {
+        "label": "只要标记基因比对（用于自建树）",
+        "lang": "bash",
+        "code": "gtdbtk align --identify_dir gtdb_out --out_dir gtdb_align --cpus 32\n# 输出用户基因组的标记基因比对，可交给 IQ-TREE 等建树工具"
+      },
+      {
+        "label": "阅读分类结果",
+        "lang": "bash",
+        "code": "column -t -s $'\\t' gtdb_out/gtdbtk.bac120.summary.tsv | head\n# 关注：分类路径、最近参考基因组、ANI、以及未描述类群的占位名"
+      }
+    ],
+    "recipes": {
+      "bash": "mkdir -p 04_mag_taxonomy 10_logs\ngtdbtk classify_wf --genome_dir 03_bins/refined_mags \\\n  --out_dir 04_mag_taxonomy/gtdb --extension fa --cpus ${THREADS} \\\n  > 10_logs/gtdbtk.log 2>&1\ngtdbtk align --identify_dir 04_mag_taxonomy/gtdb \\\n  --out_dir 04_mag_taxonomy/gtdb_align --cpus ${THREADS}",
+      "python": "run([\n    \"gtdbtk\", \"classify_wf\",\n    \"--genome_dir\", str(BIN_DIR / \"refined_mags\"),\n    \"--out_dir\", str(TAX_DIR / \"gtdb\"),\n    \"--extension\", \"fa\", \"--cpus\", str(THREADS),\n])"
+    },
+    "params": [
+      { "flag": "--genome_dir / --extension", "default": "无", "note": "基因组目录与文件扩展名；扩展名写错会导致「0 个基因组被处理」而流程不报错，务必核对读入的基因组数" },
+      { "flag": "--cpus", "default": "1", "note": "并行数；GTDB-Tk 的分析阶段（pplacer）对内存也有要求，大批量提交前先小规模试跑" },
+      { "flag": "参考数据版本（GTDB R2xx）", "default": "随安装", "note": "必须与结果一起记录。GTDB 每年更新，分类与命名会变，跨版本结果不可直接比较" },
+      { "flag": "--min_perc_aa / 标记基因覆盖门槛", "default": "以官方文档为准", "note": "决定标记基因覆盖不足的 MAG 是否被跳过或降级为占位分类；低完整度 MAG 大量被跳过时说明输入质量不够" },
+      { "flag": "快速模式（--mash_db 等）", "default": "关闭", "note": "用 Mash 预筛参考基因组以加速；速度快但可能影响近缘参考的选择，是否使用以官方文档为准" }
+    ],
+    "pitfalls": [
+      "**GTDB 与 SILVA/NCBI 是不同体系**。把 GTDB 的名字与 16S 注释结果或 NCBI 分类逐条比较会得出错误结论；跨体系比较要么统一到一套，要么退到属以上层级并做名称映射。",
+      "**未描述类群的占位名不是物种名**。形如 UBA 系列或 sp 编号的名称只是参考树上的占位标识；把它们当物种名写进论文会误导读者，正确表述是「与某参考基因组 ANI 为 X% 的未描述类群（GTDB R2xx）」。",
+      "**GTDB 版本必须记录**。换版本会让部分 MAG 的分类路径与 ANI 值改变，甚至名字被重新分配；跨版本合并（例如把去年与今年的 MAG 放在一起分析）需要重新统一注释。",
+      "**低完整度 MAG 的分类不可靠**：标记基因缺失会让放置位置偏移，甚至被错误地放到完全不同的门。建议只提交完整度 ≥ 50% 的 MAG，关键结论用 ≥ 90% 的高质量 MAG 支撑。",
+      "GTDB-Tk 的 ANI 是「相对最近参考」的估计，不是成对基因组 ANI。判断两个 MAG 是否同种要用成对 ANI 工具（或统一在去冗余步骤里处理），不要拿这个 ANI 直接下结论。",
+      "**MAG 的物种名录有系统性偏差**：只有被组装、被分箱的类群才会出现，低丰度物种缺席。因此「MAG 里有哪些门」不能用来比较不同样本的群落组成，那属于读长级分类（Kraken/MetaPhlAn）或扩增子的任务。",
+      "污染 MAG 的分类结果会被外来序列拉偏（例如混入的质粒或近缘物种片段），出现「既像 A 又像 B」的模糊位置。看到分类置信度低或标记基因数偏少时，应先回到质量评估步骤检查污染度。"
+    ],
+    "related": [
+      { "id": "meta_bin_refine", "note": "上游去冗余，决定提交哪些代表 MAG" },
+      { "id": "meta_assembly_qc", "note": "决定 MAG 能否进入分类（完整度/污染度门槛）" },
+      { "id": "phy_iqtree", "note": "用标记基因比对自建树" },
+      { "id": "tax_gtdbtk", "note": "同一个工具在单菌基因组场景下的用法" }
+    ],
+    "docs": [
+      { "label": "第 8 章 宏基因组与微生物组", "path": "docs/guidebook/08-metagenome-microbiome.md" }
+    ]
+  },
+  {
+    "id": "meta_coverm",
+    "name": "MAG 丰度定量 (CoverM / Bowtie2)",
+    "category": "metagenome",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "active",
+    "domains": ["metagenomics"],
+    "tags": ["coverm", "覆盖度", "丰度", "mag", "定量", "组成性"],
+    "summary": "把读长映射回 MAG 得到覆盖度与丰度",
+    "what": [
+      "CoverM 把每个样本的读长映射回 MAG（或参考基因组）集合，统计每个基因组的覆盖度与相对丰度，并处理基因组长度差异、多映射读长的分配等细节。它提供 genome 模式（参考是 MAG 集合，最常用于宏基因组）与 contig 模式（参考是 contig），输出是 MAG × 样本的矩阵，是「某个 MAG 在哪些样本里、有多少」这个问题的标准答案。",
+      "**量纲的选择必须先想清楚**：读长计数与覆盖度不是同一个量——映射到某个基因组的读长数大致正比于「该基因组的相对丰度 × 基因组大小」，直接比较不同 MAG 的读长计数会让大基因组系统性偏高；平均覆盖度（mean coverage）已经按基因组长度归一，更接近细胞的相对丰度；而 relative abundance 是把所有 MAG 的覆盖度归一后得到的「占群落的多少」，回答的是组成问题；RPKM/TPM 则同时考虑长度与测序深度。做「某 MAG 占群落多少」用相对丰度，做「同一 MAG 跨样本比较」用覆盖度或 TPM，但**同一个分析里必须统一口径**，并在方法里写明用的是哪一种。CoverM 的具体选项名与各方法的归一化定义随版本变化，以官方文档为准。",
+      "**统计陷阱与扩增子完全一样**：CoverM 的相对丰度列天然满足「所有 MAG 加起来 = 100%」，是典型的组成性数据。直接用 t 检验/Wilcoxon 比较两组 MAG 的相对丰度会产生大量假阳性，必须用 CLR/ILR 变换或 ANCOM-BC、ALDEx2 这类方法；总样本数少于 14（每组 7 个左右）时差异结论高度依赖方法选择；同一受试者的多次采样要当重复测量处理（伪重复）。此外样本测序深度差异大时，应把深度纳入模型或先统一下游口径，再比较。",
+      "**定量前必须按 MAG 质量过滤**。污染或碎片化的 MAG 会把「不属于它」的读长也映射上来（保守区、近缘物种的共有序列），得到虚高的覆盖度；这类假丰度在下游统计里会变成看似显著的差异。常规做法是只定量完整度 > 50%（理想 > 90%）、污染度 < 10%（理想 < 5%）的 MAG，并在结果表里保留质量列，让读者知道每个丰度值的可信度。"
+    ],
+    "inputs": [
+      { "type": "bins", "name": "代表性 MAG 集合", "required": true, "note": "去冗余后的代表 MAG；建议先按质量过滤，污染的 MAG 会产生假丰度" },
+      { "type": "clean-reads", "name": "各样本清理后读长", "required": false, "note": "建议去宿主后的读长；宿主读长会造成无意义的映射。与「已比对 BAM」二选一，至少提供一种" },
+      { "type": "bam", "name": "已比对到 MAG 集合的 BAM", "required": false, "note": "每样本一份，可跳过重复映射直接统计覆盖度（CoverM 的常用入口）。BAM 必须是比对到同一套 MAG 上的，否则样本之间不可比" }
+    ],
+    "outputs": [
+      { "type": "count-matrix", "name": "MAG × 样本丰度矩阵", "ext": ".coverage.tsv", "note": "含覆盖度与相对丰度列；采用哪种口径必须与结果一起记录" },
+      { "type": "tsv-table", "name": "每个 MAG 的映射统计", "ext": ".mapping-stats.tsv", "note": "含映射率、覆盖比例与平均深度；映射率异常的 MAG 说明序列质量或污染有问题" },
+      { "type": "log-report", "name": "定量日志", "ext": ".coverm.log", "note": "含映射参数（最小相似度、覆盖比例门槛）与运行时间；参数变化会改变丰度" }
+    ],
+    "provides": [
+      { "tool": "CoverM", "version": "0.7.x", "access": "cli", "install": "conda", "note": "genome/contig 两种模式；选项与归一化定义随版本变化，以官方文档为准" },
+      { "tool": "Bowtie2", "version": "2.5.x", "access": "cli", "install": "conda", "note": "短读长映射；用于生成 BAM 再交给 CoverM" },
+      { "tool": "minimap2", "version": "2.2x", "access": "cli", "install": "conda", "note": "长读长或跨物种映射的替代方案" }
+    ],
+    "feeds": [
+      { "target": "viz_heatmap", "viaType": "count-matrix", "note": "MAG 丰度热图；聚类后可以看到丰度模式相近的 MAG 群" },
+      { "target": "py_pandas_io", "viaType": "count-matrix", "note": "读进 Python 做过滤、合并质量表与统计整理" },
+      { "target": "r_vegan_diversity", "viaType": "count-matrix", "note": "以 MAG 为单位的群落多样性、排序与置换检验" }
+    ],
+    "usage": [
+      {
+        "label": "从 BAM 计算覆盖度与相对丰度",
+        "lang": "bash",
+        "code": "coverm genome \\\n  --genome-fasta-directory mags/ \\\n  --bam-files *.sorted.bam \\\n  --methods mean trimmed_mean relative_abundance \\\n  --threads 32 \\\n  -o mag_coverage.tsv\n# 方法名与归一化定义随版本变化，以官方文档为准；先确认每一个方法算的是什么量"
+      },
+      {
+        "label": "直接从读长出发（内部完成映射）",
+        "lang": "bash",
+        "code": "coverm genome -d mags/ \\\n  -1 sample_R1.fq.gz -2 sample_R2.fq.gz \\\n  --methods relative_abundance --threads 32 -o sample.coverage.tsv"
+      },
+      {
+        "label": "先自己映射（便于参数可控与复用）",
+        "lang": "bash",
+        "code": "bowtie2-build -f mags_combined.fna mags_idx\nbowtie2 -x mags_idx -1 sample_R1.fq.gz -2 sample_R2.fq.gz -p 32 --no-unal 2> map.log | \\\n  samtools sort -@ 8 -o sample.sorted.bam -"
+      }
+    ],
+    "recipes": {
+      "bash": "mkdir -p 05_abundance 10_logs\ncoverm genome --genome-fasta-directory 03_bins/refined_mags \\\n  --bam-files 02_assembly/*.sorted.bam \\\n  --methods mean trimmed_mean relative_abundance \\\n  --threads ${THREADS} -o 05_abundance/mag_coverage.tsv \\\n  > 10_logs/coverm.log 2>&1",
+      "python": "run([\n    \"coverm\", \"genome\",\n    \"--genome-fasta-directory\", str(BIN_DIR / \"refined_mags\"),\n    \"--bam-files\", *[str(p) for p in sorted(ASM_DIR.glob(\"*.sorted.bam\"))],\n    \"--methods\", \"mean\", \"trimmed_mean\", \"relative_abundance\",\n    \"--threads\", str(THREADS),\n    \"-o\", str(ABUND_DIR / \"mag_coverage.tsv\"),\n])"
+    },
+    "params": [
+      { "flag": "--methods", "default": "mean", "note": "要计算的量。mean 是平均深度（已按基因组长度归一），relative_abundance 是群落占比，两者**不能混用**；先确定下游统计需要哪一种" },
+      { "flag": "--min-read-percent-identity", "default": "以官方文档为准", "note": "映射的最小相似度；放宽会把近缘同源读长也算进来（尤其污染 MAG 上），收紧会丢掉真实读长" },
+      { "flag": "--min-covered-fraction", "default": "0（不设）", "note": "要求基因组至少多少比例被覆盖才计入；可以过滤掉「只有保守区被映射上」的假丰度" },
+      { "flag": "多映射读长的分配", "default": "以官方文档为准", "note": "跨 MAG 共享的保守序列如何计数会改变丰度；参数必须写进方法，不同设置的结果不可直接比较" },
+      { "flag": "genome / contig 模式", "default": "genome", "note": "两者输出含义不同：contig 模式给的是每条 contig 的覆盖度（用于分箱或基因定量），不要把它当作 MAG 丰度" }
+    ],
+    "pitfalls": [
+      "**用未做质量过滤的 MAG 定量会得到假丰度**：污染 MAG 会吸附其他物种的读长，碎片化 MAG 的覆盖度也不代表整个基因组。定量前先过滤，并在结果里保留质量列。",
+      "**同一个 MAG 集合必须贯穿所有样本**。在不同样本上用不同的参考集合（例如重新分箱后再定量）会让样本间的数字不可比，而这种错误在矩阵里完全看不出来。",
+      "把读长计数直接当丰度比较会让大基因组偏高。映射到基因组的读长数大致正比于「相对丰度 × 基因组大小」，需要按长度归一（平均覆盖度/TPM）或改用相对丰度。",
+      "**相对丰度是组成性数据**：所有 MAG 加起来等于 100%，一个 MAG 升高会让其他 MAG 比例下降。用 t 检验直接比较会产生大量假阳性，应使用 CLR/ILR 或组成性感知方法。",
+      "不要把 MAG 覆盖度当作细胞绝对数。16S 拷贝数、基因组大小、提取效率与宿主去除程度都影响映射结果，跨物种的绝对量不可比。",
+      "样本测序深度差异大时先处理深度：低深度样本的 MAG 覆盖度系统性偏低，直接比较会得到「病例组某些菌减少」的假象。",
+      "多映射读长（跨物种保守区）的处理方式会明显影响低丰度 MAG 的估计；报告里应说明使用的最小相似度与分配策略，并对关键 MAG 做敏感性检查。",
+      "CoverM 的 genome 模式与 contig 模式输出含义不同，别把 contig 覆盖度当作 MAG 丰度，也别把某个 MAG 内部的平均覆盖度当作它的丰度——分箱不完整时两者会明显不一致。"
+    ],
+    "related": [
+      { "id": "meta_bin_refine", "note": "上游去冗余；定量用的是去冗余后的代表集合" },
+      { "id": "meta_assembly_qc", "note": "质量过滤依据；质量列应与丰度矩阵一起保存" },
+      { "id": "viz_heatmap", "note": "MAG 丰度矩阵的可视化" },
+      { "id": "py_pandas_io", "note": "下游表格整理与统计" }
+    ],
+    "docs": [
+      { "label": "第 8 章 宏基因组与微生物组", "path": "docs/guidebook/08-metagenome-microbiome.md" }
+    ]
+  },
+  {
+    "id": "meta_virome",
+    "name": "病毒组识别与丰度 (geNomad / CheckV)",
+    "category": "metagenome",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "active",
+    "domains": ["metagenomics"],
+    "tags": ["病毒组", "genomad", "checkv", "前病毒", "质粒", "votu"],
+    "summary": "从宏基因组里挑出病毒与质粒并定量",
+    "what": [
+      "病毒组分析从宏基因组数据里把病毒序列识别出来并定量。常用组合是：geNomad 用神经网络与标记基因把 contig 判为病毒、质粒或染色体，并给出宿主预测（依据 CRISPR spacer 与标记基因）；CheckV 用病毒参考数据库估计病毒 contig 的完整度与质量等级，并识别嵌在宿主基因组里的前病毒（provirus）区；随后去冗余（通常按 95% ANI/AAI 聚类成 vOTU）并定量（读长回贴或覆盖度计算）。",
+      "**病毒分析与细菌分析的根本差别在于「没有通用标记基因」**。细菌有 16S 与单拷贝标记基因，能给出相对稳定的分类与丰度框架；病毒没有，因此「病毒物种（vOTU）」的定义完全依赖聚类阈值——95% ANI 是常见惯例而不是标准，换一个阈值「病毒种类数」就变。此外病毒基因组小（几 kb 到几百 kb）、丰度通常很低，低丰度病毒很难被组装出来，能分析的主要是高丰度或完整度较高的部分。",
+      "**前病毒是最容易被漏掉的一类**。溶原性病毒整合在宿主基因组里，会被组装成宿主 contig 的一部分；只做「contig 级病毒识别」会系统性低估溶原病毒。CheckV 会把前病毒区切出来并标记宿主边界，做病毒组时应把 provirus 单独处理，并在方法里说明是否纳入。",
+      "定量与解释要谨慎：病毒丰度是相对量，受宿主诱导状态、测序深度与去宿主处理影响。一个样本里病毒信号高，可能只是诱导率高或宿主占比不同，并不代表病毒粒子更多。若使用病毒样颗粒（VLP）富集测序，其数据与宏基因组（包含前病毒与游离 DNA）**不可直接合并比较**。RNA 病毒在 DNA 宏基因组里根本检不到，需要专门的 RNA 测序。"
+    ],
+    "inputs": [
+      { "type": "contigs", "name": "宏基因组组装 contig", "required": true, "note": "组装质量决定病毒检出上限；低丰度病毒常拼不出来，检出限要写进结论" },
+      { "type": "clean-reads", "name": "各样本清理后读长", "required": true, "note": "用于对病毒序列定量；建议先去宿主" }
+    ],
+    "outputs": [
+      { "type": "contigs", "name": "去冗余后的病毒序列集合", "ext": ".votu.fa", "note": "vOTU 代表序列；聚类阈值必须与结果一起记录" },
+      { "type": "abundance-table", "name": "病毒/质粒丰度表", "ext": ".virome.abundance.tsv", "note": "相对丰度；同时应保留覆盖度作为可信度指标" },
+      { "type": "tsv-table", "name": "病毒质量与分类结果", "ext": ".checkv.quality.tsv", "note": "含 CheckV 完整度/质量等级、前病毒标记与 geNomad 分类；判定「完整病毒基因组」的依据" }
+    ],
+    "provides": [
+      { "tool": "geNomad", "version": "1.7.x", "access": "cli", "install": "conda", "note": "病毒/质粒识别与宿主预测；需先下载其数据库" },
+      { "tool": "CheckV", "version": "1.0.x", "access": "cli", "install": "conda", "note": "完整度评估与前病毒识别；依赖病毒参考数据库" },
+      { "tool": "CD-HIT", "version": "4.8.x", "access": "cli", "install": "conda", "note": "序列去冗余聚类（vOTU 划分）；也可用 MMseqs2 等替代，阈值必须记录" }
+    ],
+    "feeds": [
+      { "target": "viz_composition_bar", "viaType": "abundance-table", "note": "病毒组的组成图；需注明 vOTU 阈值与「未分类病毒」占比" },
+      { "target": "viz_heatmap", "viaType": "abundance-table", "note": "病毒丰度模式热图；低覆盖度的条目应标注可信度" },
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "把质量与分类结果读进 Python 做筛选与统计整理" }
+    ],
+    "usage": [
+      {
+        "label": "识别病毒与质粒",
+        "lang": "bash",
+        "code": "genomad download-database .\ngenomad end_to_end contigs.fna genomad_out --threads 32\n# 输出中含 virus / plasmid 两类评分；两类要分开处理，不要混在一起当「病毒组」"
+      },
+      {
+        "label": "评估完整度与前病毒",
+        "lang": "bash",
+        "code": "checkv end_to_end virus_contigs.fna checkv_out -t 32\n# 输出含质量汇总与完整度估计；前病毒会被单独标记，需要决定是否纳入定量"
+      },
+      {
+        "label": "按 95% 相似度去冗余成 vOTU",
+        "lang": "bash",
+        "code": "cd-hit-est -i virus_contigs.fna -o votu.fa -c 0.95 -n 8 -T 32 -M 0\n# 阈值（0.95）与 word size 必须记录；换阈值会改变 vOTU 数量与丰度分布"
+      }
+    ],
+    "recipes": {
+      "bash": "mkdir -p 08_virome 10_logs\ngenomad end_to_end 02_assembly/final.contigs.fa 08_virome/genomad_out --threads ${THREADS} \\\n  > 10_logs/genomad.log 2>&1\ncheckv end_to_end 08_virome/genomad_out/virus.fna 08_virome/checkv_out -t ${THREADS} \\\n  > 10_logs/checkv.log 2>&1\ncd-hit-est -i 08_virome/checkv_out/viruses.fna -o 08_virome/votu.fa -c 0.95 -n 8 -T ${THREADS} -M 0",
+      "python": "run([\n    \"genomad\", \"end_to_end\",\n    str(ASM_DIR / \"final.contigs.fa\"),\n    str(VIR_DIR / \"genomad_out\"),\n    \"--threads\", str(THREADS),\n])"
+    },
+    "params": [
+      { "flag": "geNomad 分数阈值", "default": "以官方文档为准", "note": "病毒/质粒判定阈值。放宽会混入可移动元件与质粒，收紧会漏掉真实病毒；阈值必须写进方法" },
+      { "flag": "CheckV 完整度门槛", "default": "无（看质量等级）", "note": "常用做法是只把完整度较高（如 > 90%，即完整或高质量）的序列用于「病毒基因组」层面的结论，其余仅用于丰度趋势" },
+      { "flag": "去冗余阈值（-c）", "default": "0.95", "note": "vOTU 定义阈值。95% 是惯例而非标准；阈值变化会直接改变「病毒多样性」的数字" },
+      { "flag": "前病毒是否纳入", "default": "通常单独处理", "note": "前病毒区与游离病毒片段的丰度含义不同；混在一起定量会让「诱导状态」与「病毒粒子量」混淆" },
+      { "flag": "定量方式", "default": "读长回贴覆盖度", "note": "用覆盖度而非读长计数比较不同病毒（基因组长度差异大）；同时报告覆盖度作为可信度" }
+    ],
+    "pitfalls": [
+      "**不做前病毒处理会系统性漏掉溶原病毒**。整合在宿主基因组里的前病毒会被当成长度异常的宿主 contig；CheckV 的前病毒识别与边界切分是必要的，且要在方法里说明如何处理。",
+      "**「病毒物种」没有统一定义**。vOTU 完全依赖聚类阈值（95% ANI 只是惯例），不同阈值下「病毒种类数」不同；报告时必须写明阈值与工具，否则数字无法比较。",
+      "geNomad 一类工具的判定里会混入质粒与可移动元件。它们与病毒在生物学上不同（复制机制、宿主范围、生态含义都不同），应分开处理并分别报告。",
+      "低丰度病毒的丰度估计极不稳定：覆盖度低的序列可能在一部分样本里完全检不到，产生大量零值。报告时应给覆盖度与检出率，而不是只给相对丰度。",
+      "**VLP 富集数据与宏基因组数据不可直接比较**。前者去掉了宿主与大部分游离 DNA（且不同实验的富集效率不同），后者包含前病毒；把两类样本放在同一个丰度矩阵里分析是方法学错误。",
+      "不要用「病毒丰度 ÷ 宿主 MAG 丰度」当作诱导率：两者的 DNA 池、提取与测序过程不同，这个比值没有明确的生物学含义。诱导实验需要专门的实验设计。",
+      "DNA 宏基因组检不到 RNA 病毒，也无法评估病毒是否具有感染性（只说明存在核酸）。把「检出病毒序列」等同于「存在感染性病毒颗粒」是常见的过度解读。",
+      "病毒序列里很大一部分会无法分类（没有参考），这是领域现状而不是流程缺陷。把 unclassified 比例当质控指标、或为了降低它而放宽阈值，都会损害结论可信度。"
+    ],
+    "related": [
+      { "id": "meta_megahit", "note": "上游组装；病毒检出依赖组装质量" },
+      { "id": "meta_coverm", "note": "同类定量思路，可复用于病毒序列" },
+      { "id": "phage_genomad", "note": "同一工具在单基因组/噬菌体注释场景下的用法" },
+      { "id": "phage_checkv", "note": "CheckV 在噬菌体模块中的详细用法" }
+    ],
+    "docs": [
+      { "label": "第 8 章 宏基因组与微生物组", "path": "docs/guidebook/08-metagenome-microbiome.md" }
+    ]
+  },
+  {
+    "id": "meta_assembly_qc",
+    "name": "宏基因组组装质量与去冗余",
+    "category": "metagenome",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "active",
+    "domains": ["genomics", "metagenomics"],
+    "tags": ["组装质量", "checkm2", "gunc", "quast", "mag", "完整度", "污染度"],
+    "summary": "组装与 MAG 质量评估：完整度/污染度门槛",
+    "what": [
+      "宏基因组组装没有「一个基因组」这个评估对象，所以要分两层看。第一层是组装本身：contig 数与总长、回贴率（多少读长能回到 contig 上）、是否混入宿主或 PhiX、以及有没有异常的重复序列塌缩。第二层是 MAG：CheckM2 给出每个 bin 的完整度与污染度，GUNC 从基因水平的分类一致性检测嵌合与参考污染，两者互补；再加上基因组大小、标记基因数与 tRNA/rRNA 存在性等辅助指标。",
+      "**阈值的来历与用法**：MIMAG 草案把高质量 MAG 定为完整度 > 90%、污染度 < 5%，并要求含 5S/16S/23S rRNA 与足量 tRNA；中等质量为完整度 ≥ 50%、污染度 < 10%。实际工作中，短读长宏基因组几乎总是拼不出完整的 rRNA 操纵子，因此**实践上普遍只用完整度/污染度两个指标**，把 rRNA/tRNA 当作加分项而不是必要条件——机械套用 rRNA 条件会把绝大多数真正的 MAG 判为「非高质量」。为什么关心这两个数字：完整度低意味着成块基因系统性缺失，「某基因是否存在」「通路是否完整」的比较会出现假阴性；污染度高意味着混入了其他生物，会凭空产生基因并抬高某些功能。阈值只是报告门槛，不等于「这个 MAG 是真的」。",
+      "**污染度 0 不等于没有污染**。CheckM2 的污染度来自「多个单拷贝标记基因出现多份」这一信号，如果混入的是近缘物种或等量污染，拷贝数看起来仍然正常，它就检测不到；整段来自近缘物种的替换同样逃得过 CheckM2。GUNC 用基因水平的分类一致性来发现嵌合与参考污染，正好补上这个盲区。因此高完整度 + 低污染度只是「没有明显问题」，关键结论（新物种、关键基因、代谢通路缺失）仍应做额外验证，例如检查标记基因树上的位置、覆盖度是否沿 contig 均匀。",
+      "另有两个容易被忽略的点：第一，CheckM1 与 CheckM2 的数值不可混用（算法与参考数据库不同，同一 MAG 的完整度可以差十几个百分点），方法里必须写明用的是哪一个及版本；第二，去冗余会改变 MAG 集合与质量分布（dRep 按完整度与污染度打分选代表），因此**去冗余前后都应报告质量分布**，否则读者无法判断最终集合有没有被「择优」到失真。"
+    ],
+    "inputs": [
+      { "type": "contigs", "name": "组装 contig", "required": true, "note": "用于组装层统计（QUAST）与回贴率评估" },
+      { "type": "bins", "name": "MAG 候选集合", "required": false, "note": "用于 MAG 层评估（CheckM2/GUNC）；只做组装层评估时可以省略" }
+    ],
+    "outputs": [
+      { "type": "stats-result", "name": "组装与 MAG 质量汇总", "ext": ".assembly-qc.stats.tsv", "note": "含组装指标与 MAG 质量分布（各质量等级的 MAG 数量）；是方法学部分最需要报告的表" },
+      { "type": "tsv-table", "name": "每个 MAG 的质量明细", "ext": ".mag-quality.tsv", "note": "完整度、污染度、基因组大小、标记基因数、GUNC 判定；应与丰度矩阵一起保存" },
+      { "type": "log-report", "name": "评估工具日志", "ext": ".assembly-qc.log", "note": "QUAST/CheckM2/GUNC 的原始输出，可被 MultiQC 汇总进项目级质控" }
+    ],
+    "provides": [
+      { "tool": "QUAST", "version": "5.2.x", "access": "cli", "install": "conda", "note": "组装统计（contig 数、N50、总长）；宏基因组场景下重点看总长与回贴率而非 N50" },
+      { "tool": "CheckM2", "version": "1.0.x", "access": "cli", "install": "conda", "note": "基于机器学习的完整度/污染度估计；与 CheckM1 的数值不可混用" },
+      { "tool": "GUNC", "version": "1.0.x", "access": "cli", "install": "conda", "note": "基因水平分类一致性检验，用于发现嵌合与参考污染；需先准备其参考数据库" },
+      { "tool": "MultiQC", "version": "1.2x", "access": "cli", "install": "conda", "note": "把组装与 MAG 质量指标汇总进项目级质控报告" }
+    ],
+    "feeds": [
+      { "target": "meta_bin_refine", "viaType": "tsv-table", "note": "把质量表作为去冗余前的过滤依据（阈值必须在看结果前定好）" },
+      { "target": "qc_multi_qc", "viaType": "log-report", "note": "把组装与 MAG 质量纳入项目级质控总览" },
+      { "target": "py_export_report", "viaType": "stats-result", "note": "整理成交付用的质量汇总表与图表" }
+    ],
+    "usage": [
+      {
+        "label": "组装层统计",
+        "lang": "bash",
+        "code": "quast.py final.contigs.fa -o quast_out -t 32\n# 宏基因组里 contig N50 主要由群落复杂度决定，跨样本比较意义有限；重点看总长与碎片化程度"
+      },
+      {
+        "label": "MAG 质量评估",
+        "lang": "bash",
+        "code": "checkm2 predict --input bins/ --output-directory checkm2_out \\\n  --extension fa --threads 32\n# 只提交质量合格的 bin 会更省时间；完整度/污染度的具体列名以官方文档为准"
+      },
+      {
+        "label": "独立检验嵌合与污染",
+        "lang": "bash",
+        "code": "gunc run -i bins/ -o gunc_out -t 32 -e fa\n# GUNC 需要其参考数据库（需先下载并指定路径）；具体参数以官方文档为准"
+      },
+      {
+        "label": "汇总进项目级质控报告",
+        "lang": "bash",
+        "code": "multiqc quast_out checkm2_out gunc_out -o qc/assembly_multiqc"
+      }
+    ],
+    "recipes": {
+      "bash": "mkdir -p 09_qc 10_logs\nquast.py 02_assembly/final.contigs.fa -o 09_qc/quast -t ${THREADS}\ncheckm2 predict --input 03_bins/refined_mags --output-directory 09_qc/checkm2 \\\n  --extension fa --threads ${THREADS} > 10_logs/checkm2.log 2>&1\nmultiqc 09_qc -o 09_qc/multiqc --force",
+      "python": "run([\n    \"checkm2\", \"predict\",\n    \"--input\", str(BIN_DIR / \"refined_mags\"),\n    \"--output-directory\", str(QCDIR / \"checkm2\"),\n    \"--extension\", \"fa\", \"--threads\", str(THREADS),\n])"
+    },
+    "params": [
+      { "flag": "完整度门槛", "default": "> 90%（高质量）/ ≥ 50%（中等）", "note": "用于「基因是否存在」与通路完整度分析时应使用高质量 MAG；低于 50% 的 MAG 只适合做「谁在」层面的参考" },
+      { "flag": "污染度门槛", "default": "< 5%（高质量）/ < 10%（中等）", "note": "污染度直接制造假基因与假功能；关键分析不要放宽到 10% 以上" },
+      { "flag": "--extension / --input", "default": "无", "note": "文件扩展名与目录写错会导致「0 个基因组被评估」而程序正常退出，务必核对读入数量" },
+      { "flag": "--threads", "default": "1", "note": "CheckM2 使用 GPU 时速度差异很大；无论是 CPU 还是 GPU，都要记录运行环境以便复现" },
+      { "flag": "是否把 rRNA/tRNA 作为门槛", "default": "不作为必要条件", "note": "短读长宏基因组很难拼出 rRNA 操纵子；机械套用 MIMAG 的 rRNA 条件几乎会淘汰全部 MAG，应在方法里说明取舍" }
+    ],
+    "pitfalls": [
+      "**用 contig N50 评价宏基因组组装好坏**是常见误解：N50 主要由群落复杂度决定（土壤几 kb、肠道几十 kb），跨样本比较毫无意义。要评的是回贴率、未比中比例，以及最终 MAG 的质量。",
+      "**污染度 0% 不代表没有污染**。等量污染、近缘物种的整段替换都不会让单拷贝标记基因出现多份。关键结论必须用 GUNC 或覆盖度均匀性做额外验证。",
+      "**CheckM1 与 CheckM2 的数值不可混用**。两者算法与参考数据库不同，同一 MAG 的完整度能差十几个百分点；方法里必须写明工具与版本，也不要与文献里未注明工具的数字直接比较。",
+      "不要机械套用 MIMAG 的 rRNA/tRNA 条件筛选 MAG：短读长宏基因组几乎检不到 rRNA 操纵子，这个条件会把绝大多数真实 MAG 判为「非高质量」，掩盖真正的问题。",
+      "**去冗余前后都要报告质量分布**。dRep 按「完整度 − 5×污染度」一类打分选代表，只报去冗余后的分布会让读者看不到低质量 bin 的比例，也无法判断结果是否被择优失真。",
+      "低完整度 MAG 不是废品，但不能用在与基因存在/缺失、通路完整度、代谢潜力的比较上（这些分析对缺失极敏感）；把它们分层使用（只用于物种存在性、部分基因搜索），并在方法里说明分层规则。",
+      "把「MAG 数多」当成组装成功的标志是错的：分箱参数过细会产出大量碎片 bin，每个看起来都「完整度还行」，实际是同一个基因组被切碎。质量分布与基因组大小分布一起看才能发现这种问题。",
+      "评估时的参考数据库版本（CheckM2 的模型、GUNC 的参考库）也要记录：这些数据库更新会改变完整度/污染度的数值，跨批次数据用不同版本会让质量分布不可比。"
+    ],
+    "related": [
+      { "id": "meta_megahit", "note": "上游组装" },
+      { "id": "meta_binning_metabat", "note": "产出待评估的 bin" },
+      { "id": "meta_bin_refine", "note": "用质量表做过滤与去冗余" },
+      { "id": "asmqc_checkm2", "note": "单菌基因组场景下的完整度/污染度模块" },
+      { "id": "asmqc_gunc", "note": "污染与近缘物种检验的详细用法" }
+    ],
+    "docs": [
+      { "label": "第 8 章 宏基因组与微生物组", "path": "docs/guidebook/08-metagenome-microbiome.md" },
+      { "label": "第 4 章 组装质量与污染评估", "path": "docs/guidebook/04-assembly-qc.md" }
+    ]
+  }
+]

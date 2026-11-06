@@ -1,0 +1,497 @@
+[
+  {
+    "id": "res_card_rgi",
+    "name": "耐药基因注释 (RGI / CARD)",
+    "category": "annotation-resistance",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics", "metagenomics"],
+    "tags": ["耐药", "card", "rgi", "aro", "strict"],
+    "summary": "用 CARD 模型库做 strict/loose 两级耐药基因判定",
+    "what": [
+      "RGI（Resistance Gene Identifier）把蛋白或核酸序列比对到 CARD（Comprehensive Antibiotic Resistance Database）的模型库，按模型类型（protein homolog、protein variant、rRNA gene variant、protein overexpression 等）给出 ARO 条目、耐药类别与耐药机制，并把命中分成 strict（达到该模型 curated 的 bit-score 阈值）与 loose（只是序列相似、未达阈值）两档。结果表里 Cut_Off 列就是这两档的标记。",
+      "怎么读结果决定了结论的可靠度：strict 是较强证据，loose 只是候选。把 loose 当 strict 用、或直接用命中条数代表「耐药基因数量」，是耐药注释里最常见的过度解读。更根本的是，基因存在不等于表型耐药——可移动抗性基因可能不表达，耐药也可能来自 CARD 未收录的新机制、孔蛋白缺失或外排泵过表达。发表级结论必须与 MIC/药敏表型放在一起看。",
+      "输入与覆盖也要交代清楚：蛋白模式下 RGI 的结果取决于上游基因预测（Prokka、Bakta、Prodigal 给出的边界不同，命中集合就不同）；rRNA 点突变类模型需要核酸输入，只提交蛋白会漏掉这部分。CARD 覆盖面广、更新频繁（ARO 编号与阈值都会变），且有学术使用许可限制——不能再分发，商业使用需另行申请。"
+    ],
+    "inputs": [
+      { "type": "protein-faa", "name": "蛋白序列", "required": true, "note": "通常来自 Prokka/Bakta/Prodigal；蛋白模式覆盖 homolog 与 variant 模型" },
+      { "type": "contigs", "name": "核酸序列（可选）", "required": false, "note": "contig/genome 模式才能覆盖 rRNA 基因突变等需要核酸的模型；RGI 会在内部做基因预测" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "RGI 命中表", "ext": ".txt", "note": "含 Cut_Off（Strict/Loose）、Best_Hit_ARO、Model_type、Drug Class、AMR Gene Family、与参考序列的长度百分比等列" },
+      { "type": "tsv-table", "name": "按 ARO 去重的耐药基因清单", "ext": ".aro_unique.tsv", "note": "自己汇总：同一 ARO 的多个命中合并后才是可用于统计的基因数" },
+      { "type": "log-report", "name": "运行日志与数据库版本", "ext": ".rgi.log", "note": "CARD 版本与运行参数必须随结果归档" }
+    ],
+    "provides": [
+      { "tool": "RGI", "version": "6.0.x", "access": "cli", "install": "conda", "note": "CARD 官方分析工具；本地库需用 rgi load 载入并记录版本（以 CARD 官方发布为准）" },
+      { "tool": "CARD", "version": "3.2.x", "access": "bundled", "note": "学术使用免费但受许可条款约束，不得再分发；发表需按 CARD 要求引用" },
+      { "tool": "BLAST+ / DIAMOND", "version": "2.1x.x", "access": "cli", "install": "conda", "note": "RGI 的比对后端；换后端理论上结果一致，但版本升级后需重跑对照样本" }
+    ],
+    "feeds": [
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "按 Cut_Off 过滤、按 ARO 去重，生成基因 × 样本矩阵" },
+      { "target": "viz_heatmap", "viaType": "tsv-table", "note": "耐药基因存在/缺失热图，便于跨菌株比较" },
+      { "target": "comp_gene_presence", "viaType": "tsv-table", "note": "把耐药基因纳入菌株间的存在/缺失矩阵" },
+      { "target": "wf_reproducibility", "viaType": "log-report", "note": "CARD 版本是结果可复现的必要记录" }
+    ],
+    "usage": [
+      {
+        "label": "蛋白输入（默认只输出 strict 命中）",
+        "lang": "bash",
+        "code": "rgi main -i anno/${SAMPLE}.faa -o res/${SAMPLE}_rgi -t protein \\\n  --local --clean -n ${THREADS}"
+      },
+      {
+        "label": "核酸输入（覆盖 rRNA 等需要核酸的模型）",
+        "lang": "bash",
+        "code": "rgi main -i 02_assembly/${SAMPLE}.fna -o res/${SAMPLE}_rgi_dna -t contig \\\n  --local --clean -n ${THREADS}"
+      },
+      {
+        "label": "同时保留 loose 命中（仅用于候选筛查）",
+        "lang": "bash",
+        "code": "rgi main -i anno/${SAMPLE}.faa -o res/${SAMPLE}_rgi_loose -t protein \\\n  --include_loose --local -n ${THREADS}\n# 报告中必须区分 strict 与 loose，不要混在一起统计"
+      },
+      {
+        "label": "载入本地 CARD 库（一次，并记录版本）",
+        "lang": "bash",
+        "code": "rgi load --card_json card.json --local\nrgi database --version --local\n# 具体子命令与参数以 CARD/RGI 官方文档为准"
+      }
+    ],
+    "recipes": {
+      "bash": "rgi main -i 03_annotation/${SAMPLE}.faa -o 04_resistance/${SAMPLE}_rgi \\\n  -t protein --local --clean -n ${THREADS}\n\n# 抽取 Strict 命中：**不要硬编码列号**。RGI 的列序随版本变化，写死 $6\n# 会在版本不同时静默产出「只有表头、没有数据行」的结果。按表头名定位：\nawk -F'\\t' 'NR==1 { for (i=1; i<=NF; i++) if ($i==\"Cut_Off\") col=i;\n                  if (!col) { print \"未找到 Cut_Off 列，请检查表头\" > \"/dev/stderr\"; exit 1 }\n                  print; next }\n             $col==\"Strict\"' 04_resistance/${SAMPLE}_rgi.txt \\\n  > 09_results/${SAMPLE}.rgi_strict.tsv\n[ -s 09_results/${SAMPLE}.rgi_strict.tsv ] || echo \"警告：Strict 命中为空，先确认 Cut_Off 取值是否写对\" >&2",
+      "python": "import csv\n\nrun([\n    'rgi', 'main',\n    '-i', str(ANNO_DIR / (sample + '.faa')),\n    '-o', str(RES_DIR / (sample + '_rgi')),\n    '-t', 'protein', '--local', '--clean', '-n', str(THREADS),\n])\n\n# 按表头名定位 Cut_Off 列并按值筛选；硬编码列号会随版本漂移而静默失败\nwith open(RES_DIR / (sample + '_rgi.txt'), newline='', encoding='utf-8') as fh:\n    reader = csv.DictReader(fh, delimiter='\\t')\n    if 'Cut_Off' not in (reader.fieldnames or []):\n        raise SystemExit('未找到 Cut_Off 列，请检查 RGI 版本与输出表头')\n    strict = [row for row in reader if row['Cut_Off'] == 'Strict']\n\nwith open(RES_DIR / (sample + '.rgi_strict.tsv'), 'w', newline='', encoding='utf-8') as fh:\n    writer = csv.DictWriter(fh, fieldnames=reader.fieldnames, delimiter='\\t')\n    writer.writeheader()\n    writer.writerows(strict)\n\nif not strict:\n    print(f'警告: {sample} 无 Strict 命中，请确认 Cut_Off 取值', file=sys.stderr)"
+    },
+    "params": [
+      { "flag": "-t / --input_type", "default": "protein", "note": "protein 只覆盖蛋白层面模型；contig/genome 才能分析 rRNA 等需要核酸的耐药决定簇（以官方文档为准）" },
+      { "flag": "--include_loose", "default": "关闭", "note": "额外输出未达阈值的 loose 命中；用于扩展候选，但绝不能与 strict 混在一起统计" },
+      { "flag": "--local", "default": "关闭", "note": "使用本地 CARD 数据库；本地库版本必须记录，联网模式则结果依赖服务端版本" },
+      { "flag": "-n / --num_threads", "default": "1", "note": "线程数；批量筛查务必显式设置" },
+      { "flag": "--clean", "default": "关闭", "note": "删除中间文件（如比对临时文件），避免目录被几十 GB 的中间结果撑满" },
+      { "flag": "CARD 数据库版本", "default": "无", "note": "ARO 编号与模型阈值随版本变化；跨项目比较前必须锁定同一版本并记录" }
+    ],
+    "pitfalls": [
+      "strict 与 loose 必须分开报告：loose 命中只是序列相似、未达该模型的 curated 阈值。把它们计入「耐药基因数」是最常见的错误，交付表与论文都要写明用的是哪一档。",
+      "CARD 版本决定结果：ARO 编号、bit-score 阈值与新增条目随版本变化，同一样本在不同 CARD 版本下的 strict 命中会不同。数据库版本（如 3.2.x）必须随结果记录并在项目内锁定。",
+      "只提交蛋白序列会漏掉需要核酸的模型（例如 rRNA 基因突变）：要覆盖这类耐药决定簇时用 contig/genome 模式，并用同一份数据核对两种模式的结果差异。",
+      "上游基因预测决定命中集合：同一菌株用 Prokka、Bakta 或 Prodigal -p meta 得到的蛋白边界不同，RGI 的命中与覆盖率也随之不同。跨样本比较时注释工具与参数必须一致。",
+      "基因型不等于表型：CARD/RGI 报「存在某耐药基因」并不等于该菌株对该抗生素耐药——表达水平、调控、外排泵、孔蛋白与接种量都会影响 MIC。临床或发表结论必须结合药敏数据。",
+      "同一 ARO 常有多条命中记录：统计前要按 ARO（必要时再加序列）去重，否则「耐药基因数量」会被同一基因的多个片段或等位拷贝抬高。"
+    ],
+    "related": [
+      { "id": "res_resfinder", "note": "数据库与方法不同，结论不可互换；建议两者都跑并报告分歧" },
+      { "id": "res_abricate", "note": "快速多库筛查，适合初筛与交叉验证" },
+      { "id": "var_amrfinder", "note": "另一条主流耐药检出路线，擅长点突变与特定类群" }
+    ],
+    "docs": [
+      { "label": "第 6 章 功能注释与耐药毒力", "path": "docs/guidebook/06-annotation-resistance-virulence.md" }
+    ]
+  },
+  {
+    "id": "res_abricate",
+    "name": "多数据库基因筛查 (ABRicate)",
+    "category": "annotation-resistance",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics", "metagenomics"],
+    "tags": ["筛查", "abricate", "多数据库", "毒力", "耐药"],
+    "summary": "一次把 contig 扫过 CARD、ResFinder、VFDB 等多个库",
+    "what": [
+      "ABRicate 用核酸层面的比对（BLASTN）把组装序列同时扫过内置的多个数据库（card、resfinder、argannot、ncbi、vfdb、plasmidfinder、megares 等），输出统一的命中表：基因、位置、覆盖率、identity 与来源数据库。它的价值是「一台机器上一轮跑完多库交叉筛查」，快速判断样本带了什么，常用于耐药与毒力基因的初筛。",
+      "它的限制必须写进结论：ABRicate 不做基因预测（直接比对核酸，没有 ORF 边界判断），也不检测点突变介导的耐药（gyrA、parC、rpoB、23S rRNA 等一律不报）；内置数据库是打包快照，更新往往落后 CARD/ResFinder 官方版本数年。因此它适合初筛与交叉验证，不适合作为耐药研究的唯一依据。",
+      "结果解读的关键是阈值与覆盖度：同一份数据在 80% identity/80% 覆盖度与 90%/90% 下基因清单明显不同；低覆盖率命中（contig 边缘截断）既可能是真基因片段，也可能是假基因或旁系同源，需要看比对区域与组装上下文再判断。"
+    ],
+    "inputs": [
+      { "type": "contigs", "name": "组装 contig / 基因组序列", "required": true, "note": "FASTA；ABRicate 直接在核酸层面比对，不做 ORF 预测" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "多库命中表", "ext": ".tab", "note": "列含 GENE、COVERAGE、%COVERAGE、%IDENTITY、DATABASE、ACCESSION、PRODUCT、RESISTANCE" },
+      { "type": "tsv-table", "name": "跨样本汇总表", "ext": ".summary.tab", "note": "用 abricate --summary 生成：基因 × 样本的存在矩阵" },
+      { "type": "log-report", "name": "运行参数与数据库清点", "ext": ".abricate.log", "note": "记录用了哪些数据库、阈值与 abricate 版本" }
+    ],
+    "provides": [
+      { "tool": "ABRicate", "version": "1.0.x", "access": "cli", "install": "conda", "note": "Perl 实现；数据库随包分发（快照），需用 abricate --list 清点版本与条目数" },
+      { "tool": "BLAST+", "version": "2.1x.x", "access": "cli", "install": "conda", "note": "底层比对引擎；版本会影响边缘命中的判定" }
+    ],
+    "feeds": [
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "合并多库结果、去重并生成基因 × 样本表" },
+      { "target": "viz_heatmap", "viaType": "tsv-table", "note": "耐药/毒力基因存在缺失热图" },
+      { "target": "comp_gene_presence", "viaType": "tsv-table", "note": "纳入菌株间基因存在/缺失矩阵，做流行病学比较" }
+    ],
+    "usage": [
+      {
+        "label": "单库筛查",
+        "lang": "bash",
+        "code": "abricate --db card 02_assembly/${SAMPLE}.fna > res/${SAMPLE}.card.tab"
+      },
+      {
+        "label": "多库批量筛查",
+        "lang": "bash",
+        "code": "for db in card resfinder vfdb plasmidfinder; do\n  abricate --db ${db} 02_assembly/${SAMPLE}.fna > res/${SAMPLE}.${db}.tab\ndone"
+      },
+      {
+        "label": "汇总成基因 × 样本矩阵",
+        "lang": "bash",
+        "code": "abricate --summary res/*.tab > res/abricate_summary.tab"
+      },
+      {
+        "label": "放宽阈值并清点数据库",
+        "lang": "bash",
+        "code": "abricate --list                        # 记录数据库版本与条目数\nabricate --db vfdb --minid 70 --mincov 60 02_assembly/${SAMPLE}.fna > res/${SAMPLE}.vfdb.loose.tab\n# 阈值一旦调整必须写进方法，且不同阈值的结果不可直接比较"
+      }
+    ],
+    "recipes": {
+      "bash": "for db in card resfinder vfdb; do\n  abricate --db ${db} 02_assembly/${SAMPLE}.fna > 04_resistance/${SAMPLE}.${db}.tab\ndone\nabricate --summary 04_resistance/${SAMPLE}.*.tab > 04_resistance/${SAMPLE}.abricate.summary.tab",
+      "python": "for db in ('card', 'resfinder', 'vfdb'):\n    with open(RES_DIR / f'{sample}.{db}.tab', 'w', encoding='utf-8') as fh:\n        subprocess.run(['abricate', '--db', db, str(ASM_DIR / (sample + '.fna'))],\n                       check=True, stdout=fh)"
+    },
+    "params": [
+      { "flag": "--db", "default": "无", "note": "选择数据库；--list 可查看可用库与版本，必须把用了哪些库写进方法" },
+      { "flag": "--minid", "default": "80", "note": "最小 identity（%）；降到 70 会明显增加假阳性，提到 90 以上会漏掉真实的等位变异" },
+      { "flag": "--mincov", "default": "80", "note": "最小覆盖度（%）；调低会让截断的基因片段也进入清单，需要逐条看 %COVERAGE 与比对区域" },
+      { "flag": "--summary", "default": "关闭", "note": "把多个 .tab 合并成基因 × 样本矩阵，是批量比较的入口" },
+      { "flag": "--nopath", "default": "关闭", "note": "输出中不带输入文件路径；用于生成整洁的汇总表，便于跨机器合并" }
+    ],
+    "pitfalls": [
+      "阈值必须写进方法：默认 80% identity / 80% 覆盖度是宽松设置，降到 70% 会显著增加假阳性，提到 90% 以上会漏掉真实的等位变异。不同阈值下的基因清单不可直接比较。",
+      "内置数据库是快照、更新滞后：ABRicate 打包的 card/resfinder 等库版本通常落后官方数年，同一样本用 ABRicate 与直接用 RGI/ResFinder 会得到不同清单，两套结论不能混用。",
+      "一个基因会被多个数据库同时命中，且不同库的命名不一致（同一基因在不同库里有不同别名）。按数据库分别统计会重复计数，跨库合并必须先映射到统一命名（如 ARO）。",
+      "不做点突变检测：ABRicate 只报「存在哪些基因」，gyrA/parC/rpoB/23S rRNA 等突变介导的耐药它看不到，必须用 ResFinder/PointFinder 或 AMRFinderPlus 补上。",
+      "不做 ORF 预测带来两类错误：contig 边缘被截断的基因会以低覆盖率局部命中，而假基因和旁系同源同样会命中。关键命中要结合 %COVERAGE 与组装上下文人工复核。",
+      "基因存在不等于表型耐药：与其他基于数据库的筛查一样，它只说明序列相似，表达、调控与天然耐药机制都不在其判断范围内。"
+    ],
+    "related": [
+      { "id": "res_card_rgi", "note": "针对 CARD 的正式分析工具，带 strict/loose 判定" },
+      { "id": "res_resfinder", "note": "覆盖获得性基因与物种特异点突变，补上 ABRicate 缺失的部分" },
+      { "id": "res_vfdb", "note": "毒力基因的专项注释模块" }
+    ],
+    "docs": [
+      { "label": "第 6 章 功能注释与耐药毒力", "path": "docs/guidebook/06-annotation-resistance-virulence.md" }
+    ]
+  },
+  {
+    "id": "res_resfinder",
+    "name": "耐药基因与突变 (ResFinder / PointFinder)",
+    "category": "annotation-resistance",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics"],
+    "tags": ["耐药", "resfinder", "pointfinder", "点突变", "表型预测"],
+    "summary": "获得性耐药基因加物种特异点突变，并预测表型",
+    "what": [
+      "ResFinder 用 KMA/BLAST 把组装序列或读长比对到 resfinder_db 检出获得性耐药基因；PointFinder 用物种特异的数据库检出染色体点突变（gyrA、parC、rpoB、23S rRNA 等）；DisinFinder 覆盖消毒剂抗性。ResFinder 4 还会基于物种面板给出耐药表型预测（pheno_table），这是它与单纯基因筛查工具最大的区别。",
+      "参数决定清单：默认 identity 阈值 0.8、最小覆盖度 0.6（可用 -t / -l 修改，也可用 CGE_RESFINDER_GENE_ID / CGE_RESFINDER_GENE_COV 环境变量），--acq_overlap 默认 30 nt。PointFinder 必须用 -s 指定物种，而且只支持有限的一组物种（Campylobacter、E. coli、Enterococcus、Klebsiella、M. tuberculosis、N. gonorrhoeae、P. falciparum、Salmonella、S. aureus、H. pylori 等）；加 --ignore_missing_species 会让点突变被静默忽略，结果看起来「没有突变」其实是没查。",
+      "结果边界：ResFinder 的覆盖是「已确证的获得性基因 + 指定物种的点突变」，对新型基因、非收录机制（外排泵过表达、孔蛋白缺失）与未支持物种无能为力。表型预测是基于规则的推断，不能替代药敏实验。"
+    ],
+    "inputs": [
+      { "type": "contigs", "name": "组装序列", "required": true, "note": "-ifa 输入；点突变判定依赖组装质量与覆盖度" },
+      { "type": "clean-reads", "name": "清理后读长（可选）", "required": false, "note": "-ifq 输入：直接比对 reads，可避免组装错误带来的假基因/假突变，但低覆盖度位点会漏检" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "获得性耐药基因表", "ext": ".ResFinder_results_tab.txt", "note": "逐命中的基因、identity 与覆盖度；另有按抗生素类别分组的版本" },
+      { "type": "tsv-table", "name": "点突变结果", "ext": ".PointFinder_results.txt", "note": "染色体突变及其对应的耐药类别；只有指定了受支持物种才有内容" },
+      { "type": "tsv-table", "name": "表型预测表", "ext": ".pheno_table.txt", "note": "基于物种面板的耐药表型推断（含物种特异版本）" },
+      { "type": "log-report", "name": "运行记录与数据库版本", "ext": ".json", "note": "CGE 标准 JSON 含参数与数据库版本，是复现与归档的关键" }
+    ],
+    "provides": [
+      { "tool": "ResFinder", "version": "4.7.x", "access": "cli", "install": "pip", "note": "CGE 工具；需自行准备 resfinder_db / pointfinder_db / disinfinder_db 并记录版本" },
+      { "tool": "PointFinder", "version": "4.7.x", "access": "cli", "install": "pip", "note": "与 ResFinder 同包发布（pip install resfinder），必须用 -s 指定受支持物种" },
+      { "tool": "KMA", "version": "1.4.x", "access": "cli", "install": "conda", "note": "读长与组装比对的后端；BLAST 用于部分比对步骤" }
+    ],
+    "feeds": [
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "合并基因与突变结果，生成样本 × 耐药决定簇矩阵" },
+      { "target": "viz_heatmap", "viaType": "tsv-table", "note": "耐药决定簇存在/缺失热图" },
+      { "target": "comp_gene_presence", "viaType": "tsv-table", "note": "纳入菌株间比较，支持暴发与流行病学分析" },
+      { "target": "wf_reproducibility", "viaType": "log-report", "note": "数据库版本与阈值是结论可复现的前提" }
+    ],
+    "usage": [
+      {
+        "label": "组装序列：获得性基因 + 点突变",
+        "lang": "bash",
+        "code": "python -m resfinder -ifa 02_assembly/${SAMPLE}.fna -o res/${SAMPLE}_resfinder \\\n  -s \"Escherichia coli\" --acquired --point -l 0.6 -t 0.8"
+      },
+      {
+        "label": "读长模式（配对读长）",
+        "lang": "bash",
+        "code": "python -m resfinder -ifq 01_clean/${SAMPLE}_R1.fq.gz 01_clean/${SAMPLE}_R2.fq.gz \\\n  -o res/${SAMPLE}_resfinder_reads -s \"Salmonella\" --acquired --point"
+      },
+      {
+        "label": "更严格的阈值（只看高置信命中）",
+        "lang": "bash",
+        "code": "python -m resfinder -ifa 02_assembly/${SAMPLE}.fna -o res/${SAMPLE}_strict \\\n  -s \"Klebsiella\" --acquired -l 0.9 -t 0.9\n# 修改阈值必须在方法里写明；不同阈值的结果不可直接比较"
+      },
+      {
+        "label": "确认物种被识别（避免点突变被静默忽略）",
+        "lang": "bash",
+        "code": "python -m resfinder -h | sed -n '/species/,/abbreviation/p'\n# 物种名要用完整学名；不要依赖 --ignore_missing_species，它会让点突变静默消失"
+      }
+    ],
+    "recipes": {
+      "bash": "python -m resfinder -ifa 02_assembly/${SAMPLE}.fna -o 04_resistance/${SAMPLE}_resfinder \\\n  -s \"${SPECIES}\" --acquired --point -l 0.6 -t 0.8",
+      "python": "run([\n    'python', '-m', 'resfinder',\n    '-ifa', str(ASM_DIR / (sample + '.fna')),\n    '-o', str(RES_DIR / (sample + '_resfinder')),\n    '-s', SPECIES, '--acquired', '--point', '-l', '0.6', '-t', '0.8',\n])"
+    },
+    "params": [
+      { "flag": "-s / --species", "default": "无", "note": "点突变判定必需；只支持有限物种，非支持物种没有点突变库，写错或缺失会让结果失真" },
+      { "flag": "-t / --threshold", "default": "0.8", "note": "identity 阈值（0–1）；提高会减少假阳性，也会漏掉分歧较大的等位基因" },
+      { "flag": "-l / --min_cov", "default": "0.6", "note": "最小覆盖度（0–1）；默认允许部分命中，判断「完整基因还是片段」要另看比对长度" },
+      { "flag": "--acquired / --point", "default": "都要显式指定", "note": "分别启用获得性基因与点突变分析；只写其中一个会静默缺少另一部分结果" },
+      { "flag": "-ifa / -ifq", "default": "无", "note": "输入组装或读长；两种模式对点突变的敏感度不同，关键位点建议都跑并核对" },
+      { "flag": "--acq_overlap", "default": "30", "note": "允许基因重叠的碱基数；调大能把断裂基因拼回，也可能把相邻基因误合并" },
+      { "flag": "--ignore_missing_species", "default": "关闭", "note": "物种不在支持列表时不报错，但点突变会被静默忽略——除特殊情况外不建议使用" },
+      { "flag": "-u / --unknown_mut", "default": "关闭", "note": "输出数据库中未收录的突变，用于发现潜在的新位点，但需要自行判读" }
+    ],
+    "pitfalls": [
+      "PointFinder 只支持有限的一组物种，且必须用 -s 正确指定：非支持物种没有点突变库。加了 --ignore_missing_species 之后程序不报错，点突变被静默忽略，结果看起来「没有突变」实际是「没有查」。",
+      "默认阈值是 0.8 identity / 0.6 覆盖度，比「完整基因」宽松：低覆盖率命中可能是片段或假基因。跨研究比较前必须确认双方用的是同一组阈值（-t/-l 或对应的环境变量）。",
+      "数据库版本必须记录：resfinder_db / pointfinder_db 持续新增等位基因，同一菌株在不同版本下基因名与数量都会变。输出 JSON 里带数据库版本，归档时要保留。",
+      "与 CARD/RGI 的结果不可互换：ResFinder 偏重已确证的获得性基因与物种特异突变，CARD 覆盖面更广也更激进，同一样本换库会得到不同清单；不要把两个库的阳性结果相加当结论。",
+      "读长模式与组装模式结果可能不一致：点突变需要覆盖度支持，低覆盖度或杂合位点在 reads 模式下会漏检或给出模糊结论；关键位点建议两种模式都跑并逐位点核对。",
+      "表型预测是规则推断：pheno_table 来自物种面板规则，对天然耐药与未收录机制常常不报或误报，不能替代 MIC 测定；把它当药敏结果使用会得出错误结论。"
+    ],
+    "related": [
+      { "id": "res_card_rgi", "note": "另一套耐药数据库与判定逻辑；结论互补但不可互换" },
+      { "id": "res_abricate", "note": "快速多库初筛；不做点突变，需要本模块补足" },
+      { "id": "var_amrfinder", "note": "NCBI 的耐药检出工具，可作第三方交叉验证" }
+    ],
+    "docs": [
+      { "label": "第 6 章 功能注释与耐药毒力", "path": "docs/guidebook/06-annotation-resistance-virulence.md" }
+    ]
+  },
+  {
+    "id": "res_vfdb",
+    "name": "毒力因子注释 (VFDB)",
+    "category": "annotation-resistance",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics", "metagenomics"],
+    "tags": ["毒力", "vfdb", "致病性", "筛查", "比对"],
+    "summary": "比对 VFDB 核心库或全库，筛查毒力相关基因",
+    "what": [
+      "VFDB（Virulence Factors of Bacterial Pathogens）人工整理了细菌毒力因子及其所属的致病机制分类，并提供 core 数据集（setA，经实验验证的毒力因子）与 full 数据集（setB，含同源与推定序列）。本地做注释通常用 ABRicate --db vfdb，或把下载的 VFDB 序列建库后用 BLAST/DIAMOND 比对，输出「命中哪些毒力基因」的清单。",
+      "有三个选择必须在方法里写明：用 core 还是 full、核酸还是蛋白层面比对、identity 与覆盖度阈值。full 库把同源与推定序列也算进来，「毒力基因数量」会系统性高估；跨研究比较前必须确认双方用的是同一套数据集与阈值。",
+      "结果边界要讲清楚：毒力基因的存在不等于致病性。黏附素、分泌系统、铁载体这类条目在非致病菌与共生菌中广泛存在，而且不少条目只是功能未知的同源蛋白。把 VFDB 命中列表当致病性证据是典型的过度解读，必须有表型、动物实验或流行病学证据支持。"
+    ],
+    "inputs": [
+      { "type": "protein-faa", "name": "蛋白序列", "required": true, "note": "蛋白层面比对对移码与假基因更宽容；适合与注释工具的结果配套" },
+      { "type": "contigs", "name": "核酸序列（可选）", "required": false, "note": "核酸层面比对（如 ABRicate）不做基因预测，对移码与截断更敏感" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "毒力基因命中表", "ext": ".vfdb.tsv", "note": "含基因名、VFDB 编号、identity、覆盖度与致病机制分类" },
+      { "type": "tsv-table", "name": "毒力类别统计表", "ext": ".vfdb_category.tsv", "note": "按致病机制（黏附、分泌系统、铁摄取等）汇总，注意计数单位要先定好" },
+      { "type": "log-report", "name": "数据集与参数记录", "ext": ".vfdb.log", "note": "core/full 的选择、阈值与数据库下载日期必须随结果归档" }
+    ],
+    "provides": [
+      { "tool": "ABRicate", "version": "1.0.x", "access": "cli", "install": "conda", "note": "内置 vfdb 库（快照），版本可能与 VFDB 官网当前版本不同" },
+      { "tool": "BLAST+", "version": "2.1x.x", "access": "cli", "install": "conda", "note": "核酸或蛋白比对；自建库时用于人工复核" },
+      { "tool": "DIAMOND", "version": "2.1.x", "access": "cli", "install": "conda", "note": "蛋白层面大规模比对，适合多样本批量筛查" }
+    ],
+    "feeds": [
+      { "target": "comp_gene_presence", "viaType": "tsv-table", "note": "把毒力基因纳入菌株间存在/缺失矩阵" },
+      { "target": "viz_heatmap", "viaType": "tsv-table", "note": "毒力基因谱热图，展示菌株间差异" },
+      { "target": "r_tidyverse", "viaType": "tsv-table", "note": "在 R 里做毒力类别统计与分组比较" }
+    ],
+    "usage": [
+      {
+        "label": "用 ABRicate 跑 core 库（严格阈值）",
+        "lang": "bash",
+        "code": "abricate --db vfdb --minid 90 --mincov 80 02_assembly/${SAMPLE}.fna > res/${SAMPLE}.vfdb.tab"
+      },
+      {
+        "label": "多样本汇总",
+        "lang": "bash",
+        "code": "abricate --summary res/*.vfdb.tab > res/vfdb_matrix.tsv\n# 汇总表只反映「有/无」，阈值与库版本要另附说明"
+      },
+      {
+        "label": "自建 VFDB 库用 DIAMOND 比对（蛋白层面）",
+        "lang": "bash",
+        "code": "diamond makedb --in VFDB_core.faa --db vfdb_core.dmnd --threads ${THREADS}\ndiamond blastp -q anno/${SAMPLE}.faa -d vfdb_core.dmnd -o res/${SAMPLE}.vfdb.m8 \\\n  -f 6 qseqid sseqid pident length qlen slen evalue bitscore \\\n  --max-target-seqs 5 --id 40 -p ${THREADS}"
+      }
+    ],
+    "recipes": {
+      "bash": "abricate --db vfdb --minid 90 --mincov 80 02_assembly/${SAMPLE}.fna \\\n  > 04_resistance/${SAMPLE}.vfdb.tab\ncut -f6,12,15 04_resistance/${SAMPLE}.vfdb.tab | sort -u > 09_results/${SAMPLE}.vf_genes.txt",
+      "python": "with open(RES_DIR / f'{sample}.vfdb.tab', 'w', encoding='utf-8') as fh:\n    subprocess.run(['abricate', '--db', 'vfdb', '--minid', '90', '--mincov', '80',\n                    str(ASM_DIR / (sample + '.fna'))], check=True, stdout=fh)"
+    },
+    "params": [
+      { "flag": "core（setA）vs full（setB）", "default": "按研究目的选择", "note": "core 只含经实验验证的毒力因子；full 含同源与推定序列，用它统计数量会系统性高估，选择必须写进方法" },
+      { "flag": "--minid", "default": "80", "note": "最小 identity；毒力因子同源性差异大，建议提高到 85–90 并做敏感性分析" },
+      { "flag": "--mincov", "default": "80", "note": "最小覆盖度；调低会把截断片段与假基因引入清单" },
+      { "flag": "--max-target-seqs / -k", "default": "5（推荐）", "note": "保留多条命中用于判断基因归属；只取 top1 容易把旁系同源当成目标基因" },
+      { "flag": "-e / --evalue", "default": "0.001（DIAMOND 默认）", "note": "E-value 上限；放宽会引入远缘同源，跨项目比较必须一致" },
+      { "flag": "计数单位", "default": "按基因去重", "note": "VFDB 条目粒度不一致（操纵子 vs 单基因），先定好按什么计数再比较不同基因组" }
+    ],
+    "pitfalls": [
+      "core（setA）与 full（setB）的选择决定结论：full 库含同源与推定序列，用它统计「毒力基因数量」会系统性高估。跨研究比较前先确认数据集一致，并在方法里写明。",
+      "毒力基因不等于致病性：黏附、铁摄取、分泌系统等基因在共生菌与非致病株中普遍存在，很多条目只是与已知毒力因子同源。结论必须结合表型、动物实验或流行病学证据。",
+      "VFDB 的条目粒度不一致：有的条目代表一个操纵子，有的是单个基因。按条目计数会把同一操纵子的多个组分算成多个「毒力因子」，跨基因组比较会出现假差异。",
+      "数据库更新频率低于耐药库：新发现的毒力因子可能长期缺失，阴性结果只能说明「不在当前 VFDB 版本里」，不能说明「没有毒力」。下载日期与版本要记录。",
+      "比对层面会改变清单：核酸比对对移码、截断与假基因敏感，蛋白比对更宽容。两套结果不能混着报告，同一项目内必须固定一种。",
+      "跨库合并时注意命名冲突：VFDB 的基因名与 KEGG/COG/CARD 体系不同，直接按名字合并会让同一基因出现在多个功能类别里；合并前要先建立映射关系。"
+    ],
+    "related": [
+      { "id": "res_abricate", "note": "最常用的 VFDB 筛查入口，同时可扫耐药库" },
+      { "id": "res_card_rgi", "note": "耐药维度的对应分析，两者常一起报告" },
+      { "id": "comp_gene_presence", "note": "把毒力基因结果转成菌株间存在/缺失矩阵" }
+    ],
+    "docs": [
+      { "label": "第 6 章 功能注释与耐药毒力", "path": "docs/guidebook/06-annotation-resistance-virulence.md" }
+    ]
+  },
+  {
+    "id": "res_plasmidfinder",
+    "name": "质粒复制子分型 (PlasmidFinder)",
+    "category": "annotation-resistance",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics", "metagenomics"],
+    "tags": ["质粒", "复制子", "inc分型", "流行病学", "plasmidfinder"],
+    "summary": "检出质粒复制子并给出 Inc 分型，用于质粒流行病学",
+    "what": [
+      "PlasmidFinder 用复制子（replicon）序列识别组装或读长中的质粒类型，给出 Inc 分型（IncF、IncI、IncN、Col 等）以及 identity 与覆盖度。它回答的是「有没有已知复制子、属于哪个不相容群」，是质粒流行病学与接合转移研究的第一步。",
+      "能回答与不能回答必须分清：复制子存在只能说明序列里有这段复制起始区，不能推出质粒的大小、拷贝数、是否完整、是否携带耐药基因，也不能证明它是独立于染色体的自主复制子。要回答质粒结构与内容，需要长读长或完成图组装，或接合转移与 Southern 等实验。",
+      "覆盖范围也有偏向：数据库对肠杆菌科与少数革兰氏阳性菌覆盖较好，其它类群识别率低；短读长组装还常把质粒片段拼进染色体 contig 或产生嵌合 contig，结果与真实的基因组结构不符。因此阴性结果不能当作「没有质粒」。"
+    ],
+    "inputs": [
+      { "type": "contigs", "name": "组装序列", "required": true, "note": "草图或完成图；完成图/长读长组装的结果才适合做结构判断" },
+      { "type": "clean-reads", "name": "清理后读长（可选）", "required": false, "note": "读长模式可绕开组装错误对质粒归属的影响；具体输入形式以官方文档为准" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "复制子命中表", "ext": ".plasmidfinder.tsv", "note": "含复制子名称、Inc 分型、identity、覆盖度与所在 contig" },
+      { "type": "log-report", "name": "运行记录与数据库版本", "ext": ".plasmidfinder.log", "note": "数据库（肠杆菌科/革兰氏阳性等）与阈值必须记录" }
+    ],
+    "provides": [
+      { "tool": "PlasmidFinder", "version": "2.1.x", "access": "cli", "install": "conda", "note": "CGE 工具，也有网页版；需准备对应数据库并记录版本" },
+      { "tool": "KMA", "version": "1.4.x", "access": "cli", "install": "conda", "note": "读长与组装比对后端" },
+      { "tool": "BLAST+", "version": "2.1x.x", "access": "cli", "install": "conda", "note": "部分比对步骤使用；也可用于人工复核命中区域" }
+    ],
+    "feeds": [
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "汇总成样本 × 复制子矩阵" },
+      { "target": "comp_gene_presence", "viaType": "tsv-table", "note": "把复制子分型纳入菌株间比较，支持质粒流行分析" },
+      { "target": "viz_heatmap", "viaType": "tsv-table", "note": "复制子分型热图，展示菌株间质粒谱差异" }
+    ],
+    "usage": [
+      {
+        "label": "组装序列分析",
+        "lang": "bash",
+        "code": "python -m plasmidfinder -i 02_assembly/${SAMPLE}.fna -o res/${SAMPLE}_pf -l 0.6 -t 0.8\n# 具体参数名与默认值以 CGE 的 PlasmidFinder 文档为准"
+      },
+      {
+        "label": "用 ABRicate 做交叉验证",
+        "lang": "bash",
+        "code": "abricate --db plasmidfinder 02_assembly/${SAMPLE}.fna > res/${SAMPLE}.pf.tab\n# 两个工具的数据库版本不同，命中差异需要人工判读"
+      },
+      {
+        "label": "只保留高置信命中（完整复制子）",
+        "lang": "bash",
+        "code": "awk -F'\\t' 'NR==1 || ($5>=90 && $6>=90)' res/${SAMPLE}_pf/results_tab.txt > res/${SAMPLE}.pf_strict.tsv\n# 列序号依你自己的输出而定；先 head 看一眼表头再写脚本"
+      }
+    ],
+    "recipes": {
+      "bash": "python -m plasmidfinder -i 02_assembly/${SAMPLE}.fna -o 04_resistance/${SAMPLE}_pf -l 0.6 -t 0.8",
+      "python": "run([\n    'python', '-m', 'plasmidfinder',\n    '-i', str(ASM_DIR / (sample + '.fna')),\n    '-o', str(RES_DIR / (sample + '_pf')),\n    '-l', '0.6', '-t', '0.8',\n])"
+    },
+    "params": [
+      { "flag": "-t / --threshold", "default": "0.8", "note": "identity 阈值；放宽会增加染色体上复制子样序列的假阳性" },
+      { "flag": "-l / --min_cov", "default": "0.6", "note": "最小覆盖度；低覆盖命中常来自截断的复制子片段，判读时要看所在 contig" },
+      { "flag": "-p / --db_path", "default": "无", "note": "数据库路径；不同数据库（肠杆菌科、革兰氏阳性等）针对的类群不同，用错会得到全阴性" },
+      { "flag": "-o", "default": "当前目录", "note": "输出目录；固定成每样本一个目录便于批量汇总" },
+      { "flag": "输入类型（组装 / 读长）", "default": "组装", "note": "读长模式可避开组装错误，但无法给出质粒的结构与长度信息" }
+    ],
+    "pitfalls": [
+      "复制子不等于完整质粒：检出 IncFII 只说明存在该复制子序列，无法推断质粒大小、拷贝数或携带的耐药基因。质粒结构必须靠长读长/完成图组装或实验验证。",
+      "数据库覆盖偏科：以肠杆菌科为主，其它类群（尤其革兰氏阳性与环境菌）识别率低，阴性结果不能作为「没有质粒」的证据；用错数据库会整批全阴性。",
+      "短读长组装会把质粒片段拼进染色体或产生嵌合 contig：复制子检测结果与真实的质粒数目、归属可能不符。要判断质粒结构必须用完成图或长读长组装。",
+      "多复制子质粒会给出多条命中：一个质粒可携带多个不相容群的复制子，按「每条命中一个质粒」计数会高估质粒数量；应先按 contig 归并。",
+      "同一 Inc 型内部差异极大：IncF 这类分型不足以做溯源，菌株或质粒层面的比较需要质粒 MLST（pMLST）或全序列比对。",
+      "阈值与数据库版本要一起记录：放宽 identity/覆盖度会引入染色体上的复制子样序列，不同版本数据库的复制子集合也不同，两者都会改变样本间的比较结论。"
+    ],
+    "related": [
+      { "id": "res_mobilome", "note": "从可移动元件角度补充质粒与整合元件的证据" },
+      { "id": "res_abricate", "note": "内置 plasmidfinder 库，可做快速筛查与交叉验证" },
+      { "id": "comp_gene_presence", "note": "把复制子谱转成菌株间矩阵，支持流行病学比较" }
+    ],
+    "docs": [
+      { "label": "第 6 章 功能注释与耐药毒力", "path": "docs/guidebook/06-annotation-resistance-virulence.md" }
+    ]
+  },
+  {
+    "id": "res_mobilome",
+    "name": "可移动元件注释 (mobileOG-db)",
+    "category": "annotation-resistance",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "active",
+    "domains": ["genomics", "metagenomics"],
+    "tags": ["可移动元件", "mge", "mobileog", "接合", "整合酶"],
+    "summary": "用 mobileOG-db 把蛋白归入移动元件的功能类别",
+    "what": [
+      "mobileOG-db 是人工整理的移动遗传元件（MGE）蛋白家族库，按功能类别组织（整合/切除、复制/重组/修复、接合转移、稳定性与防御等），并提供 DIAMOND 序列库与 beatrix HMM 版本。把基因组或宏基因组的蛋白比对上去，就能得到「样本里存在哪些 MGE 相关功能」的清单，是质粒、前噬菌体、转座子与整合元件研究的公共参照，也常用来把耐药基因放回可移动性的背景里解读。",
+      "方法选择会改变结果：DIAMOND 序列比对与 beatrix（HMM）的敏感度不同，HMM 能检出更远缘的家族，同时也会带来更多低置信命中。用了哪个库、哪个版本、什么阈值，都必须写进方法。mobileOG-db 的类别是多标签结构，同一蛋白可能归入多个类别，统计前要先按 ORF 去重。",
+      "结果边界：这类注释是序列相似性证据。检出整合酶、转座酶并不等于该区域真的能移动，也不等于发生过水平转移——宿主基因组里有大量同源的解旋酶与重组酶。判断 MGE 边界与转移事件，需要基因组上下文（侧翼序列、tRNA 位点、GC 异常）或实验证据。"
+    ],
+    "inputs": [
+      { "type": "protein-faa", "name": "蛋白序列", "required": true, "note": "通常来自 Prokka/Bakta/Prodigal；MGE 注释是蛋白层面的比对" },
+      { "type": "contigs", "name": "核酸序列（可选）", "required": false, "note": "用于把命中回贴到基因组坐标、判断元件边界与侧翼基因" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "MGE 注释明细", "ext": ".mobileog.tsv", "note": "逐命中的 mobileOG 条目、功能类别、identity、覆盖度与 E-value" },
+      { "type": "abundance-table", "name": "功能类别 × 样本矩阵", "ext": ".mobileog_matrix.tsv", "note": "按 ORF 去重后统计；官方仓库提供 mobileOG-to-matrix 类脚本（以官方仓库为准）" },
+      { "type": "log-report", "name": "版本与阈值记录", "ext": ".mobileog.log", "note": "库版本（如 1.6 / beatrix）与方法选择必须随结果归档" }
+    ],
+    "provides": [
+      { "tool": "DIAMOND", "version": "2.1.x", "access": "cli", "install": "conda", "note": "序列比对路线，速度快、适合大样本" },
+      { "tool": "HMMER", "version": "3.4.x", "access": "cli", "install": "conda", "note": "beatrix HMM 路线，对远缘同源更敏感但也更易出现低置信命中" },
+      { "tool": "mobileOG-db", "version": "1.6.x", "access": "bundled", "note": "人工整理的 MGE 蛋白家族库，按类别组织；版本与下载日期必须记录" }
+    ],
+    "feeds": [
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "汇总成类别 × 样本矩阵，供统计与比较" },
+      { "target": "viz_composition_bar", "viaType": "abundance-table", "note": "把 MGE 功能类别构成画成组成图" },
+      { "target": "comp_gene_presence", "viaType": "tsv-table", "note": "把 MGE 基因纳入菌株间存在/缺失矩阵" }
+    ],
+    "usage": [
+      {
+        "label": "建库并用 DIAMOND 比对",
+        "lang": "bash",
+        "code": "diamond makedb --in mobileOG-db-beatrix.faa --db mobileOG.dmnd --threads ${THREADS}\ndiamond blastp -q anno/${SAMPLE}.faa -d mobileOG.dmnd -o res/${SAMPLE}.mge.m8 \\\n  -f 6 qseqid sseqid pident length qlen slen evalue bitscore \\\n  --max-target-seqs 1 -p ${THREADS}"
+      },
+      {
+        "label": "beatrix HMM 路线（更敏感）",
+        "lang": "bash",
+        "code": "hmmsearch --cut_ga --domtblout res/${SAMPLE}.mge.domtbl \\\n  mobileOG.hmm anno/${SAMPLE}.faa > /dev/null\n# 是否提供 GA 阈值及 HMM 文件名以官方仓库为准"
+      },
+      {
+        "label": "转成类别 × 样本矩阵",
+        "lang": "bash",
+        "code": "mobileOG-to-matrix res/${SAMPLE}.mge.m8 metadata.tsv > res/${SAMPLE}.mge_matrix.tsv\n# 脚本名与输入格式以 mobileOG-db 官方仓库为准"
+      }
+    ],
+    "recipes": {
+      "bash": "diamond blastp -q 03_annotation/${SAMPLE}.faa -d ${MOBILEOG_DMND} \\\n  -o 04_resistance/${SAMPLE}.mge.m8 \\\n  -f 6 qseqid sseqid pident length qlen slen evalue bitscore \\\n  --max-target-seqs 1 -p ${THREADS}",
+      "python": "run([\n    'diamond', 'blastp',\n    '-q', str(ANNO_DIR / (sample + '.faa')),\n    '-d', str(MOBILEOG_DMND),\n    '-o', str(RES_DIR / (sample + '.mge.m8')),\n    '-f', '6', 'qseqid', 'sseqid', 'pident', 'length', 'qlen', 'slen', 'evalue', 'bitscore',\n    '--max-target-seqs', '1', '-p', str(THREADS),\n])"
+    },
+    "params": [
+      { "flag": "--max-target-seqs / -k", "default": "1（推荐 1–5）", "note": "保留命中数；只取 1 条便于统计，保留多条便于判断是否命中多个类别" },
+      { "flag": "-e / --evalue", "default": "0.001（DIAMOND 默认）", "note": "E-value 上限；放宽会引入宿主同源基因（重组酶、解旋酶）造成的假阳性" },
+      { "flag": "--id", "default": "0（工具默认）", "note": "最小 identity；MGE 家族内部差异较大，通常设 30–40 并在方法里写明" },
+      { "flag": "--query-cover", "default": "0（工具默认）", "note": "查询覆盖度门槛；设 50 以上可排除只命中一小段的假阳性（参数名以官方文档为准）" },
+      { "flag": "--cut_ga（HMM 路线）", "default": "关闭", "note": "使用库自带的 curated 阈值；不开启时需自己定 E-value，结果差异明显" },
+      { "flag": "库版本（1.6 / beatrix）", "default": "无", "note": "类别定义与条目集合随版本变化；版本与下载日期必须随结果记录" }
+    ],
+    "pitfalls": [
+      "MGE 蛋白同源性广泛存在：整合酶、重组酶、解旋酶在宿主基因组里也有大量同源基因，单凭命中不能判定可移动元件。必须结合侧翼序列、tRNA 附着位点、GC 异常等基因组上下文。",
+      "数据库版本与类别体系会变（如 1.6 / beatrix）：类别定义更新会改变统计结果，跨项目比较前必须统一版本并记录。",
+      "一个蛋白常命中多个类别或条目：按类别计数会重复，统计前先按 ORF 去重，再定「主类别归属」规则（例如取 bitscore 最高的条目）。",
+      "DIAMOND 与 beatrix（HMM）结果不同：HMM 更敏感但假阳性更多。两种结果不能混着报，研究之间比较前先确认方法与阈值一致。",
+      "碎片化组装会切碎可移动元件：完整元件常跨越多个 contig，检出多个标志基因不等于存在一个完整元件或一个接合质粒，宏基因组上尤其容易高估。",
+      "检出 MGE 不等于发生过水平转移：转移证据需要系统发育冲突、时间序列、接合实验或完整的质粒/噬菌体序列支持。把 MGE 注释直接当转移结论是常见的过度解读。"
+    ],
+    "related": [
+      { "id": "res_plasmidfinder", "note": "复制子分型与 MGE 功能类别互补，可一起解读质粒背景" },
+      { "id": "res_card_rgi", "note": "把耐药基因与可移动性证据放在一起，判断传播风险" },
+      { "id": "phage_genomad", "note": "识别病毒与质粒序列，为 MGE 注释提供序列层面的分区" }
+    ],
+    "docs": [
+      { "label": "第 6 章 功能注释与耐药毒力", "path": "docs/guidebook/06-annotation-resistance-virulence.md" }
+    ]
+  }
+]

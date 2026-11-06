@@ -1,0 +1,328 @@
+[
+  {
+    "id": "phage_phaster",
+    "name": "前噬菌体鉴定 (PHASTER / PHASTEST)",
+    "category": "annotation-phage",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "legacy",
+    "domains": ["genomics", "metagenomics"],
+    "tags": ["前噬菌体", "phaster", "phastest", "溶原", "网页服务"],
+    "summary": "在细菌基因组里定位前噬菌体区域并评估完整度",
+    "what": [
+      "PHASTER（及其继任服务 PHASTEST）在细菌基因组或 contig 上搜索前噬菌体区域，输出区域坐标、完整度判定（intact / questionable / incomplete）、附着位点、GC 含量与区域内的基因注释。它是回答「这个基因组里有没有前噬菌体、在哪儿」最常用的入口，也是溶原性噬菌体研究的常见第一步。",
+      "它是网页服务，这一点决定用法：没有官方本地版本，需要把序列上传到服务器，单次提交有数量与大小限制而且需要排队，服务端更新也不通知用户。因此它不适合几百个基因组的批量自动化——批量项目应当用本地工具（geNomad 识别病毒与前病毒、CheckV 评估完整度），PHASTER/PHASTEST 用于重点样本的人工核对与交叉验证。",
+      "结果解读要谨慎：完整度判定基于噬菌体标志基因与区域长度特征，incomplete 区域很多只是降解残余片段；区域边界是预测值，attP 附近的宿主基因可能被划进来或漏掉。发表时还需要注意 PHASTER 与 PHASTEST 对同一输入的结果可能不同，必须写明用的哪个服务以及访问日期。"
+    ],
+    "inputs": [
+      { "type": "contigs", "name": "细菌基因组 / contig 序列", "required": true, "note": "FASTA；完成图结果最可靠，碎片化草图会把前噬菌体区域截断在 contig 边缘" }
+    ],
+    "outputs": [
+      { "type": "contigs", "name": "前噬菌体区域序列", "ext": ".phage.fasta", "note": "从服务页面下载的区域核酸序列，可交给 CheckV/geNomad 做进一步评估" },
+      { "type": "tsv-table", "name": "区域汇总表", "ext": ".regions.tsv", "note": "区域编号、坐标、长度、完整度判定与 GC 含量；建议保存为本地表格" },
+      { "type": "report", "name": "交互式结果报告", "ext": ".html", "note": "服务生成的页面/打包结果，属于外部产物，需连同访问日期一起归档" }
+    ],
+    "provides": [
+      { "tool": "PHASTER / PHASTEST (web service)", "version": "2023.x", "access": "bundled", "note": "网页服务，无官方本地安装包，也没有可核对的软件版本号；这里的年份系列仅用于标记使用时间点，实际以访问日期为准" }
+    ],
+    "feeds": [
+      { "target": "phage_checkv", "viaType": "contigs", "note": "对预测出的前噬菌体区域做完整度与污染评估" },
+      { "target": "phage_genomad", "viaType": "contigs", "note": "用独立工具交叉验证区域是否为病毒来源" },
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "把区域表整理成样本 × 区域矩阵，便于统计 intact/questionable 数量" }
+    ],
+    "usage": [
+      {
+        "label": "网页提交流程（无本地命令）",
+        "lang": "bash",
+        "code": "# 1) 上传 FASTA 到 PHASTER / PHASTEST 页面并提交\n# 2) 等待队列完成（大批量会明显变慢）\n# 3) 下载区域汇总表、区域序列与注释结果\n# 4) 记录：服务名、访问日期、输入文件 md5、各完整度类别的区域数"
+      },
+      {
+        "label": "批量项目的本地替代路线（推荐）",
+        "lang": "bash",
+        "code": "# 数百个基因组不要排队等网页服务，改用本地工具：\ngenomad end-to-end --cleanup input.fna genomad_out genomad_db\ncheckv end_to_end genomad_out/input_virus.fna checkv_out -t 16\n# 只在关键样本上用 PHASTER/PHASTEST 做人工核对与对照"
+      },
+      {
+        "label": "结果记录模板（网页服务可复现性的最低要求）",
+        "lang": "bash",
+        "code": "cat >> 10_logs/${SAMPLE}.phaster_record.txt <<'EOF'\nservice: PHASTEST\naccess_date: YYYY-MM-DD\ninput_md5: <md5>\nregions: intact=N questionable=N incomplete=N\nEOF"
+      }
+    ],
+    "recipes": {
+      "bash": "md5sum 02_assembly/${SAMPLE}.fna > 10_logs/${SAMPLE}.phaster_input.md5\nprintf 'service: PHASTEST\\naccess_date: %s\\ninput_md5: %s\\n' \"$(date +%F)\" \\\n  \"$(cut -d' ' -f1 10_logs/${SAMPLE}.phaster_input.md5)\" > 10_logs/${SAMPLE}.phaster_record.txt",
+      "python": "record = LOG_DIR / (sample + '.phaster_record.txt')\nrecord.write_text(\n    'service: PHASTEST\\naccess_date: ' + date.today().isoformat()\n    + '\\ninput_fasta: ' + str(ASM_DIR / (sample + '.fna')) + '\\n',\n    encoding='utf-8',\n)"
+    },
+    "params": [
+      { "flag": "输入序列完整性", "default": "推荐完成图", "note": "碎片化草图会把前噬菌体区域截断在 contig 边缘，得到假的 incomplete；同一菌株的完成图与草图结果差异明显" },
+      { "flag": "单次提交规模", "default": "以服务页面上的限制为准", "note": "网页服务对提交数量与总长度有限制并需要排队；大批量必须走本地工具" },
+      { "flag": "完整度判定 (intact / questionable / incomplete)", "default": "全部保留", "note": "常用分析只取 intact 与 questionable；incomplete 多为残余片段，与前两者合并统计会高估前噬菌体数量" },
+      { "flag": "服务选择 (PHASTER / PHASTEST)", "default": "以官方服务页面为准", "note": "两个服务对同一输入的区域与完整度判定可能不同；方法学里必须写明用的哪个服务与访问日期" }
+    ],
+    "pitfalls": [
+      "它是网页服务，不适合批量自动化：没有本地版本、提交有上限、需要排队、结果依赖服务器状态。几百个基因组的项目应改用 geNomad + CheckV 等本地工具，PHASTER/PHASTEST 只用于重点样本的人工确认。",
+      "服务版本不可控：PHASTER 与 PHASTEST 对同一输入的区域划分与完整度判定可能不同，服务端更新也不会通知用户。方法学里必须写明服务名与访问日期，否则结果无法复现。",
+      "incomplete 区域不应计入前噬菌体数量：它们多数是降解后的残余片段。不区分 intact / questionable / incomplete 的「前噬菌体数量」在跨研究比较中几乎没有意义。",
+      "输入组装质量直接决定结果：草图会把前噬菌体区域截断在 contig 边缘，产生假的 incomplete 判定；关键区域要用完成图或长读长组装验证。",
+      "区域边界是预测值：attP/附着位点附近的宿主基因可能被包含或漏掉。基于边界设计引物或做敲除前，必须人工核对序列与注释。",
+      "它不预测宿主范围，也不判断溶原/裂解活性：宿主预测要另做（如 iPHoP、CHERRY 等），活性判断需要诱导实验或转录证据。把 PHASTER 结果当「这个噬菌体能感染谁」是误用。"
+    ],
+    "related": [
+      { "id": "phage_genomad", "note": "可本地批量运行的病毒/前病毒识别工具，是网页服务的替代路线" },
+      { "id": "phage_checkv", "note": "对预测出的区域做完整度与污染评估" },
+      { "id": "meta_virome", "note": "宏基因组/病毒组层面的病毒识别与丰度分析" }
+    ],
+    "docs": [
+      { "label": "第 6 章 功能注释与可移动元件", "path": "docs/guidebook/06-annotation-resistance-virulence.md" },
+      { "label": "第 8 章 宏基因组与微生物组", "path": "docs/guidebook/08-metagenome-microbiome.md" }
+    ]
+  },
+  {
+    "id": "phage_checkv",
+    "name": "病毒序列鉴定与质量评估 (CheckV)",
+    "category": "annotation-phage",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics", "metagenomics"],
+    "tags": ["病毒", "完整度", "checkv", "前病毒", "质量分级"],
+    "summary": "评估单 contig 病毒基因组的完整度与污染",
+    "what": [
+      "CheckV 针对「单 contig 病毒基因组」做三件事：识别整合前病毒并切掉两侧宿主区、用 AAI（与库中近缘基因组的平均氨基酸一致性）与病毒 HMM 估计完整度、用末端重复（DTR/ITR）等信号判断是否闭环，最后把每条序列分为 Complete、High-quality（>90%）、Medium-quality（50–90%）、Low-quality（<50%）与 Not-determined，并汇总在 quality_summary.tsv。",
+      "它不做病毒识别：CheckV 假设输入就是病毒序列，对非病毒序列同样会给出（偏低或 Not-determined 的）质量判定。官方明确建议先用 geNomad 做病毒/质粒识别，再用 CheckV 评估质量；把整个宏基因组组装直接丢给 CheckV 是最常见的误用，既浪费时间又得到一堆无意义结果。",
+      "结果怎么用：AAI 法给出的完整度在 confidence 为 high/medium 时可信，HMM 法给的是区间（且是下界性质），Not-determined 通常意味着序列太短、病毒太新（与库差异大）或根本不是病毒。质量分级直接决定下游能做什么——描述新病毒科通常要求 Complete/High-quality，做基因与功能统计可以放宽，但要意识到低质量序列的基因含量并不完整。"
+    ],
+    "inputs": [
+      { "type": "contigs", "name": "已识别的病毒 / 前病毒 contig", "required": true, "note": "应当是 geNomad 等工具识别后的病毒序列，而不是整个宏基因组组装" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "质量汇总表", "ext": "quality_summary.tsv", "note": "核心结果：checkv_quality、completeness、completeness_method、contamination、provirus 等列" },
+      { "type": "tsv-table", "name": "完整度与污染明细", "ext": "completeness.tsv / contamination.tsv", "note": "含 AAI 命中、置信度与宿主区边界，用于判读汇总表的结论" },
+      { "type": "contigs", "name": "病毒与前病毒序列", "ext": "viruses.fna / proviruses.fna", "note": "前病毒会切掉两侧宿主区；两者长度与坐标不同，下游必须明确用哪个" }
+    ],
+    "provides": [
+      { "tool": "CheckV", "version": "1.0.x", "access": "cli", "install": "conda", "note": "数据库需用 checkv download_database 单独下载，并用 CHECKVDB 或 -d 指定" },
+      { "tool": "DIAMOND", "version": "2.2.x", "access": "cli", "install": "conda", "note": "AAI 比对后端（官方测试版本）；版本不匹配会导致报错或结果差异" },
+      { "tool": "HMMER", "version": "3.3.x", "access": "cli", "install": "conda", "note": "病毒基因的 HMM 判定（官方测试版本）" }
+    ],
+    "feeds": [
+      { "target": "meta_virome", "viaType": "contigs", "note": "把通过质量筛选的病毒序列交给病毒组分析做丰度与组成" },
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "按完整度与污染度做筛选与统计" },
+      { "target": "viz_composition_bar", "viaType": "tsv-table", "note": "画出各质量级别的序列数量构成" }
+    ],
+    "usage": [
+      {
+        "label": "下载数据库并运行完整流程",
+        "lang": "bash",
+        "code": "checkv download_database ./checkv_db\nexport CHECKVDB=$(pwd)/checkv_db\ncheckv end_to_end viruses.fna checkv_out -t ${THREADS}"
+      },
+      {
+        "label": "只估计完整度（复用已有中间结果时）",
+        "lang": "bash",
+        "code": "checkv completeness viruses.fna checkv_out -t ${THREADS}"
+      },
+      {
+        "label": "基于已有输出重新生成质量汇总",
+        "lang": "bash",
+        "code": "checkv quality_summary viruses.fna checkv_out\n# 分步命令不会自动清理临时文件，需要自己管理输出目录"
+      },
+      {
+        "label": "按质量级别筛选高置信病毒序列",
+        "lang": "bash",
+        "code": "awk -F'\\t' 'NR==1 || $8==\"Complete\" || $8==\"High-quality\"' \\\n  checkv_out/quality_summary.tsv > checkv_out/hq_summary.tsv\n# 列序号以你的版本为准，先 head -1 看表头再写脚本"
+      }
+    ],
+    "recipes": {
+      "bash": "checkv end_to_end 05_metagenome/${SAMPLE}_virus.fna 07_virome/${SAMPLE}_checkv -t ${THREADS}\nawk -F'\\t' 'NR==1 || $8==\"Complete\" || $8==\"High-quality\"' \\\n  07_virome/${SAMPLE}_checkv/quality_summary.tsv > 09_results/${SAMPLE}.viral_hq.tsv",
+      "python": "run([\n    'checkv', 'end_to_end',\n    str(VIRUS_DIR / (sample + '_virus.fna')),\n    str(CHECKV_DIR / (sample + '_checkv')),\n    '-t', str(THREADS),\n])"
+    },
+    "params": [
+      { "flag": "CHECKVDB / -d", "default": "无", "note": "数据库路径；库频繁更新，必须记录版本（官方在 portal.nersc.gov/CheckV 提供历史版本归档，但需要手动建 DIAMOND 库）" },
+      { "flag": "-t", "default": "1", "note": "线程数；运行时间主要花在 DIAMOND 与 HMM 搜索上，批量运行务必显式设置" },
+      { "flag": "end_to_end 与分步命令", "default": "end_to_end", "note": "只有需要复用中间结果时才分步跑 contamination/completeness/complete_genomes；分步不会自动清理临时文件" },
+      { "flag": "质量分级阈值", "default": "Complete / >90% / 50–90% / <50% / Not-determined", "note": "阈值由工具固定；下游按用途选择保留哪些级别，并在方法里写明" },
+      { "flag": "输出序列文件的选择", "default": "viruses.fna", "note": "前病毒分析用 proviruses.fna（已切除宿主区）；两者混用会把宿主基因算进病毒组" }
+    ],
+    "pitfalls": [
+      "CheckV 不做病毒识别：输入应当是已识别出的病毒 contig（例如 geNomad 的 virus.fna）。把全宏基因组组装丢进去会为所有细菌 contig 白跑一遍，并得到大量低质量与 Not-determined 结果。",
+      "Not-determined 不等于「质量差」：常见原因是序列太短、病毒太新（与库同源性低）或根本不是病毒。对长度足够的序列（例如 >30 kb）可以保留分析，但要在文中说明这一处理。",
+      "完整度的两种方法含义不同：AAI 法给单值，只有 confidence 为 high/medium 时才可信；HMM 法给的是区间且偏下界，把区间上界当完整度会系统性高估。",
+      "前病毒要用对输出文件：CheckV 会切除前病毒两侧宿主区，proviruses.fna 与 viruses.fna 的长度和坐标不同。丰度与基因统计混用两者会把宿主基因算进病毒组；另外如果上游工具（如 VirSorter/VIBRANT）已经切掉宿主区，CheckV 就检测不到前病毒。",
+      "高完整度不代表无污染：质量分级只看完整度，宿主污染不计入分级（官方 FAQ 明确说明）。前病毒或嵌合序列的 High-quality 需要结合 contamination 列一起判读。",
+      "数据库版本要锁定：CheckV 库频繁更新，完整度与质量分级会随库变化；官方提供历史版本归档但需要手动重建 DIAMOND 库。另外病毒 MAG 需要先把 contig 拼接成单条序列再评估，否则完整度会被严重低估。"
+    ],
+    "related": [
+      { "id": "phage_genomad", "note": "上游的病毒/质粒识别工具，两者的串联是标准做法" },
+      { "id": "phage_phaster", "note": "网页版前噬菌体鉴定，可与本地结果交叉验证" },
+      { "id": "meta_virome", "note": "病毒组的丰度与组成分析，消费 CheckV 筛选后的序列" }
+    ],
+    "docs": [
+      { "label": "第 6 章 功能注释与可移动元件", "path": "docs/guidebook/06-annotation-resistance-virulence.md" },
+      { "label": "第 8 章 宏基因组与微生物组", "path": "docs/guidebook/08-metagenome-microbiome.md" }
+    ]
+  },
+  {
+    "id": "phage_genomad",
+    "name": "病毒与质粒序列识别 (geNomad)",
+    "category": "annotation-phage",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "active",
+    "domains": ["genomics", "metagenomics"],
+    "tags": ["病毒识别", "质粒", "genomad", "前病毒", "ictv"],
+    "summary": "从基因组或宏基因组识别病毒与质粒并做分类",
+    "what": [
+      "geNomad 用「标志基因 + 神经网络」的混合框架，从核酸序列（单菌基因组、宏基因组、宏转录组）里识别病毒与前病毒、以及质粒，并对病毒做 ICTV 体系的分类学归属（通常到科级），同时对识别出的基因做功能注释（包含 CONJscan 接合相关注释与 AMRFinder 来源的耐药注释）。输出 virus.fna、virus_summary.tsv、virus_genes.tsv 与对应的质粒文件。",
+      "结果怎么读：virus_score 与 n_hallmarks（标志基因数）要一起看；默认已带后处理过滤（例如 score ≥ 0.7，短于 2500 bp 的序列要求至少一个 hallmark），可以用 --relaxed 放宽或 --conservative 收紧——用哪个档必须在方法里写明，否则「病毒数量」不可比。taxonomy 按 ICTV 分类体系赋值、只能到科级，而且会随数据库版本更新而变化。",
+      "命名里提到「宿主预测」，但 geNomad 本身不做宿主预测：它提供的是病毒/质粒识别、分类与基因注释（质粒表里有 conjugation_genes 与 amr_genes 两列，用于提示可能的接合与耐药功能）。要预测宿主（iPHoP、CHERRY、WIsH 等）或判断质粒是否可接合（CONJscan）都需要另外的工具；把 geNomad 的输出当宿主预测结果是误用。"
+    ],
+    "inputs": [
+      { "type": "contigs", "name": "核酸序列（基因组 / 宏基因组组装）", "required": true, "note": "FASTA 或压缩 FASTA；单菌基因组、MAG、宏基因组组装都可以，不能输入蛋白序列" }
+    ],
+    "outputs": [
+      { "type": "contigs", "name": "识别出的病毒序列", "ext": "_virus.fna", "note": "前病毒会被自动切除宿主区；这是 CheckV 等下游工具的标准输入" },
+      { "type": "protein-faa", "name": "病毒与质粒蛋白序列", "ext": "_virus_proteins.faa / _plasmid_proteins.faa", "note": "可用于进一步的功能注释" },
+      { "type": "tsv-table", "name": "病毒与质粒汇总表", "ext": "_virus_summary.tsv / _plasmid_summary.tsv", "note": "含拓扑（DTR/ITR/Provirus）、坐标、score、hallmark 数与 taxonomy 等列" },
+      { "type": "tsv-table", "name": "基因注释表", "ext": "_virus_genes.tsv", "note": "含标志基因、CONJscan 与 AMR 注释列；注意标志库的设计目的是分类而非详尽功能注释" }
+    ],
+    "provides": [
+      { "tool": "geNomad", "version": "1.7.x", "access": "cli", "install": "conda", "note": "Python 实现；数据库需用 genomad download-database 获取（genomad_db）" },
+      { "tool": "MMseqs2", "version": "15.x", "access": "cli", "install": "conda", "note": "标志基因搜索后端；采用 Release NN-hash 编号，实际以安装的 release 为准" }
+    ],
+    "feeds": [
+      { "target": "phage_checkv", "viaType": "contigs", "note": "对识别出的病毒序列做完整度与质量评估（标准串联流程）" },
+      { "target": "meta_virome", "viaType": "contigs", "note": "进入病毒组的丰度与组成分析" },
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "筛选与整理汇总表，生成样本 × 病毒矩阵" },
+      { "target": "viz_composition_bar", "viaType": "tsv-table", "note": "按 taxonomy 或拓扑类型画组成图" }
+    ],
+    "usage": [
+      {
+        "label": "下载数据库并端到端运行",
+        "lang": "bash",
+        "code": "genomad download-database .\ngenomad end-to-end --cleanup --splits ${SPLITS} input.fna genomad_out genomad_db\n# --splits 用于降低内存峰值；内存充足的服务器可以不拆"
+      },
+      {
+        "label": "保守模式（减少假阳性）",
+        "lang": "bash",
+        "code": "genomad end-to-end --conservative --cleanup input.fna genomad_out genomad_db\n# 与默认、--relaxed 的结果不可直接比较；方法里必须写明用了哪一档"
+      },
+      {
+        "label": "分模块运行（复用中间结果）",
+        "lang": "bash",
+        "code": "genomad annotate input.fna genomad_out genomad_db\ngenomad find-proviruses input.fna genomad_out genomad_db\ngenomad marker-classification input.fna genomad_out genomad_db\ngenomad nn-classification input.fna genomad_out\ngenomad aggregated-classification input.fna genomad_out\ngenomad summary input.fna genomad_out"
+      },
+      {
+        "label": "检查输出文件名与关键列",
+        "lang": "bash",
+        "code": "ls genomad_out/*_summary/\nhead -2 genomad_out/*_summary/*_virus_summary.tsv | cut -f1,3,6,7,9,11\n# 关注 topology、virus_score、n_hallmarks 与 taxonomy"
+      }
+    ],
+    "recipes": {
+      "bash": "genomad end-to-end --cleanup --splits ${SPLITS} 05_metagenome/${SAMPLE}.contigs.fasta \\\n  07_virome/${SAMPLE}_genomad ${GENOMAD_DB} -t ${THREADS}",
+      "python": "run([\n    'genomad', 'end-to-end', '--cleanup', '--splits', str(SPLITS),\n    str(META_DIR / (sample + '.contigs.fasta')),\n    str(VIROME_DIR / (sample + '_genomad')),\n    str(GENOMAD_DB), '-t', str(THREADS),\n])"
+    },
+    "params": [
+      { "flag": "--relaxed / --conservative", "default": "默认后处理过滤", "note": "过滤强度决定「病毒数量」；默认要求 score 达到阈值、短序列还要有 hallmark，改档必须写进方法" },
+      { "flag": "--splits", "default": "不分块", "note": "把标志基因搜索拆成多块以降低内存峰值；内存充足的服务器上拆块反而变慢" },
+      { "flag": "--cleanup", "default": "关闭", "note": "删除中间文件节省空间；调试或要复用中间结果时不要开" },
+      { "flag": "--enable-score-calibration", "default": "关闭", "note": "把原始 score 校准为概率并给出 FDR 列；需要额外流程与时间，用于需要严格假阳性控制的场景" },
+      { "flag": "数据库（genomad_db）", "default": "无", "note": "版本随 ICTV 分类体系与标志库更新；taxonomy 结果会变，必须记录数据库下载日期" },
+      { "flag": "-t / --threads", "default": "自动", "note": "线程数；大宏基因组上主要开销在 MMseqs2 搜索" }
+    ],
+    "pitfalls": [
+      "geNomad 不做宿主预测：这是最常见的误用。它输出的是病毒/质粒识别、ICTV 分类与基因注释；宿主范围预测需要 iPHoP、CHERRY、WIsH 等工具，质粒是否可接合需要 CONJscan 等专门分析。",
+      "过滤档位直接决定病毒数量：默认、--relaxed 与 --conservative 的差异可以很大，跨研究比较前必须确认双方用的是同一档，并在方法里写明。",
+      "标志库的设计目的是分类而不是详细功能注释：基因注释表里的 annotation_* 列只覆盖标志库里有的条目，官方明确建议用 Pfam/COG 等做深入功能注释，不要把它们当完整的基因功能结果。",
+      "taxonomy 只能到科级且随数据库更新：序列只被赋到能确定的分级，空字段不代表分类失败；换数据库版本后同一序列的分类可能变化，必须记录库版本。",
+      "前病毒坐标是 1-based 且写在 seq_name 里（如 <contig>|provirus_start_end）：把区域序列放回宿主坐标时容易差一个碱基或漏掉坐标解析，脚本要按官方格式实现并验证。",
+      "质粒结果里的接合与耐药列只是提示：conjugation_genes 的存在不足以判定质粒可接合或可移动，amr_genes 也只是标志库里的注释；相关结论需要专门工具与实验支持。"
+    ],
+    "related": [
+      { "id": "phage_checkv", "note": "下游标准搭档：评估识别出的病毒序列的质量" },
+      { "id": "phage_phaster", "note": "网页版前噬菌体鉴定，可作为交叉验证" },
+      { "id": "res_mobilome", "note": "从可移动元件角度补充质粒与整合元件的功能分类" }
+    ],
+    "docs": [
+      { "label": "第 6 章 功能注释与可移动元件", "path": "docs/guidebook/06-annotation-resistance-virulence.md" },
+      { "label": "第 8 章 宏基因组与微生物组", "path": "docs/guidebook/08-metagenome-microbiome.md" }
+    ]
+  },
+  {
+    "id": "phage_crisprcas",
+    "name": "CRISPR-Cas 系统鉴定 (CRT / CRISPRCasFinder)",
+    "category": "annotation-phage",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics"],
+    "tags": ["crispr", "cas", "防御系统", "间隔序列", "macsyfinder"],
+    "summary": "在基因组里定位 CRISPR 阵列与 Cas 基因并给出证据等级",
+    "what": [
+      "CRISPRCasFinder 把两件事合并：用 CRISPRFinder 系列的算法找 CRISPR 阵列（重复序列 + 间隔序列 spacer），并用 MacSyFinder 加 Cas 蛋白模型找 Cas 基因与系统亚型，最后给出每个阵列的 evidence level（1–4）。level 1 基本是背景噪声，2–3 需要人工核对，4 表示阵列结构与 Cas 基因都得到支持，是通常采用的置信标准。输出包括 Cas_REPORT.tsv、Crisprs_REPORT.tsv、CRISPR-Cas_summary.tsv 与 result.json。",
+      "它的价值在于把「CRISPR 免疫系统」的序列证据整理成可比较的结果，用于菌株分型、防御系统组成比较，以及把 spacer 拿去比对噬菌体/质粒库来推断免疫历史（后者需要额外的比对流程，工具本身不提供结论）。要注意它只覆盖 CRISPR-Cas，不代表全部噬菌体防御系统——限制修饰系统、毒素-抗毒素、CBASS 等需要专门的工具（如 DefenseFinder）。",
+      "使用上的现实限制：CRISPRCasFinder 依赖 MacSyFinder 与 Cas 模型库，版本之间模型不兼容；输入需要较完整的基因组（碎片化草图会截断阵列），开发者也明确不建议把它用于宏基因组——宏基因组里的 CRISPR 阵列常跨越 contig 边缘，且大量短序列会导致错误判定。"
+    ],
+    "inputs": [
+      { "type": "contigs", "name": "细菌/古菌基因组序列", "required": true, "note": "完成图或较完整的草图；碎片化与宏基因组数据不建议使用本工具" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "Cas 基因与系统报告", "ext": "Cas_REPORT.tsv", "note": "检出的 Cas 基因、所属系统与亚型（基于 MacSyFinder 模型）" },
+      { "type": "tsv-table", "name": "CRISPR 阵列报告", "ext": "Crisprs_REPORT.tsv", "note": "阵列坐标、重复序列、间隔序列数量与 evidence level" },
+      { "type": "tsv-table", "name": "综合汇总表", "ext": "CRISPR-Cas_summary.tsv", "note": "把 CRISPR 与 Cas 结果合并，便于逐菌株比较" },
+      { "type": "gff", "name": "阵列注释 GFF3", "ext": ".gff", "note": "可叠加到基因组浏览器；重复与间隔序列的坐标都在其中" }
+    ],
+    "provides": [
+      { "tool": "CRISPRCasFinder", "version": "4.2.x", "access": "cli", "install": "container", "note": "有网页版与本地版（官方提供 standalone/容器）；开发活跃度低但版本行为固定" },
+      { "tool": "MacSyFinder", "version": "2.1.x", "access": "cli", "install": "conda", "note": "Cas 基因与系统的模型匹配引擎；v1 与 v2 的模型互不兼容，升级必须同时换模型库（版本以官方发布为准）" },
+      { "tool": "Prodigal", "version": "2.6.x", "access": "cli", "install": "conda", "note": "默认用 Prodigal 预测 CDS 作为 Cas 搜索的输入（也可切换到 Prokka）" }
+    ],
+    "feeds": [
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "整理成菌株 × 系统/亚型的矩阵" },
+      { "target": "comp_gene_presence", "viaType": "tsv-table", "note": "把 CRISPR-Cas 系统纳入菌株间存在/缺失比较" },
+      { "target": "viz_heatmap", "viaType": "tsv-table", "note": "防御系统组成热图，展示菌株间差异" }
+    ],
+    "usage": [
+      {
+        "label": "基本用法（本地版）",
+        "lang": "bash",
+        "code": "CRISPRCasFinder.pl -in 02_assembly/${SAMPLE}.fna -out res/${SAMPLE}_crispr -keep\n# 可选参数（-gscf、-ccc、-ccvr、-drpt、-html）会额外产出对应文件；以官方文档为准"
+      },
+      {
+        "label": "只保留高证据等级的 CRISPR 阵列",
+        "lang": "bash",
+        "code": "awk -F'\\t' 'NR==1 || $NF>=3' res/${SAMPLE}_crispr/TSV/Crisprs_REPORT.tsv \\\n  > res/${SAMPLE}.crispr_level3plus.tsv\n# 列序号与等级所在列以你的版本输出为准，先看表头"
+      },
+      {
+        "label": "提取间隔序列供后续比对（示例路径）",
+        "lang": "bash",
+        "code": "ls res/${SAMPLE}_crispr/rawFASTA/\n# CRISPRFinderProperties 目录下含重复序列与 spacer 的 FASTA；用于比对噬菌体库时按官方目录结构取值"
+      }
+    ],
+    "recipes": {
+      "bash": "CRISPRCasFinder.pl -in 02_assembly/${SAMPLE}.fna -out 04_resistance/${SAMPLE}_crispr -keep\ncp 04_resistance/${SAMPLE}_crispr/TSV/CRISPR-Cas_summary.tsv \\\n  09_results/${SAMPLE}.crisprcas_summary.tsv",
+      "python": "run([\n    'CRISPRCasFinder.pl',\n    '-in', str(ASM_DIR / (sample + '.fna')),\n    '-out', str(RES_DIR / (sample + '_crispr')),\n    '-keep',\n])"
+    },
+    "params": [
+      { "flag": "evidence level", "default": "1–4 全部输出", "note": "筛选依据而非可选参数：level 1 基本是背景噪声，2–3 需人工核对，通常只把 level 4（结构可靠）或 3–4 当作候选系统" },
+      { "flag": "-keep", "default": "关闭", "note": "保留中间目录（CasFinder、CRISPRFinderProperties、rawFASTA 等）；要复用重复序列或 spacer 就必须开" },
+      { "flag": "-gscf / -ccc / -ccvr / -drpt", "default": "关闭", "note": "分别额外输出 Cas 汇总、CRISPR-Cas 簇、阵列邻近系统与方向统计；按需开启，输出文件不同" },
+      { "flag": "-prokka", "default": "关闭（用 Prodigal）", "note": "切换 CDS 预测后端；换后端会改变 Cas 基因的边界，进而影响系统判定" },
+      { "flag": "-html / -copyCSS", "default": "关闭", "note": "生成可视化页面；便于人工核对阵列与 Cas 的相对位置" },
+      { "flag": "MacSyFinder 与 Cas 模型版本", "default": "随工具发布", "note": "v1 与 v2 的模型互不兼容，输出格式也不同；跨项目比较前必须统一版本" }
+    ],
+    "pitfalls": [
+      "evidence level 必须作为筛选依据：level 1 基本是背景噪声，2–3 需要人工核对，只有 4 表示阵列结构得到 Cas 基因与重复序列保守性的支持。把 level 1–2 计入「CRISPR 数量」会明显高估。",
+      "开发者也明确不建议用于宏基因组：宏基因组的 CRISPR 阵列常跨越 contig 边缘、序列大量碎片化，判定结果不可靠；宏基因组上的防御系统研究应改用适合碎片化数据的工具与策略。",
+      "Cas 搜索依赖 MacSyFinder 与模型库，v1 与 v2 模型互不兼容：升级 MacSyFinder 必须同时更新 CasFinder 模型并重新验证输出格式，否则会出现「没有 Cas 基因」的假阴性。",
+      "MacSyFinder 执行失败时工具可能仍给出「没有 Cas 基因」的结论：这类静默失败在开发者自己的记录里就被提到过。批量运行时必须检查输出文件是否真的生成，而不是只看有没有报错。",
+      "「没有 Cas 基因」也可能是组装缺失：碎片化基因组里 Cas 基因簇可能落在未组装的区域；结论要与组装完整度（BUSCO/CheckM2）一起报告。",
+      "CRISPRCasFinder 只覆盖 CRISPR-Cas：其他噬菌体防御系统（限制修饰、毒素-抗毒素、CBASS、Argonaute 等）需要专门工具（如 DefenseFinder）。用它代表「全部防御系统」会严重低估防御能力。"
+    ],
+    "related": [
+      { "id": "phage_genomad", "note": "病毒/质粒识别；spacer 比对与宿主推断常与它配合" },
+      { "id": "phage_checkv", "note": "病毒序列质量评估，用于判断 spacer 比对目标是否可靠" },
+      { "id": "anno_prokka", "note": "可提供 Cas 搜索所需的 CDS 预测（作为 Prodigal 的替代）" }
+    ],
+    "docs": [
+      { "label": "第 6 章 功能注释与可移动元件", "path": "docs/guidebook/06-annotation-resistance-virulence.md" }
+    ]
+  }
+]

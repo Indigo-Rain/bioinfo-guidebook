@@ -1,0 +1,840 @@
+[
+  {
+    "id": "anno_prokka",
+    "name": "基因组注释：Prokka",
+    "category": "annotation-functional",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "legacy",
+    "domains": ["genomics", "metagenomics"],
+    "tags": ["注释", "基因预测", "prokka", "gff3", "locus_tag"],
+    "summary": "经典的一站式细菌基因组注释与产物打包",
+    "what": [
+      "Prokka 把细菌基因组注释串成一条流水线：Prodigal 预测 CDS，Aragorn / Barrnap / Infernal 等预测 tRNA、rRNA 与 ncRNA，再用内置的 UniProt、Pfam、TIGRFAM 等同源与 HMM 库给每个基因配上 gene 与 product。最终输出一套命名统一的文件（GFF3、GenBank、蛋白与核酸 FASTA、TSV，以及可直接用于提交的 .tbl/.sqn），这也是它长期作为细菌基因组注释默认起点的原因。",
+      "它的定位是「快速、一致、够用」：注释来自同源比对与 HMM 命中，属于基于相似性的推断，不是实验证据。EC 号、基因名与 product 描述都可能出错，风险最高的是基因家族密集的转运蛋白、双组分调控与假定蛋白。发表时关键基因（耐药、毒力、代谢标志基因）必须回到文献或实验核对，不能直接把 product 字段当结论。",
+      "Prokka 已停止积极维护，作者明确建议新项目改用 Bakta；但它的参数语义与输出格式极其稳定，大量已发表流程仍在用它。选择的实际判据是：需要与既有结果可比、或需要 Prokka 的 .sqn/.tbl 打包路径时继续用它；新项目优先 Bakta。"
+    ],
+    "inputs": [
+      { "type": "contigs", "name": "组装 contig（草图或完成图）", "required": true, "note": "FASTA；默认丢弃短于 --mincontiglen 的 contig" },
+      { "type": "protein-faa", "name": "可信蛋白序列（可选）", "required": false, "note": "通过 --proteins 提供属/种特异的可信注释，命中优先级高于内置库" }
+    ],
+    "outputs": [
+      { "type": "gff", "name": "GFF3 注释表", "ext": ".gff", "note": "下游泛基因组、比较基因组与可视化最常用的输入" },
+      { "type": "protein-faa", "name": "CDS 蛋白序列", "ext": ".faa", "note": "功能注释与同源搜索的输入" },
+      { "type": "cds-fasta", "name": "CDS 核酸序列", "ext": ".ffn", "note": "用于核酸比对或单基因建树" },
+      { "type": "tsv-table", "name": "基因清单 TSV", "ext": ".tsv", "note": "locus_tag、坐标与 product 的扁平表，便于 pandas 处理" },
+      { "type": "log-report", "name": "注释统计", "ext": ".txt", "note": "基因数与各特征类型计数，可被 MultiQC 汇总" }
+    ],
+    "provides": [
+      { "tool": "Prokka", "version": "1.14.x", "access": "cli", "install": "conda", "note": "已停止积极维护；内部依赖 Prodigal、Barrnap、Aragorn、HMMER、BLAST+ 等" },
+      { "tool": "Prodigal", "version": "2.6.x", "access": "cli", "install": "conda", "note": "Prokka 的 CDS 预测引擎，其边界直接决定注释结果" }
+    ],
+    "feeds": [
+      { "target": "anno_eggnog", "viaType": "protein-faa", "note": "把 CDS 蛋白送进同源群与功能归类" },
+      { "target": "anno_interpro", "viaType": "protein-faa", "note": "用结构域证据复核 Prokka 的 product 推断" },
+      { "target": "pange_panaroo", "viaType": "gff", "note": "Panaroo / Roary 直接以 GFF3 构建泛基因组" },
+      { "target": "anno_ncbi_submit", "viaType": "gff", "note": "GFF3 与 .tbl/.sqn 是提交 NCBI 或做注释更新的常用起点" },
+      { "target": "qc_multi_qc", "viaType": "log-report", "note": "把基因数等注释统计纳入项目级汇总" }
+    ],
+    "usage": [
+      {
+        "label": "基本用法（细菌草图）",
+        "lang": "bash",
+        "code": "prokka --outdir anno/${SAMPLE} --prefix ${SAMPLE} --kingdom Bacteria \\\n  --cpus ${THREADS} --mincontiglen 200 02_assembly/${SAMPLE}.contigs.fasta"
+      },
+      {
+        "label": "用属特异数据库提高近缘物种的注释率",
+        "lang": "bash",
+        "code": "# 先用 prokka-genbank_to_fasta_db 建属库并执行 prokka --setupdb，然后：\nprokka --outdir anno/${SAMPLE} --prefix ${SAMPLE} --genus Escherichia --usegenus \\\n  --cpus ${THREADS} 02_assembly/${SAMPLE}.contigs.fasta"
+      },
+      {
+        "label": "为 NCBI 提交做准备（合规模式）",
+        "lang": "bash",
+        "code": "prokka --outdir anno/${SAMPLE} --prefix ${SAMPLE} --compliant \\\n  --centre \"Your Center\" --cpus ${THREADS} 02_assembly/${SAMPLE}.contigs.fasta"
+      },
+      {
+        "label": "需要完整 ncRNA 注释时才打开 --rfam",
+        "lang": "bash",
+        "code": "prokka --outdir anno/${SAMPLE} --prefix ${SAMPLE} --rfam \\\n  --cpus ${THREADS} 02_assembly/${SAMPLE}.contigs.fasta\n# 会显著变慢，且需要额外的 Infernal/Rfam 库"
+      }
+    ],
+    "recipes": {
+      "bash": "prokka --outdir 03_annotation/${SAMPLE} --prefix ${SAMPLE} \\\n  --kingdom Bacteria --cpus ${THREADS} --mincontiglen 200 \\\n  02_assembly/${SAMPLE}.contigs.fasta\ncp 03_annotation/${SAMPLE}/${SAMPLE}.txt 10_logs/${SAMPLE}.prokka.txt",
+      "python": "run([\n    'prokka', '--outdir', str(ANNO_DIR / sample), '--prefix', sample,\n    '--kingdom', 'Bacteria', '--cpus', str(THREADS), '--mincontiglen', '200',\n    str(ASM_DIR / (sample + '.contigs.fasta')),\n])"
+    },
+    "params": [
+      { "flag": "--kingdom", "default": "Bacteria", "note": "可选 Bacteria / Archaea / Viruses / Fungi 等；古菌、病毒、真菌必须显式改，否则基因预测与 RNA 模型都不对" },
+      { "flag": "--genus / --usegenus", "default": "关闭", "note": "用属特异 BLAST 库提高近缘物种注释率；需要事先用 prokka-genbank_to_fasta_db 建库并 prokka --setupdb，否则会退回通用库" },
+      { "flag": "--locustag", "default": "由输出前缀派生", "note": "多菌株项目必须显式指定唯一前缀，否则 locus_tag 冲突，泛基因组与合并表会报重复 ID" },
+      { "flag": "--mincontiglen", "default": "200", "note": "短于该长度的 contig 被静默丢弃；草图里的小质粒片段会整段消失，需要它们时调小并接受更多碎片注释" },
+      { "flag": "--rfam", "default": "关闭", "note": "开启后用 Infernal/Rfam 搜索 ncRNA，注释更完整但显著变慢，且需要额外的 Rfam 库" },
+      { "flag": "--compliant", "default": "关闭", "note": "强制符合 GenBank 的 locus_tag 与 gene 命名规则，为提交做准备；会改变部分命名结果" },
+      { "flag": "--proteins", "default": "无", "note": "提供可信蛋白库（FASTA），命中的基因优先采用你给的注释，适合固定几类关键基因的命名" }
+    ],
+    "pitfalls": [
+      "Prokka 会重写输入序列名（contig 被改成 contig00001 之类），注释坐标与 locus_tag 不再与原始组装一致。把注释结果与原始 contig 或其它工具结果合并前，必须先确认名字映射，否则坐标对错位置却看不出来。",
+      "默认 --mincontiglen 200：短于 200 bp 的 contig 会被静默丢弃，既不报错也不提示。草图里的小质粒或短片段会整段消失，表现为「基因数比预期少」。",
+      "--locustag 默认由输出前缀派生。批量注释多菌株时若前缀相同或重复运行覆盖了输出，locus_tag 会撞车；泛基因组、合并 TSV 与后续提交都会因此失败。",
+      "--kingdom 默认 Bacteria。对古菌、病毒或真菌基因组不改这个参数时，Prodigal 的基因模型与 rRNA/tRNA 搜索都会错，结果看起来「有注释」但实际不可用。",
+      "内置数据库是打包快照、不会自动更新：老版本 Prokka 的 UniProt/Pfam 库可能落后数年，新命名的基因只能得到泛泛的 product。更新库需要替换库文件后运行 prokka --setupdb。",
+      "product 与 EC 号都是推断值：ABC 转运蛋白、双组分调控、外排泵这类大基因家族很容易张冠李戴。关键基因下结论前要人工核对（回检比对、文献或实验）。"
+    ],
+    "related": [
+      { "id": "anno_bakta", "note": "作者推荐的现代替代方案，数据库更新更及时、输出带 dbxref" },
+      { "id": "anno_prodigal", "note": "Prokka 内部的基因预测步骤；只想拿 CDS 时可直接用它" },
+      { "id": "pange_panaroo", "note": "以 Prokka/Bakta 的 GFF3 为输入构建泛基因组" }
+    ],
+    "docs": [
+      { "label": "第 6 章 功能注释与耐药毒力", "path": "docs/guidebook/06-annotation-resistance-virulence.md" }
+    ]
+  },
+  {
+    "id": "anno_bakta",
+    "name": "基因组注释：Bakta",
+    "category": "annotation-functional",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics", "metagenomics"],
+    "tags": ["注释", "bakta", "gff3", "dbxref", "mag"],
+    "summary": "Prokka 的现代替代：标准化且带 dbxref 的注释",
+    "what": [
+      "Bakta 用 UniRef100/UniRef90 构建的分类学无关数据库做功能注释，并先用「全长蛋白序列哈希」（AFSI）识别已知蛋白：命中已知序列时直接继承其注释与 dbxref（RefSeq WP_、UniRef100、UniParc），跳过大费周章的同源搜索，因此典型细菌基因组在笔记本上约十几分钟即可完成。它同时用 NCBI AMRFinderPlus 做耐药基因、用 VFDB 与 NCBI BlastRules 做毒力与专家规则注释，并额外预测 sORF、ncRNA、oriC/oriV/oriT、组装 gap、CRISPR 与假基因。",
+      "它的输出面向互操作与存档：GFF3 与 INSDC（GenBank/EMBL）格式可直接用于提交校验，JSON 保存全部内部信息、可用 bakta_io 重新生成其它格式。需要注意内置的耐药与毒力注释只是「专家系统的第一遍筛查」，不能替代 RGI/ResFinder/AMRFinderPlus 与 VFDB 的专项分析，而且这些注释会随 Bakta 数据库版本变化。",
+      "局限要提前知道：Bakta 只面向细菌与质粒（作者明确的设计决定），古菌、病毒、真菌请改用其它工具；数据库必须单独下载并锁定版本，full 库几十 GB、light 库小得多但参考序列少，两者结果并不相同。"
+    ],
+    "inputs": [
+      { "type": "contigs", "name": "基因组 / 质粒 / MAG 序列", "required": true, "note": "FASTA 或压缩 FASTA；MAG 与宏基因组来源请加 --meta" },
+      { "type": "protein-faa", "name": "可信蛋白序列（可选）", "required": false, "note": "--proteins：命中后采用你提供的 gene/product/dbxref；FASTA 头里可为每条序列设定 identity 与覆盖度阈值" },
+      { "type": "gff", "name": "预注释 CDS 区域（可选）", "required": false, "note": "--regions：GFF3 或 GenBank 中的 CDS 会覆盖 de novo 预测（目前只支持 CDS，允许 30 bp 重叠）" }
+    ],
+    "outputs": [
+      { "type": "gff", "name": "GFF3 注释", "ext": ".gff3", "note": "符合 GFF3 规范，可用于提交校验与下游泛基因组" },
+      { "type": "protein-faa", "name": "CDS/sORF 蛋白序列", "ext": ".faa", "note": "功能注释与同源搜索的输入" },
+      { "type": "cds-fasta", "name": "特征核酸序列", "ext": ".ffn", "note": "CDS/sORF 的核酸序列" },
+      { "type": "tsv-table", "name": "注释表与推断指标", "ext": ".tsv", "note": ".tsv 为人类可读注释表；.inference.tsv 含 score/evalue/覆盖度/identity" },
+      { "type": "log-report", "name": "注释统计与数据库版本", "ext": ".txt", "note": "含基因数、特征计数与所用数据库版本，归档与复现必需" },
+      { "type": "figure-png", "name": "环形基因组图", "ext": ".png", "note": "默认生成，可用 --skip-plot 关闭" }
+    ],
+    "provides": [
+      { "tool": "Bakta", "version": "1.9.x", "access": "cli", "install": "conda", "note": "Python 实现；数据库需单独下载（bakta_db download）并锁定版本" },
+      { "tool": "Prodigal (Pyrodigal)", "version": "2.6.x", "access": "cli", "install": "conda", "note": "CDS 预测引擎；--prodigal-tf 可指定训练文件，--translation-table 支持 11/4/25" }
+    ],
+    "feeds": [
+      { "target": "anno_eggnog", "viaType": "protein-faa", "note": "用 eggNOG 的 COG/GO/KEGG 归类补充 Bakta 的注释" },
+      { "target": "anno_kofamscan", "viaType": "protein-faa", "note": "KO 分配，便于通路层面的比较" },
+      { "target": "anno_dbcan", "viaType": "protein-faa", "note": "碳水化合物活性酶是 Bakta 不专门覆盖的功能类" },
+      { "target": "pange_panaroo", "viaType": "gff", "note": "泛基因组直接消费 GFF3" },
+      { "target": "qc_multi_qc", "viaType": "log-report", "note": "把注释统计纳入项目级汇总" }
+    ],
+    "usage": [
+      {
+        "label": "基本用法",
+        "lang": "bash",
+        "code": "bakta --db ${BAKTA_DB} --output anno/${SAMPLE} --prefix ${SAMPLE} \\\n  --threads ${THREADS} 02_assembly/${SAMPLE}.fna"
+      },
+      {
+        "label": "MAG / 宏基因组来源的序列",
+        "lang": "bash",
+        "code": "bakta --db ${BAKTA_DB} --meta --output anno/${SAMPLE} --prefix ${SAMPLE} \\\n  --threads ${THREADS} 06_bins/${SAMPLE}.fna"
+      },
+      {
+        "label": "为提交做准备，并显式指定革兰氏类型",
+        "lang": "bash",
+        "code": "bakta --db ${BAKTA_DB} --compliant --gram - --min-contig-length 200 \\\n  --locus-tag ${SAMPLE}_ --output anno/${SAMPLE} --prefix ${SAMPLE} \\\n  --threads ${THREADS} 02_assembly/${SAMPLE}.fna"
+      },
+      {
+        "label": "下载数据库（full 与 light 二选一，选完不要随意更换）",
+        "lang": "bash",
+        "code": "bakta_db download --output ${BAKTA_DB} --type light\n# full 库注释更全但体积大得多；库的类型与版本必须随结果记录（以官方文档为准）"
+      }
+    ],
+    "recipes": {
+      "bash": "bakta --db ${BAKTA_DB} --output 03_annotation/${SAMPLE} --prefix ${SAMPLE} \\\n  --gram ${GRAM} --threads ${THREADS} 02_assembly/${SAMPLE}.fna\ncp 03_annotation/${SAMPLE}/${SAMPLE}.txt 10_logs/${SAMPLE}.bakta.txt",
+      "python": "run([\n    'bakta', '--db', str(BAKTA_DB),\n    '--output', str(ANNO_DIR / sample), '--prefix', sample,\n    '--gram', GRAM, '--threads', str(THREADS),\n    str(ASM_DIR / (sample + '.fna')),\n])"
+    },
+    "params": [
+      { "flag": "--db / -d", "default": "<bakta_path>/db 或 $BAKTA_DB", "note": "数据库路径；库类型（full/light）与版本是结果的一部分，必须记录" },
+      { "flag": "--min-contig-length / -m", "default": "1（--compliant 时为 200）", "note": "默认会把极短 contig 也拿去注释，碎片化草图会产生大量短 ORF 与 hypothetical" },
+      { "flag": "--gram", "default": "无（必须显式指定）", "note": "革兰氏类型（+ 或 -）。**这是必填项、没有默认值**；不指定时信号肽与脂蛋白相关判断会缺失或直接报错。不同 Bakta 版本对必填性的处理略有差异，以官方 --help 为准" },
+      { "flag": "--meta", "default": "关闭", "note": "只影响 CDS 预测（宏基因组模式）；MAG 与宏基因组来源应开启，否则会漏掉跨越 contig 边缘的片段基因" },
+      { "flag": "--locus-tag", "default": "自动生成", "note": "多菌株批量注释必须显式指定，否则跨基因组合并时 ID 不可追溯或冲突" },
+      { "flag": "--compliant", "default": "关闭", "note": "强制 GenBank/ENA/DDBJ 合规（命名、最小 contig 长度等），提交前必开" },
+      { "flag": "--proteins / --hmms", "default": "无", "note": "可信蛋白或 HMM：命中后按你给的值注释；FASTA 头可写 min_identity 与 query/subject 覆盖度阈值（不给则用 90/80/80）" }
+    ],
+    "pitfalls": [
+      "数据库类型与版本决定结果：full 库与 light 库的参考序列集合不同，同一基因组的注释率与 product 会有差异。升级 Bakta 或更新库后必须重跑对照样本，并在方法里写明库类型与版本（输出的 .txt/.json 头部记录版本，归档时要保留）。",
+      "--gram 默认是 ?（未指定）。不指定革兰氏类型时，信号肽与脂蛋白相关注释不完整；若不同样本指定得不一致，样本间结果就不可比。",
+      "--min-contig-length 默认 1，会把只有几十 bp 的 contig 也注释成基因；--compliant 模式下默认变成 200。这个行为差异容易被忽略，导致同一批数据在不同参数下「基因数」明显不同。",
+      "--meta 只改变 CDS 预测：把 MAG 当单菌注释（不加 --meta）会漏掉跨越 contig 边缘的片段基因，表现为基因数偏少、平均基因偏长；反过来对完成图乱加 --meta 也会让边缘预测过于保守。",
+      "Bakta 内置的 AMRFinderPlus 与 VFDB 注释只是筛查：它们随 Bakta 数据库版本变化，覆盖面也小于专用工具。耐药与毒力的正式结论要用 RGI/ResFinder/AMRFinderPlus 与 VFDB 专项流程复核。",
+      "Bakta 按设计只支持细菌与质粒：古菌、病毒、真菌基因组用它注释会得到大量错误或缺漏（这类需求用 Prokka 的 --kingdom 或专用流程）。"
+    ],
+    "related": [
+      { "id": "anno_prokka", "note": "经典前身；参数语义相似，需要与旧流程可比时仍可用" },
+      { "id": "anno_prodigal", "note": "CDS 预测底层引擎，可单独用于快速获取蛋白集" },
+      { "id": "anno_ncbi_submit", "note": "Bakta 的 GFF3/EMBL 可直接用于提交前校验" }
+    ],
+    "docs": [
+      { "label": "第 6 章 功能注释与耐药毒力", "path": "docs/guidebook/06-annotation-resistance-virulence.md" }
+    ]
+  },
+  {
+    "id": "anno_prodigal",
+    "name": "基因预测 (Prodigal)",
+    "category": "annotation-functional",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics", "metagenomics"],
+    "tags": ["基因预测", "cds", "prodigal", "orf", "蛋白序列"],
+    "summary": "轻量的 CDS 预测器，通常是注释流程的第一步",
+    "what": [
+      "Prodigal 用动态规划结合训练得到的基因模型预测 CDS：起始密码子、核糖体结合位点、以及基因是否被截断，输出坐标、核酸序列与蛋白序列。它不查任何数据库，只回答「哪里有基因」，因此既是 Prokka/Bakta 等注释工具的底层引擎，也常被单独用来给宏基因组或 MAG 快速产出一套蛋白集。",
+      "两种模式结果差别很大：single（默认）会先在输入序列上训练基因模型，适合序列足够长的单菌基因组；meta 使用预训练模型、不做物种假设，适合宏基因组与碎片化 contig。官方建议单菌模式用于足够长的输入（长度下限以官方文档为准），序列太短时训练不稳定，基因起点与数量都会系统性偏移。",
+      "只做 CDS 也意味着它不覆盖 tRNA、rRNA、CRISPR、可移动元件与重复序列，输出的 product 是占位描述（hypothetical protein）。把 Prodigal 的结果当完整注释使用是误用；需要完整注释请用 Prokka/Bakta，或另配专门工具。"
+    ],
+    "inputs": [
+      { "type": "contigs", "name": "组装 contig 或基因组序列", "required": true, "note": "FASTA；碎片化序列请用 meta 模式" }
+    ],
+    "outputs": [
+      { "type": "gff", "name": "基因坐标 (GFF)", "ext": ".gff", "note": "基因 ID 为 1_1 这类数字编号，不含 locus_tag" },
+      { "type": "protein-faa", "name": "预测蛋白序列", "ext": ".faa", "note": "下游功能注释的主要输入" },
+      { "type": "cds-fasta", "name": "CDS 核酸序列", "ext": ".ffn", "note": "用于回检或核酸比对" }
+    ],
+    "provides": [
+      { "tool": "Prodigal", "version": "2.6.x", "access": "cli", "install": "conda", "note": "C 实现、依赖极简；已停止大版本更新但行为稳定，被大量工具内嵌" }
+    ],
+    "feeds": [
+      { "target": "anno_eggnog", "viaType": "protein-faa", "note": "给预测出的 CDS 套功能标签" },
+      { "target": "anno_kofamscan", "viaType": "protein-faa", "note": "KO 分配，便于功能类别比较" },
+      { "target": "anno_diamond_nr", "viaType": "protein-faa", "note": "先用同源搜索拿到候选，再决定注释策略" },
+      { "target": "anno_interpro", "viaType": "protein-faa", "note": "结构域证据比单纯同源更稳" },
+      { "target": "res_card_rgi", "viaType": "protein-faa", "note": "以蛋白模式跑 RGI 筛查耐药基因（不覆盖 rRNA 突变）" }
+    ],
+    "usage": [
+      {
+        "label": "单菌模式（序列足够长的基因组）",
+        "lang": "bash",
+        "code": "prodigal -i 02_assembly/${SAMPLE}.fna -a anno/${SAMPLE}.faa -d anno/${SAMPLE}.ffn \\\n  -f gff -o anno/${SAMPLE}.gff -p single"
+      },
+      {
+        "label": "宏基因组 / MAG 模式",
+        "lang": "bash",
+        "code": "prodigal -i 02_assembly/${SAMPLE}.contigs.fasta -a anno/${SAMPLE}.faa \\\n  -f gff -o anno/${SAMPLE}.gff -p meta"
+      },
+      {
+        "label": "禁止基因跨越序列边缘",
+        "lang": "bash",
+        "code": "prodigal -i genome.fna -c -f gff -o genes.gff -a genes.faa\n# -c 会丢弃边缘的部分基因，减少假基因但也会丢掉真实的部分基因"
+      },
+      {
+        "label": "非标准遗传密码（例如支原体用 4 号表）",
+        "lang": "bash",
+        "code": "prodigal -i genome.fna -g 4 -f gff -o genes.gff -a genes.faa\n# 默认 11（细菌/古菌）；表号写错会让相关基因的翻译全部出错"
+      }
+    ],
+    "recipes": {
+      "bash": "prodigal -i 01_clean/${SAMPLE}.fna -a 03_annotation/${SAMPLE}.faa \\\n  -d 03_annotation/${SAMPLE}.ffn -f gff -o 03_annotation/${SAMPLE}.gff -p ${PRODIGAL_MODE}",
+      "python": "run([\n    'prodigal', '-i', str(ASM_DIR / (sample + '.fna')),\n    '-a', str(ANNO_DIR / (sample + '.faa')),\n    '-d', str(ANNO_DIR / (sample + '.ffn')),\n    '-f', 'gff', '-o', str(ANNO_DIR / (sample + '.gff')),\n    '-p', PRODIGAL_MODE,\n])"
+    },
+    "params": [
+      { "flag": "-p", "default": "single", "note": "single 会在输入上训练模型，适合单菌长序列；meta 用预训练模型，适合宏基因组与碎片化 contig。模式选错会让基因数与起点系统性偏移" },
+      { "flag": "-c", "default": "关闭", "note": "不允许基因跨越序列边缘（封闭末端）；减少假基因，但会丢掉真实的部分基因" },
+      { "flag": "-g", "default": "11", "note": "遗传密码表；支原体等用 4，部分类群用其它表，写错会让翻译与下游注释全错" },
+      { "flag": "-f", "default": "gbk", "note": "输出格式；下游流程一般要 gff（若确实需要 GenBank 请显式 -f gbk，其它取值以官方文档为准）" },
+      { "flag": "-m", "default": "开启", "note": "把 N 区当作屏蔽区处理，避免在 gap 里预测出虚假基因" },
+      { "flag": "-q", "default": "关闭", "note": "静默模式；批量运行时建议保留默认，让日志记录处理了哪些序列" }
+    ],
+    "pitfalls": [
+      "宏基因组与短 contig 必须用 -p meta：single 模式会尝试在输入上训练，碎片化序列上训练不稳定，基因起点与数量会系统性偏移，而且不会报错。",
+      "碎片化组装会产生大量跨 contig 边缘的部分基因（GFF 中带 partial 标记）。把它们当完整基因做同源搜索或泛基因组，会把不同菌株的同一基因算成两个不同基因；用 -c 取舍时要清楚代价。",
+      "输出的基因 ID 是 1_1、1_2 这类数字编号，没有 locus_tag。合并多个基因组的预测结果前必须重命名（加样本前缀），否则不同基因组的 ID 会直接撞车。",
+      "遗传密码默认 11：对使用 4 号表（TGA 编码色氨酸）等非标准密码的物种，不显式 -g 会让这批基因的翻译与下游功能注释全部出错。",
+      "product 字段不是注释：Prodigal 不查任何数据库，hypothetical protein 只是占位。要回答「这个基因是什么」，必须接功能注释工具。",
+      "它完全不预测 tRNA、rRNA、CRISPR、前噬菌体等非编码特征；这类需求要交给 Prokka/Bakta、Barrnap、CRISPRCasFinder 等专门工具。"
+    ],
+    "related": [
+      { "id": "anno_prokka", "note": "把 Prodigal 与 RNA 搜索、功能注释打包在一起" },
+      { "id": "anno_bakta", "note": "同样内嵌 CDS 预测，但额外提供 sORF 与更完整的注释" },
+      { "id": "anno_diamond_nr", "note": "拿到蛋白序列后的常见下一步" }
+    ],
+    "docs": [
+      { "label": "第 6 章 功能注释与耐药毒力", "path": "docs/guidebook/06-annotation-resistance-virulence.md" }
+    ]
+  },
+  {
+    "id": "anno_ncbi_submit",
+    "name": "提交到 NCBI 注释 (PGAP)",
+    "category": "annotation-functional",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics"],
+    "tags": ["ncbi", "pgap", "table2asn", "accession", "提交"],
+    "summary": "把基因组提交 NCBI 由 PGAP 注释并取得 accession",
+    "what": [
+      "把组装好的基因组按 NCBI 的规则提交（网页的 Genome Submission Portal，或本地用 table2asn 校验打包后提交），由 NCBI 的 PGAP 生成官方注释，最终得到 accession 与公开的注释文件。这一步既是发表要求（accession 是论文必需信息），也是拿到最规范、最保守注释的途径；本地也可以跑 PGAP 的开源版本，但只有 NCBI 赋予的才称为「官方注释」。",
+      "本地通常只做前置准备：确认 FASTA 的序列命名与格式、申请 BioSample/BioProject、用 table2asn 生成并检查校验报告（.val）。要注意通过校验只代表文件格式合规，不代表组装或注释质量合格——提交前的污染与完整性检查（CheckM2、GUNC、BUSCO）决定你公开的是不是一个可用的基因组。",
+      "这一步的特殊性是「单向」：accession 一旦分配、记录公开，修改与撤回都很麻烦；PGAP 还会重新分配 locus_tag 并改写基因名，所以提交后的注释与本地 Prokka/Bakta 结果不能按 locus_tag 直接合并。维护好内部样本编号与公开 accession 的映射表，是后续所有分析可追溯的前提。"
+    ],
+    "inputs": [
+      { "type": "genome-fasta", "name": "待提交的基因组 FASTA", "required": true, "note": "草图或完成图；序列名不能带注释性描述或非法字符，规则以 NCBI 提交页面为准" },
+      { "type": "gff", "name": "已有注释（可选）", "required": false, "note": "走注释更新路径时提供；让 PGAP 全新注释则不需要" },
+      { "type": "protein-faa", "name": "蛋白序列（可选）", "required": false, "note": "用于与提交后的注释做一致性对照" }
+    ],
+    "outputs": [
+      { "type": "gff", "name": "PGAP 官方注释 GFF3", "ext": ".gff", "note": "从公开记录下载；后续分析应以它为准" },
+      { "type": "protein-faa", "name": "官方注释的蛋白序列", "ext": ".faa", "note": "与 GFF3 同批下载，避免版本错配" },
+      { "type": "log-report", "name": "校验报告与提交回执", "ext": ".val", "note": "table2asn 的 .val 报告与 NCBI 回执，需要归档" },
+      { "type": "tsv-table", "name": "编号映射表", "ext": ".tsv", "note": "内部样本名 ↔ BioSample ↔ BioProject ↔ accession；自己维护，是复现链条的关键" }
+    ],
+    "provides": [
+      { "tool": "NCBI PGAP", "version": "2024.x", "access": "cli", "install": "container", "note": "官方路径是提交给 NCBI；开源仓库也提供容器版本，版本按发布日期编号，以发布页为准" },
+      { "tool": "table2asn", "version": "1.2x.x", "access": "cli", "install": "binary", "note": "本地校验与打包工具（NCBI 官方二进制，需自备 .sbt 模板）；版本号以 NCBI 实际发布为准" }
+    ],
+    "feeds": [
+      { "target": "pange_panaroo", "viaType": "gff", "note": "用公开的官方注释做泛基因组，保证编号与数据库一致" },
+      { "target": "comp_proksee", "viaType": "gff", "note": "绘制发表用的基因组环形图" },
+      { "target": "wf_reproducibility", "viaType": "tsv-table", "note": "accession 映射表是结果可追溯的必要记录" }
+    ],
+    "usage": [
+      {
+        "label": "本地校验已有注释（提交前必做）",
+        "lang": "bash",
+        "code": "table2asn -t submission.sbt -i genome.fna -gff annotation.gff -validate\n# 生成校验报告，逐条修掉错误再提交；.sbt 模板与参数含义以 NCBI 的 table2asn 文档为准"
+      },
+      {
+        "label": "网页提交流程（无需本地命令）",
+        "lang": "bash",
+        "code": "# 1) 先申请 BioSample 与 BioProject（缺一不可）\n# 2) 在 Genome Submission Portal 上传 FASTA 并填写元数据（来源、培养、测序平台）\n# 3) 选择让 NCBI 用 PGAP 注释，等待完成\n# 4) 下载公开的 GFF3/GBFF/FAA 并登记 accession"
+      },
+      {
+        "label": "提交流程的最低记录要求",
+        "lang": "bash",
+        "code": "printf '%s\\t%s\\t%s\\t%s\\n' ${SAMPLE} ${BIOSAMPLE} ${BIOPROJECT} ${ACCESSION} >> 09_results/submission_map.tsv\n# 建议同时记录：提交日期、注释完成日期、FASTA 的 md5"
+      }
+    ],
+    "recipes": {
+      "bash": "md5sum 02_assembly/${SAMPLE}.fna >> 10_logs/${SAMPLE}.md5\ntable2asn -t submission.sbt -i 02_assembly/${SAMPLE}.fna -o 09_results/${SAMPLE}.sqn -validate\nprintf '%s\\t%s\\t%s\\t%s\\n' ${SAMPLE} ${BIOSAMPLE} ${BIOPROJECT} ${ACCESSION} >> 09_results/submission_map.tsv",
+      "python": "run([\n    'table2asn', '-t', str(TEMPLATE_SBT),\n    '-i', str(ASM_DIR / (sample + '.fna')),\n    '-o', str(RES_DIR / (sample + '.sqn')),\n    '-validate',\n])\nwith open(RES_DIR / 'submission_map.tsv', 'a', encoding='utf-8') as fh:\n    fh.write('\\t'.join([sample, biosample, bioproject, accession]) + '\\n')"
+    },
+    "params": [
+      { "flag": "BioSample / BioProject", "default": "无", "note": "提交前必须申请；缺失会直接退回。样本元数据（来源、宿主、培养条件）与序列同等重要" },
+      { "flag": "table2asn -t", "default": "无", "note": "提交模板（.sbt）：作者、机构、联系方式等元数据；没有它无法生成可提交的 .sqn" },
+      { "flag": "table2asn -validate", "default": "关闭", "note": "只校验并输出报告，不生成提交文件；提交前务必先跑一遍" },
+      { "flag": "FASTA 序列命名", "default": "工具原始名", "note": "不要带空格、非法字符或注释性描述（如 hypothetical protein）；具体规则以 NCBI 提交页面为准" },
+      { "flag": "组装质量门槛（自定）", "default": "无", "note": "提交前先过污染与完整性检查（CheckM2/GUNC/BUSCO）并记录阈值；公开一个受污染的基因组代价很高" }
+    ],
+    "pitfalls": [
+      "提交是单向动作：accession 一旦分配、记录公开，修改或撤回都极其麻烦。提交前必须完成污染筛查、完整性评估与序列命名检查，否则公开的是一个有缺陷的基因组。",
+      "PGAP 会重新分配 locus_tag 并改写基因名：不能按 locus_tag 把 PGAP 注释与自己 Prokka/Bakta 的结果直接合并，必须通过坐标或序列比对建立映射。",
+      "序列名与描述字段有格式要求：带空格或非法字符的 header、含大量 N 的序列、过短的 contig 都可能导致校验失败或注释质量差。规则会变，必须以 NCBI 提交页面的当前说明为准，不要照抄旧教程。",
+      "元数据常被当成次要工作：BioSample/BioProject、来源与培养信息、测序平台与文库类型不完整会让记录被退回或标注不合格，事后补交的成本远高于一次做对。",
+      "本地跑 PGAP（开源容器版）的结果不是 NCBI 的官方注释：它可用于评估与预演，但论文里写 PGAP-annotated 指的是 NCBI 完成并公开的那一份。",
+      "内部编号与公开 accession 的映射表必须自己维护：一旦丢失，几个月后就无法确定哪个样本对应哪个 accession，返工代价极高。"
+    ],
+    "related": [
+      { "id": "anno_prokka", "note": "本地注释常用工具；其 .sqn/.tbl 可作提交素材（注意与 PGAP 注释的差异）" },
+      { "id": "anno_bakta", "note": "GFF3/EMBL 符合 INSDC 规范，便于提交前校验" },
+      { "id": "asmqc_checkm2", "note": "提交前必须的完整度与污染度评估" }
+    ],
+    "docs": [
+      { "label": "第 6 章 功能注释与耐药毒力", "path": "docs/guidebook/06-annotation-resistance-virulence.md" }
+    ]
+  },
+  {
+    "id": "anno_eggnog",
+    "name": "同源群与功能归类 (eggNOG-mapper)",
+    "category": "annotation-functional",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics", "metagenomics"],
+    "tags": ["功能归类", "cog", "go", "kegg", "eggnog"],
+    "summary": "把蛋白批量映射到 eggNOG 同源群并转移功能标签",
+    "what": [
+      "eggNOG-mapper 先用 DIAMOND、MMseqs2 或 HMMER 把每条蛋白搜到 eggNOG 的 seed ortholog，再把该 ortholog 已有的 COG 功能类、GO term、KEGG KO、EC 号与 Pfam 结构域转移给你的基因，产出一张逐基因的功能表。它解决的是「几千到几百万条蛋白如何快速套上功能标签」，是功能谱与富集分析最常见的起点。",
+      "结果的可信度分层很明显：核糖体、管家基因这类保守核心基因通常可靠；转运、调控与假定蛋白容易套错，因为同源不等于同功能。GO/KEGG 归属还受 --tax_scope（从哪个分类分支转移注释）与证据过滤影响，因此注释表里的 evidence code 与所用数据库版本必须随结果一起报告。跨项目比较时数据库版本必须一致，否则同一个基因可能被归到不同的 ortholog 或 COG 编号。",
+      "它的边界是：给的是逐基因的功能标签，不回答「某条通路是否完整、是否表达」。后者需要通路覆盖度分析与转录或蛋白层面的证据。把它当通路结论使用，或据此断言某个酶活性存在，都是过度解读。"
+    ],
+    "inputs": [
+      { "type": "protein-faa", "name": "蛋白序列", "required": true, "note": "通常是 Prokka/Bakta/Prodigal 的 .faa；基因边界由上游决定" },
+      { "type": "genome-fasta", "name": "核酸序列（可选）", "required": false, "note": "以 --itype genome/metagenome 让 mapper 内部预测基因；省一步但基因边界不可控，通常不如先自己预测" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "逐基因功能注释表", "ext": ".emapper.annotations", "note": "含 COG、GO、KEGG KO、EC、Pfam 等列；表头以 # 开头，GO/KEGG 字段是多值" },
+      { "type": "tsv-table", "name": "seed ortholog 命中明细", "ext": ".emapper.seed_orthologs", "note": "逐命中的比对信息，用于排查某条基因为什么被这样归类" },
+      { "type": "log-report", "name": "运行与统计日志", "ext": ".emapper.log", "note": "含参数与命中统计，归档用于复现" }
+    ],
+    "provides": [
+      { "tool": "eggNOG-mapper", "version": "2.1.x", "access": "cli", "install": "conda", "note": "Python 实现；功能依赖 DIAMOND 或 MMseqs2 与 eggNOG 数据库" },
+      { "tool": "DIAMOND", "version": "2.1.x", "access": "cli", "install": "conda", "note": "默认同源搜索后端（-m diamond）" },
+      { "tool": "eggNOG 数据库", "version": "5.0.x", "access": "bundled", "note": "用官方脚本下载；版本必须随结果记录，不同版本的 ortholog 分配会变" }
+    ],
+    "feeds": [
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "整理成基因 × 功能的矩阵" },
+      { "target": "r_tidyverse", "viaType": "tsv-table", "note": "在 R 里做 COG 类别统计与绘图" },
+      { "target": "viz_composition_bar", "viaType": "tsv-table", "note": "把 COG 或功能大类画成组成图" },
+      { "target": "wf_reproducibility", "viaType": "log-report", "note": "数据库版本是结果可复现的必要信息" }
+    ],
+    "usage": [
+      {
+        "label": "基本用法（推荐：先自己预测基因，再注释蛋白）",
+        "lang": "bash",
+        "code": "emapper.py -i anno/${SAMPLE}.faa --output ${SAMPLE}_eggnog -m diamond \\\n  --itype proteins --cpu ${THREADS}"
+      },
+      {
+        "label": "限定分类分支 + 整库载入内存（大数据集加速）",
+        "lang": "bash",
+        "code": "emapper.py -i anno/${SAMPLE}.faa --output ${SAMPLE}_eggnog -m diamond \\\n  --tax_scope Bacteria --dbmem --cpu ${THREADS}"
+      },
+      {
+        "label": "先下载数据库（一次，长期复用）",
+        "lang": "bash",
+        "code": "download_eggnog_data.py --data_dir ${EGGNOG_DATA} -y\n# 记录下载日期与版本；换库会让同一批蛋白的归类结果改变"
+      },
+      {
+        "label": "检查结果结构（注意表头与多值字段）",
+        "lang": "bash",
+        "code": "grep -v '^#' ${SAMPLE}_eggnog.emapper.annotations | head -3 | cut -f1,5,7,9\n# 注释表表头以 # 开头，GO/KEGG 字段是逗号分隔的多值，统计前要拆分"
+      }
+    ],
+    "recipes": {
+      "bash": "emapper.py -i 03_annotation/${SAMPLE}.faa --output 03_annotation/${SAMPLE}_eggnog \\\n  -m diamond --itype proteins --cpu ${THREADS} --data_dir ${EGGNOG_DATA}",
+      "python": "run([\n    'emapper.py', '-i', str(ANNO_DIR / (sample + '.faa')),\n    '--output', str(ANNO_DIR / (sample + '_eggnog')),\n    '-m', 'diamond', '--itype', 'proteins', '--cpu', str(THREADS),\n])"
+    },
+    "params": [
+      { "flag": "-m", "default": "diamond", "note": "搜索后端：diamond 最快、mmseqs 更省内存、hmmer 最敏感但极慢；换后端会改变命中集合" },
+      { "flag": "--itype", "default": "proteins", "note": "proteins 直接用你的蛋白；genome/metagenome 会内部预测基因、边界不可控，通常不如先跑 Prodigal/Prokka" },
+      { "flag": "--tax_scope", "default": "自动（按物种推断）", "note": "限定注释转移的分类分支；对非模式物种先用默认值，再抽查若干基因，避免套到远缘物种的功能描述" },
+      { "flag": "--go_evidence", "default": "非电子推断（具体取值以官方文档为准）", "note": "GO 注释的证据过滤方式；不同项目用不同设置会让 GO 条目数系统性不同，必须在方法里写明" },
+      { "flag": "-e", "default": "0.001", "note": "同源搜索的 E-value 上限；放宽会明显增加错误归属，跨项目比较必须一致" },
+      { "flag": "--dbmem", "default": "关闭", "note": "把整个 eggNOG 库载入内存，速度提升明显但要数十 GB 内存；内存不足会被 OOM 杀掉" },
+      { "flag": "--sensmode", "default": "默认档位", "note": "DIAMOND 敏感度档位；远缘同源用更敏感的档位，但运行时间成倍增加" }
+    ],
+    "pitfalls": [
+      "数据库版本是结果的一部分：eggNOG 5.0.x 与旧版 4.5 的 ortholog 分配、COG 归属差异明显，同一个基因可能拿到不同编号。补数据或跨项目比较前必须锁定并记录数据库版本与下载日期。",
+      "输出表表头以 # 开头，GO/KEGG/EC 字段是逗号分隔的多值：pandas 直接读会错位，统计前要跳过注释行并把多值拆分，否则功能类别计数会系统性偏低。",
+      "--tax_scope 决定注释从哪个分支转移。留空时按物种自动判断；指定成远缘分支会拿到不相关物种的功能描述，而且结果看起来完全正常。",
+      "同源搜索的敏感度档位影响命中：默认档位对远缘同源会漏，调到 very-sensitive 又慢数倍。同一项目的所有样本必须用同一档，否则样本间差异可能只是参数差异。",
+      "--dbmem 需要数十 GB 内存，内存不足时进程会被 OOM 杀掉；批量运行时要注意并发数，日志里不一定有醒目报错。",
+      "不要把逐基因标签当通路结论：eggNOG 只转移单个基因的功能，通路是否完整、是否表达需要额外的通路覆盖度与表达证据；GO 注释的 evidence code 也必须随结果报告。"
+    ],
+    "related": [
+      { "id": "anno_kofamscan", "note": "同样做功能归类但基于 Kofam HMM；两者的 KO 结果不可混用" },
+      { "id": "anno_diamond_nr", "note": "通用同源搜索，可作为功能注释的另一条证据线" },
+      { "id": "anno_interpro", "note": "结构域层面的证据，常与 eggNOG 互相印证" }
+    ],
+    "docs": [
+      { "label": "第 6 章 功能注释与耐药毒力", "path": "docs/guidebook/06-annotation-resistance-virulence.md" }
+    ]
+  },
+  {
+    "id": "anno_kofamscan",
+    "name": "KEGG 直系同源分配 (KofamScan)",
+    "category": "annotation-functional",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics", "metagenomics"],
+    "tags": ["kegg", "ko", "kofam", "hmm", "通路"],
+    "summary": "用 Kofam HMM 库把蛋白分配到 KEGG KO 编号",
+    "what": [
+      "KofamScan 用 HMMER 把每条蛋白搜到 Kofam（KEGG Orthology 的 HMM 谱）上，每个 KO 带一条由 KEGG 训练出的自适应阈值，命中且过阈值即分配 KO 号。相比 BLAST 类同源搜索，profile HMM 对远缘同源更敏感，因此它是基因组与宏基因组做 KO 分配的常用工具（网页版即 KofamKOALA）。",
+      "结果的含义要说清：KO 是「功能直系同源组」的编号，不是酶活性的证明。一条蛋白可以命中多个 KO（不同阈值下），也可以完全无命中（KEGG 的覆盖偏向模式微生物与研究充分的通路）。KO 表适合做功能类别的比较与富集，不能凭单个 KO 断言「该菌具有某条通路」或「能降解某底物」。",
+      "成本与依赖：需要预先下载 Kofam 的 profiles 与 ko_list（数千条 HMM），对几千条蛋白单机多线程通常几十分钟量级，宏基因组级别（百万条蛋白）要分批并行。Kofam 与 KO 编号随 KEGG 更新，版本必须随结果记录。"
+    ],
+    "inputs": [
+      { "type": "protein-faa", "name": "蛋白序列", "required": true, "note": "必须是干净的氨基酸序列：含终止符 * 或非氨基酸字符会导致解析失败或被静默跳过" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "KO 分配表", "ext": ".kofam.tsv", "note": "逐基因的 KO 命中、score 与阈值；列结构依 -f 而定" },
+      { "type": "log-report", "name": "运行日志与统计", "ext": ".kofam.log", "note": "记录参数、数据库路径与命中率，归档用于复现" }
+    ],
+    "provides": [
+      { "tool": "KofamScan", "version": "1.3.x", "access": "cli", "install": "conda", "note": "Ruby 实现；需另配 Kofam profiles 与 ko_list（按下载日期记录版本）" },
+      { "tool": "HMMER", "version": "3.4.x", "access": "cli", "install": "conda", "note": "底层 hmmsearch；版本升级会影响阈值边缘的命中" }
+    ],
+    "feeds": [
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "整理成 KO × 样本矩阵，供下游统计" },
+      { "target": "viz_composition_bar", "viaType": "tsv-table", "note": "把 KO 映射到功能大类后画组成图" },
+      { "target": "wf_reproducibility", "viaType": "log-report", "note": "Kofam 数据库下载日期与参数是可复现性的关键" }
+    ],
+    "usage": [
+      {
+        "label": "基本用法",
+        "lang": "bash",
+        "code": "exec_annotation -o anno/${SAMPLE}.kofam.tsv -p ${KOFAM_PROFILES} \\\n  -k ${KOFAM_KO_LIST} --cpu ${THREADS} anno/${SAMPLE}.faa"
+      },
+      {
+        "label": "输出更详细的命中信息（含 score 与阈值）",
+        "lang": "bash",
+        "code": "exec_annotation -f detail-tsv -o anno/${SAMPLE}.kofam.detail.tsv \\\n  -p ${KOFAM_PROFILES} -k ${KOFAM_KO_LIST} --cpu ${THREADS} anno/${SAMPLE}.faa\n# 可用格式与阈值选项以官方文档为准"
+      },
+      {
+        "label": "大数据集：切分后并行",
+        "lang": "bash",
+        "code": "seqkit split2 -p 8 anno/${SAMPLE}.faa -O anno/chunks\nfor f in anno/chunks/*.faa; do\n  exec_annotation -o ${f}.kofam -p ${KOFAM_PROFILES} -k ${KOFAM_KO_LIST} --cpu 2 ${f} &\ndone\nwait\ncat anno/chunks/*.kofam > anno/${SAMPLE}.kofam.tsv"
+      }
+    ],
+    "recipes": {
+      "bash": "exec_annotation -o 03_annotation/${SAMPLE}.kofam.tsv -p ${KOFAM_PROFILES} \\\n  -k ${KOFAM_KO_LIST} --cpu ${THREADS} 03_annotation/${SAMPLE}.faa",
+      "python": "run([\n    'exec_annotation',\n    '-o', str(ANNO_DIR / (sample + '.kofam.tsv')),\n    '-p', str(KOFAM_PROFILES), '-k', str(KOFAM_KO_LIST),\n    '--cpu', str(THREADS),\n    str(ANNO_DIR / (sample + '.faa')),\n])"
+    },
+    "params": [
+      { "flag": "-p / --profile", "default": "无", "note": "Kofam profiles 目录；与 -k 必须来自同一次下载，混用不同日期的库会让阈值失效" },
+      { "flag": "-k / --ko-list", "default": "无", "note": "ko_list 文件，含每个 KO 的自适应阈值与定义" },
+      { "flag": "--threshold", "default": "1.0", "note": "阈值缩放因子：1.0 表示按每个 KO 训练出的自适应阈值判定；统一收紧或放宽会改变敏感度与假阳性（具体语义以官方文档为准）" },
+      { "flag": "-f / --format", "default": "detail", "note": "输出格式（含更详细的 score 与阈值列）；不同格式列不同，脚本解析要固定格式" },
+      { "flag": "-E", "default": "0.01", "note": "E-value 上限；放宽到 1 会明显增加弱命中，跨项目比较必须一致" },
+      { "flag": "--cpu", "default": "1", "note": "线程数；HMM 搜索是主要开销，批量运行务必显式设置" }
+    ],
+    "pitfalls": [
+      "Kofam profiles / ko_list 随 KEGG 更新，KO 编号会被合并、拆分或废弃：不同时间点跑同一批蛋白会得到不同的 KO 清单。结果必须连同下载日期（或库的快照版本）一起记录，否则无法复现。",
+      "每个 KO 的判定阈值是 KEGG 训练出的自适应阈值。为了「多检出几条」而统一放松会显著增加错误归属，收紧又会漏掉真实同源；不要把它调成全局固定值。",
+      "一条蛋白命中多个 KO 时工具会全部列出：只取第一条可能丢掉正确功能，把全部命中都当独立功能又会高估功能多样性。统计前必须先定规则（例如只保留强命中，或每条基因取 score 最高者）。",
+      "KO 命中不等于通路完整：判断「能否利用某底物/是否存在某通路」需要检查该通路上其它 KO 是否存在（KEGG Mapper 或自建通路覆盖度），单个 KO 不足以支撑结论。",
+      "输入序列要干净：含终止符 *、内部终止或非氨基酸字符的序列会导致解析失败或被静默跳过，表现为「基因数对不上」；先做一次序列自检。",
+      "KEGG 的覆盖本身有偏好：环境样本里大量蛋白没有 KO 是正常现象，不要用 KO 命中率给样本质量打分，也不要把它当作功能多样性的绝对指标。"
+    ],
+    "related": [
+      { "id": "anno_eggnog", "note": "同样做功能归类，数据库与方法不同；KO 结果不要跨工具混用" },
+      { "id": "anno_diamond_nr", "note": "无 KO 命中的蛋白可以用同源搜索补充线索" },
+      { "id": "meta_humann", "note": "宏基因组的通路层面分析；结论层级不同" }
+    ],
+    "docs": [
+      { "label": "第 6 章 功能注释与耐药毒力", "path": "docs/guidebook/06-annotation-resistance-virulence.md" }
+    ]
+  },
+  {
+    "id": "anno_diamond_nr",
+    "name": "蛋白序列同源搜索 (DIAMOND / MMseqs2)",
+    "category": "annotation-functional",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics", "metagenomics"],
+    "tags": ["同源搜索", "比对", "diamond", "mmseqs2", "nr"],
+    "summary": "把蛋白或核酸快速比对到大库，得到同源候选",
+    "what": [
+      "DIAMOND 与 MMseqs2 用 seed-and-extend 的启发式策略在蛋白层面做大规模比对，速度比 BLASTP 快数百到数千倍，是「把几千到几百万条序列搜到 nr / UniProt / RefSeq」的实际方案。典型输出是 BLAST 兼容的表格（m8 格式），再由脚本按 identity、覆盖度与 E-value 过滤。",
+      "要分清它能给什么：同源搜索只回答「像谁」，不回答「是什么」。做功能注释要设阈值并看覆盖度与结构域；做物种归属必须用 LCA（lowest common ancestor）而不是 best hit——best hit 会系统性偏向数据库里序列最多的类群（培养模式菌、测序大户），这是环境样本注释里最常见的错误来源。",
+      "数据库与成本：nr 体积巨大且持续更新（NCBI 提供按日期归档的快照），DIAMOND 需要先用 makedb 建索引。库的快照日期直接决定结果，跨项目比较前必须锁定；内存、线程与 block size 需要一起权衡，否则容易 OOM。"
+    ],
+    "inputs": [
+      { "type": "protein-faa", "name": "查询蛋白序列", "required": true, "note": "blastp 模式；序列数从几千到几百万都可以，但要注意总耗时" },
+      { "type": "cds-fasta", "name": "查询核酸序列（可选）", "required": false, "note": "blastx 模式：核酸按六框翻译后比对蛋白库，适合还没有蛋白预测的场合" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "比对结果表", "ext": ".m8", "note": "BLAST 兼容的 tabular 输出；各列含义由 --outfmt 决定，必须随结果记录" },
+      { "type": "sqlite-db", "name": "比对索引库", "ext": ".dmnd", "note": "makedb 建成的索引；一次构建多次复用，升级软件后通常需要重建" }
+    ],
+    "provides": [
+      { "tool": "DIAMOND", "version": "2.1.x", "access": "cli", "install": "conda", "note": "蛋白比对为主；库格式随大版本变化，混用新旧库会让结果不可比" },
+      { "tool": "MMseqs2", "version": "15.x", "access": "cli", "install": "conda", "note": "采用 Release NN-hash 编号（如 15-6f452），没有 主.次 语义，实际以安装的 release 为准" }
+    ],
+    "feeds": [
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "按阈值过滤、汇总成基因 × 功能候选表" },
+      { "target": "r_tidyverse", "viaType": "tsv-table", "note": "在 R 里做命中分布与阈值敏感性分析" },
+      { "target": "util_awk_sed", "viaType": "tsv-table", "note": "m8 是扁平文本，用 awk 快速做阈值过滤与 top-hit 抽取" }
+    ],
+    "usage": [
+      {
+        "label": "建库（对 nr 只做一次，长期复用）",
+        "lang": "bash",
+        "code": "diamond makedb --in nr.gz --db ${NR_DMND} --threads ${THREADS}\n# 记录 nr 的快照日期；库版本变了结果就不可比"
+      },
+      {
+        "label": "蛋白搜索并输出分类信息",
+        "lang": "bash",
+        "code": "diamond blastp -q anno/${SAMPLE}.faa -d ${NR_DMND} -o anno/${SAMPLE}.nr.m8 \\\n  -f 6 qseqid sseqid pident length evalue bitscore staxids \\\n  --very-sensitive -p ${THREADS}\n# 要输出 staxids 必须另外提供 --taxonmap 与 --taxonnodes（以官方文档为准）"
+      },
+      {
+        "label": "MMseqs2 的等价用法",
+        "lang": "bash",
+        "code": "mmseqs easy-search anno/${SAMPLE}.faa ${NR_MMSEQS_DB} anno/${SAMPLE}.mmseqs.m8 tmp \\\n  --threads ${THREADS} -s 7.5 --format-output query,target,pident,alnlen,evalue,bits"
+      },
+      {
+        "label": "用 awk 做阈值过滤与 top-hit 抽取",
+        "lang": "bash",
+        "code": "awk -F'\\t' '$3>=30 && $4>=50 && $5<=1e-5' anno/${SAMPLE}.nr.m8 \\\n  | sort -k1,1 -k6,6nr | awk -F'\\t' '!seen[$1]++' > anno/${SAMPLE}.nr.top1.tsv"
+      }
+    ],
+    "recipes": {
+      "bash": "diamond blastp -q 03_annotation/${SAMPLE}.faa -d ${NR_DMND} \\\n  -o 03_annotation/${SAMPLE}.nr.m8 -f 6 qseqid sseqid pident length evalue bitscore \\\n  --very-sensitive -p ${THREADS}",
+      "python": "run([\n    'diamond', 'blastp',\n    '-q', str(ANNO_DIR / (sample + '.faa')),\n    '-d', str(NR_DMND),\n    '-o', str(ANNO_DIR / (sample + '.nr.m8')),\n    '-f', '6', 'qseqid', 'sseqid', 'pident', 'length', 'evalue', 'bitscore',\n    '--very-sensitive', '-p', str(THREADS),\n])"
+    },
+    "params": [
+      { "flag": "-f / --outfmt", "default": "6（BLAST tabular）", "note": "自定义输出列时必须在方法里写明列顺序，否则下游脚本与读者都无法复原；分类信息要显式加 staxids" },
+      { "flag": "--sensitive / --very-sensitive", "default": "偏快的默认档位", "note": "敏感度档位；远缘同源（环境样本、新属）的命中率随档位明显变化，至少做一次档位对照" },
+      { "flag": "-e", "default": "0.001", "note": "E-value 上限；放宽到 1 会引入大量弱命中，跨项目比较必须一致" },
+      { "flag": "-k / --max-target-seqs", "default": "25", "note": "每条查询保留的命中数；做 LCA 需要更多命中（如 100 以上），只取 top1 会丢掉分类信息" },
+      { "flag": "-b / -c / --block-size", "default": "自动", "note": "控制内存占用；大库 + 高线程容易 OOM，调小 block size 可降内存但变慢" },
+      { "flag": "--taxonmap / --taxonnodes", "default": "无", "note": "要输出 staxids（物种 taxid）必须提供 NCBI 的 accession2taxid 与 nodes.dmp，否则拿不到物种信息" },
+      { "flag": "MMseqs2 -s", "default": "5.7", "note": "敏感度参数（越高越敏感、越慢）；与 DIAMOND 的档位不是一一对应，跨工具比较要谨慎" }
+    ],
+    "pitfalls": [
+      "nr 是持续更新的库：同一条蛋白在不同快照下 best hit 的物种与功能都可能不同。必须记录 nr 的快照日期（NCBI 提供按日期归档的版本），跨项目比较前统一到同一快照。",
+      "用 best hit 判物种会系统性出错：数据库里序列多的类群会抢走归属。物种归属要用 LCA 策略（输出多条命中 + MEGAN 或自建 LCA），或改用专门的分类工具。",
+      "要输出 staxids 必须额外提供 --taxonmap 与 --taxonnodes（并注意版本匹配），否则该列是空的或直接报错——很多人到写论文时才发现拿不到物种信息。",
+      "敏感度档位对结论影响很大：默认档位偏快，环境样本与远缘同源会漏检。至少用 --very-sensitive 做一次对照，确认关键结论不随档位变化。",
+      "内存与线程要一起调：大库 + 高线程 + 默认 block size 容易 OOM。进程被杀时常常只留下不完整的输出文件，安静地污染下游结果。",
+      "DIAMOND 的索引库格式随大版本变化：升级软件后旧 .dmnd 通常需要重建（以官方文档为准）。库文件与建库参数要一起归档，否则无法复现搜索条件。"
+    ],
+    "related": [
+      { "id": "anno_eggnog", "note": "把同源搜索的结果进一步归到功能同源群" },
+      { "id": "anno_kofamscan", "note": "HMM 路线，对远缘同源更敏感，可与同源搜索互补" },
+      { "id": "tax_mash", "note": "更快的基因组水平距离估计，但不能替代蛋白层面的功能搜索" }
+    ],
+    "docs": [
+      { "label": "第 6 章 功能注释与耐药毒力", "path": "docs/guidebook/06-annotation-resistance-virulence.md" }
+    ]
+  },
+  {
+    "id": "anno_interpro",
+    "name": "蛋白结构域注释 (InterProScan)",
+    "category": "annotation-functional",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics", "metagenomics"],
+    "tags": ["结构域", "interpro", "pfam", "panther", "go"],
+    "summary": "把蛋白匹配到多个成员库的结构域与功能位点",
+    "what": [
+      "InterProScan 让同一条蛋白同时过十几个成员库的分析（Pfam、PANTHER、CDD、SMART、PROSITE、SUPERFAMILY、Gene3D、Hamap、PIRSF、Coils 等），把命中整合成 InterPro 条目，并可附带 GO 与通路注释。它的价值在于把不同方法学的证据合并到一套条目上，结论比单一库更稳。",
+      "看结果的重点不是「有没有注释」，而是命中的是哪个条目、覆盖蛋白全长的哪一段、score 与 E-value 如何。只覆盖一小段的命中、落在低复杂度区的命中都可能是巧合；只看「匹配到某结构域」就下功能结论是典型误用，因为同一结构域可以出现在功能完全不同的蛋白里。",
+      "它也是典型的「慢」：全应用跑一个细菌基因组的几千条蛋白，单机多线程常常要数小时到十几小时，是流程中的时间瓶颈。数据库每次发布都会新增、合并或废弃条目（例如 TIGRFAM 停止维护后内容被整合），跨版本比较结构域数量前必须锁定版本。"
+    ],
+    "inputs": [
+      { "type": "protein-faa", "name": "蛋白序列", "required": true, "note": "标准输入；基因边界由上游注释工具决定" },
+      { "type": "cds-fasta", "name": "核酸序列（可选）", "required": false, "note": "按核酸类型分析时内部会做六框翻译，命中更零散、更难解释，通常不如先做基因预测" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "结构域注释表", "ext": ".tsv", "note": "逐命中的条目、位置、score 与 E-value；列序在不同大版本间有变化" },
+      { "type": "gff", "name": "结构域 GFF3", "ext": ".gff3", "note": "可叠加到基因组浏览器与环形图上" }
+    ],
+    "provides": [
+      { "tool": "InterProScan", "version": "5.6x.x", "access": "cli", "install": "conda", "note": "Java + Python 实现；版本形如 5.66-98.0（软件-数据库），成员库与可用应用随版本变化" },
+      { "tool": "HMMER", "version": "3.4.x", "access": "cli", "install": "conda", "note": "Pfam 等基于 profile HMM 的成员库依赖它" }
+    ],
+    "feeds": [
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "整理成蛋白 × 结构域矩阵" },
+      { "target": "viz_heatmap", "viaType": "tsv-table", "note": "结构域存在/缺失热图，便于比较不同基因组" },
+      { "target": "io_gff_convert", "viaType": "gff", "note": "把结构域位置转换到其它注释格式或与基因注释合并" }
+    ],
+    "usage": [
+      {
+        "label": "基本用法（TSV + GFF3）",
+        "lang": "bash",
+        "code": "interproscan.sh -i anno/${SAMPLE}.faa -f TSV,GFF3 \\\n  -o anno/${SAMPLE}.interpro --cpu ${THREADS}"
+      },
+      {
+        "label": "裁剪应用以缩短时间（只保留常用库）",
+        "lang": "bash",
+        "code": "interproscan.sh -i anno/${SAMPLE}.faa -f TSV -appl Pfam,PANTHER,CDD \\\n  -o anno/${SAMPLE}.interpro.fast --cpu ${THREADS}\n# 裁剪后「没有命中」只代表这些库没命中，不能写成「没有已知结构域」"
+      },
+      {
+        "label": "附带 GO 与通路注释",
+        "lang": "bash",
+        "code": "interproscan.sh -i anno/${SAMPLE}.faa -f TSV -goterms -pa \\\n  -o anno/${SAMPLE}.interpro.go --cpu ${THREADS}"
+      },
+      {
+        "label": "离线环境禁用预计算查找服务",
+        "lang": "bash",
+        "code": "interproscan.sh -i anno/${SAMPLE}.faa -f TSV -dp -cpu ${THREADS} \\\n  -o anno/${SAMPLE}.interpro.offline\n# 部分成员库（尤其 PANTHER）行为随之改变，具体以官方文档为准"
+      }
+    ],
+    "recipes": {
+      "bash": "interproscan.sh -i 03_annotation/${SAMPLE}.faa -f TSV,GFF3 \\\n  -o 03_annotation/${SAMPLE}.interpro -cpu ${THREADS} -goterms",
+      "python": "run([\n    'interproscan.sh',\n    '-i', str(ANNO_DIR / (sample + '.faa')),\n    '-f', 'TSV,GFF3',\n    '-o', str(ANNO_DIR / (sample + '.interpro')),\n    '-cpu', str(THREADS), '-goterms',\n])"
+    },
+    "params": [
+      { "flag": "-appl", "default": "全部成员库", "note": "指定要跑的应用集合；裁剪能大幅提速，但也会改变「没有注释」的含义，必须在方法里写明用了哪些库" },
+      { "flag": "-f / --formats", "default": "TSV", "note": "输出格式（TSV/GFF3/JSON/XML 可组合）；TSV 便于解析，GFF3 便于可视化" },
+      { "flag": "-cpu", "default": "1", "note": "线程数；必须显式设置，否则单线程跑一个基因组可能要一整天" },
+      { "flag": "-dp", "default": "关闭", "note": "禁用预计算的 lookup service；离线环境与需要完全本地化时必须开启（部分应用结果会不同）" },
+      { "flag": "-goterms / -pa", "default": "关闭", "note": "额外输出 GO 与通路映射；不开启时结果里没有 GO 列，别以为是没有注释" },
+      { "flag": "-t", "default": "p（蛋白）", "note": "序列类型；核酸输入会做六框翻译，命中更零散，解释成本更高" }
+    ],
+    "pitfalls": [
+      "慢是常态而不是异常：全应用跑一个细菌基因组往往要数小时到十几小时。批量项目必须先估时间或上 HPC，不要把它塞进需要反复迭代的调试循环里。",
+      "裁剪应用集合会改变结论的边界：只跑 Pfam/PANTHER/CDD 能大幅提速，但「未命中」只代表这些库没命中，不能写成「该蛋白没有已知结构域」。",
+      "数据库版本差异明显：InterPro 每次发布都会新增、合并或废弃条目，同一蛋白在不同版本下的条目号与数量都会变。跨项目比较或补数据前必须锁定版本。",
+      "版本升级还会改变可用应用：受许可限制的分析（如 SignalP、TMHMM、Phobius）在较新版本中已被移除，依赖它们的老流程升级后会缺结果（以官方 release notes 为准）。",
+      "片段命中不等于功能：只覆盖蛋白一小段的结构域、低复杂度区命中、以及相互矛盾的多库命中都需要人工判断；关键结论要看覆盖度、score 与多证据一致性。",
+      "输出 TSV 的列在不同大版本间有增减：脚本解析要按版本锁定或按表头定位，硬编码列序号在升级后会静默错位，产生看起来正常但实际错列的结果。"
+    ],
+    "related": [
+      { "id": "anno_eggnog", "note": "同源群层面的功能归类，与结构域证据互补" },
+      { "id": "anno_diamond_nr", "note": "同源搜索，用于确认结构域命中的上下文" },
+      { "id": "anno_dbcan", "note": "专门针对碳水化合物活性酶的 HMM 注释，粒度比通用结构域注释更贴合该领域" }
+    ],
+    "docs": [
+      { "label": "第 6 章 功能注释与耐药毒力", "path": "docs/guidebook/06-annotation-resistance-virulence.md" }
+    ]
+  },
+  {
+    "id": "anno_dbcan",
+    "name": "碳水化合物活性酶注释 (dbCAN)",
+    "category": "annotation-functional",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "active",
+    "domains": ["genomics", "metagenomics"],
+    "tags": ["cazyme", "dbcan", "碳水化合物", "hmm", "cbm"],
+    "summary": "用 HMMER、DIAMOND 与 eCAMI 三路证据注释 CAZyme 家族",
+    "what": [
+      "dbCAN（run_dbcan）对同一批蛋白或核酸跑三套方法：dbCAN HMMdb（HMMER 搜 profile）、CAZy 序列库（DIAMOND 比对）与 eCAMI（面向 CGC 等家族），再把结果合并成一张 CAZyme 总表，给出 GH、GT、PL、CE、AA、CBM 家族归属与候选 EC 号。它是碳水化合物活性酶研究的事实标准工具。",
+      "不同方法的敏感度与假阳性率不同，官方建议把「至少两种方法都支持」的条目视为高置信。只用 HMMER 会把远缘同源大量算进来，只用序列比对会漏掉只有结构域特征的家族；用了哪几路、阈值是多少，都必须写进方法学，否则「CAZyme 数量」在不同研究之间不可比。",
+      "结果边界要讲清楚：家族归属是相似性推断，不等于底物与活性——同一 GH 家族内部底物专一性差异可以很大。此外 CBM（碳水化合物结合模块）与催化域是两回事，AA（辅助活性酶）与 CE（碳水化合物酯酶）也不是糖苷水解酶；统计「降解多糖的能力」时把这些混进 GH 会得出错误结论。"
+    ],
+    "inputs": [
+      { "type": "protein-faa", "name": "蛋白序列", "required": true, "note": "基因边界由上游预测决定，会影响能检出的结构域完整性" },
+      { "type": "contigs", "name": "核酸序列（可选）", "required": false, "note": "由 dbCAN 内部预测 ORF；宏基因组与 MAG 用 meta 模式，用单菌模式会漏掉碎片化序列上的基因" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "CAZyme 总表", "ext": "overview.tsv", "note": "逐蛋白的家族归属与支持方法，是主要结果文件" },
+      { "type": "tsv-table", "name": "单方法比对明细", "ext": "hmmer.out / diamond.out / dbcan.out", "note": "各路方法的原始命中，用于判断证据强度与分歧" },
+      { "type": "log-report", "name": "运行日志", "ext": ".log", "note": "记录模式、工具集合与数据库路径，归档用于复现" }
+    ],
+    "provides": [
+      { "tool": "dbCAN (run_dbcan)", "version": "4.1.x", "access": "cli", "install": "conda", "note": "整合 HMMER、DIAMOND 与 eCAMI；数据库需按官方流程预先准备并记录版本" },
+      { "tool": "HMMER", "version": "3.4.x", "access": "cli", "install": "conda", "note": "dbCAN HMMdb 搜索；HMMdb 按 V 编号发布（如 V12/V13），不同版本家族集合不同" },
+      { "tool": "DIAMOND", "version": "2.1.x", "access": "cli", "install": "conda", "note": "对 CAZy 序列库的比对路线，与 HMM 路线互补" }
+    ],
+    "feeds": [
+      { "target": "anno_cazy", "viaType": "tsv-table", "note": "与 CAZy 官方序列比对结果交叉验证，取一致部分作为高置信集合" },
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "整理成家族 × 样本矩阵" },
+      { "target": "viz_composition_bar", "viaType": "tsv-table", "note": "按 CAZy 大类画组成图" },
+      { "target": "wf_reproducibility", "viaType": "log-report", "note": "数据库版本与方法组合必须随结果记录" }
+    ],
+    "usage": [
+      {
+        "label": "蛋白输入（最常用）",
+        "lang": "bash",
+        "code": "run_dbcan anno/${SAMPLE}.faa protein --db_dir ${DBCAN_DB} \\\n  --out_dir anno/${SAMPLE}_dbcan --tools hmmer diamond dbcan\n# 模式与 --tools 的取值以官方文档为准"
+      },
+      {
+        "label": "基因组 / MAG",
+        "lang": "bash",
+        "code": "run_dbcan 02_assembly/${SAMPLE}.fna prok --db_dir ${DBCAN_DB} \\\n  --out_dir anno/${SAMPLE}_dbcan"
+      },
+      {
+        "label": "宏基因组组装",
+        "lang": "bash",
+        "code": "run_dbcan 05_metagenome/${SAMPLE}.contigs.fasta meta --db_dir ${DBCAN_DB} \\\n  --out_dir anno/${SAMPLE}_dbcan\n# 宏基因组必须用 meta 模式，否则碎片化 contig 上的基因会大量漏检"
+      },
+      {
+        "label": "准备数据库（一次，并记录版本）",
+        "lang": "bash",
+        "code": "run_dbcan database --db_dir ${DBCAN_DB}\n# 记录下载日期与 HMMdb 的 V 编号；版本变化会改变家族数量"
+      }
+    ],
+    "recipes": {
+      "bash": "run_dbcan 03_annotation/${SAMPLE}.faa protein --db_dir ${DBCAN_DB} \\\n  --out_dir 03_annotation/${SAMPLE}_dbcan --tools hmmer diamond dbcan\ncp 03_annotation/${SAMPLE}_dbcan/overview.tsv 09_results/${SAMPLE}.cazyme.tsv",
+      "python": "run([\n    'run_dbcan', str(ANNO_DIR / (sample + '.faa')), 'protein',\n    '--db_dir', str(DBCAN_DB),\n    '--out_dir', str(ANNO_DIR / (sample + '_dbcan')),\n    '--tools', 'hmmer', 'diamond', 'dbcan',\n])"
+    },
+    "params": [
+      { "flag": "模式（prok / meta / protein）", "default": "protein（给蛋白时）", "note": "决定是否内部预测 ORF 以及用哪种预测模式；宏基因组与 MAG 必须用 meta，具体取值以官方文档为准" },
+      { "flag": "--tools", "default": "多方法组合", "note": "选择参加判定的方法；只保留一种会让结论完全依赖该方法，官方建议用「两种以上方法支持」作为高置信标准" },
+      { "flag": "--db_dir", "default": "无", "note": "数据库目录；HMMdb 的 V 编号与 CAZy 序列库的下载日期必须随结果记录" },
+      { "flag": "--out_dir", "default": "当前目录", "note": "输出目录；固定成每样本一个目录，便于批量归档与比较" },
+      { "flag": "阈值（HMM 覆盖度 / 比对 identity 等）", "default": "以官方文档为准", "note": "改变阈值会直接改变家族数量与假阳性水平，任何下调都要在方法里说明并做阳性对照" }
+    ],
+    "pitfalls": [
+      "三种方法的结论常不一致，必须先定规则：官方建议至少两种方法支持才算高置信。把 HMMER 单独命中当确证会把远缘同源大量算进来，家族数量会明显偏高。",
+      "数据库版本直接改变结果：dbCAN HMMdb 的 V 编号与 CAZy 序列库的下载日期不同，家族集合与命名就不同。换库等于换方法，必须随结果记录并在跨项目比较前统一。",
+      "CBM 与催化域要分开统计：一条蛋白常同时带催化域与 CBM，按 domain 计数会把酶数量高估；应先按蛋白去重，再决定主家族归属。",
+      "AA（辅助活性酶）与 CE（碳水化合物酯酶）不是糖苷水解酶：统计「降解多糖的能力」时把它们混入 GH，会得出与实验不符的结论。",
+      "家族归属不等于底物与活性：同一 GH 家族内部底物专一性差异很大，底物预测（如 dbCAN-sub）仍是推断。要下「能降解某底物」的结论，需要酶活实验或至少表达与分泌证据。",
+      "输入模式与数据类型不匹配会系统性漏检：宏基因组/MAG 用单菌模式预测 ORF 会漏掉碎片化序列上的基因，这类错误从结果表面看不出来，只表现为「CAZyme 偏少」。"
+    ],
+    "related": [
+      { "id": "anno_cazy", "note": "基于 CAZy 官方序列的独立比对路线，用于交叉验证" },
+      { "id": "anno_interpro", "note": "通用结构域注释，可作为第三路证据" },
+      { "id": "anno_kofamscan", "note": "KO 层面的功能归类，覆盖更广但不专注 CAZyme" }
+    ],
+    "docs": [
+      { "label": "第 6 章 功能注释与耐药毒力", "path": "docs/guidebook/06-annotation-resistance-virulence.md" }
+    ]
+  },
+  {
+    "id": "anno_cazy",
+    "name": "CAZy 分类归属 (CAZy 数据库比对)",
+    "category": "annotation-functional",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics", "metagenomics"],
+    "tags": ["cazy", "碳水化合物", "家族归属", "diamond", "blast"],
+    "summary": "用 CAZy 参考序列比对并统一到官方家族命名",
+    "what": [
+      "把蛋白直接比对到 CAZy 参考序列库（CAZyDB 或 CAZy 官方发布的序列集），按 GH、GT、PL、CE、AA、CBM 六大类与家族编号（如 GH13、CBM48）给出归属，并汇总成「家族 × 样本」的计数矩阵。它的作用有两层：一是给 dbCAN 这类以 HMM 为主的注释提供一路独立的序列比对证据，二是把不同来源的注释统一到 CAZy 官方命名，便于跨项目比较。",
+      "与 dbCAN 的差异是方法层面的：数据库不同（CAZy 官方序列 vs dbCAN 整理的 HMM 与序列集合）、算法不同（同源比对 vs profile HMM）。结果不一致是正常现象，正确做法是两路都跑、报告分歧，并把「一致部分」作为高置信集合；只报一路会让结论随工具选择而变。",
+      "使用前要注意两点：CAZy 数据有明确的学术使用条款（再分发受限），正式项目要按官方要求获取与引用；家族编号会随 CAZy 更新而拆分、合并或重命名，合并多批历史结果前必须统一到同一版本。"
+    ],
+    "inputs": [
+      { "type": "protein-faa", "name": "蛋白序列", "required": true, "note": "通常来自 Prokka/Bakta/Prodigal" },
+      { "type": "tsv-table", "name": "已有 CAZyme 注释（可选）", "required": false, "note": "例如 dbCAN 的 overview.tsv，用于交叉验证与分歧统计" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "CAZy 家族归属明细", "ext": ".cazy_hits.tsv", "note": "逐命中的家族、identity、覆盖度与 E-value；主家族需要人工或规则判定" },
+      { "type": "abundance-table", "name": "家族 × 样本计数矩阵", "ext": ".cazy_matrix.tsv", "note": "按蛋白去重后统计，可直接做组成分析与跨样本比较" }
+    ],
+    "provides": [
+      { "tool": "DIAMOND", "version": "2.1.x", "access": "cli", "install": "conda", "note": "推荐的序列比对后端，速度足以处理宏基因组规模的蛋白集" },
+      { "tool": "BLAST+", "version": "2.1x.x", "access": "cli", "install": "conda", "note": "blastp 更慢但更适合少量关键蛋白的人工复核" }
+    ],
+    "feeds": [
+      { "target": "viz_composition_bar", "viaType": "abundance-table", "note": "把 CAZy 大类与家族的构成画成组成图" },
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "合并多种注释并生成最终矩阵" },
+      { "target": "r_tidyverse", "viaType": "tsv-table", "note": "在 R 里做家族层面的统计与作图" }
+    ],
+    "usage": [
+      {
+        "label": "建库并比对",
+        "lang": "bash",
+        "code": "diamond makedb --in CAZyDB.faa --db cazydb.dmnd --threads ${THREADS}\ndiamond blastp -q anno/${SAMPLE}.faa -d cazydb.dmnd -o anno/${SAMPLE}.cazy.m8 \\\n  -f 6 qseqid sseqid pident length qlen slen evalue bitscore \\\n  --max-target-seqs 5 --id 30 --query-cover 50 -p ${THREADS}"
+      },
+      {
+        "label": "与 dbCAN 结果交叉验证（只保留两路一致的家族）",
+        "lang": "bash",
+        "code": "python merge_cazyme.py --dbcan anno/${SAMPLE}_dbcan/overview.tsv \\\n  --cazy anno/${SAMPLE}.cazy.m8 --out anno/${SAMPLE}.cazy_consensus.tsv\n# 脚本需自己实现：按蛋白 ID 对齐，标记两路一致与仅一路支持的条目"
+      },
+      {
+        "label": "少量关键蛋白用 BLAST 人工复核",
+        "lang": "bash",
+        "code": "blastp -query key_proteins.faa -db CAZyDB -outfmt 6 -evalue 1e-5 \\\n  -max_target_seqs 10 -num_threads 4"
+      }
+    ],
+    "recipes": {
+      "bash": "diamond blastp -q 03_annotation/${SAMPLE}.faa -d ${CAZY_DMND} \\\n  -o 03_annotation/${SAMPLE}.cazy.m8 \\\n  -f 6 qseqid sseqid pident length qlen slen evalue bitscore \\\n  --max-target-seqs 5 --id 30 --query-cover 50 -p ${THREADS}",
+      "python": "run([\n    'diamond', 'blastp',\n    '-q', str(ANNO_DIR / (sample + '.faa')),\n    '-d', str(CAZY_DMND),\n    '-o', str(ANNO_DIR / (sample + '.cazy.m8')),\n    '-f', '6', 'qseqid', 'sseqid', 'pident', 'length', 'qlen', 'slen', 'evalue', 'bitscore',\n    '--max-target-seqs', '5', '--id', '30', '--query-cover', '50',\n    '-p', str(THREADS),\n])"
+    },
+    "params": [
+      { "flag": "--max-target-seqs / -k", "default": "5（推荐）", "note": "保留多条命中用于判断主家族；只取 top1 会丢掉真实的次优家族归属" },
+      { "flag": "--id", "default": "0（工具默认）", "note": "最小 identity 百分比；CAZyme 家族内部允许较大差异，通常设 30–40 并在方法里写明" },
+      { "flag": "--query-cover", "default": "0（工具默认）", "note": "查询覆盖度门槛；设 50 以上可排除只命中一小段的假阳性（参数名与默认值以官方文档为准）" },
+      { "flag": "-e / --evalue", "default": "0.001（DIAMOND 默认）", "note": "E-value 上限；放宽会引入远缘同源，收紧会漏掉分歧较大的家族成员" },
+      { "flag": "-f / --outfmt", "default": "6", "note": "必须包含 qlen/slen（或覆盖度相关列），否则无法计算覆盖度，只能靠比对长度估算" },
+      { "flag": "CAZy 数据来源与版本", "default": "无", "note": "记录下载来源、日期与许可；不同镜像或打包版本的条目数与命名可能不同" }
+    ],
+    "pitfalls": [
+      "数据库来源与许可要事先确认：CAZy 的序列数据按学术使用条款提供、再分发受限；不同镜像或打包版本的条目数与家族命名可能不一致，正式项目必须记录来源、下载日期与引用方式。",
+      "家族编号会变：CAZy 会拆分、合并或重命名家族，新家族不断加入。把多年前的结果与新结果直接相加或比较，会出现同一蛋白归属不同家族的假差异；比较前统一到同一版本。",
+      "多结构域蛋白是最主要的假阳性来源：一条蛋白可能同时命中催化域与 CBM。按命中条数统计会重复计数，应先按蛋白去重，再按「催化域优先、CBM 单独记」的规则决定归属。",
+      "只取 top hit 会丢信息，放宽阈值又会让结果不可比：低相似度但正确的家族命中常排在第 3–5 位。合理做法是保留多条命中并用 identity 与覆盖度设定明确门槛，把阈值写进方法。",
+      "与 dbCAN 结果不一致不是错误而是方法差异：HMM 对远缘同源更敏感、序列比对更依赖库的覆盖。不要简单取并集当结论，应报告分歧条目并说明判定规则。",
+      "家族归属不等于活性与底物：GH 与 PL 家族内部的底物专一性差异很大，同家族的不同蛋白可能作用于完全不同的多糖。功能结论必须有酶活实验或至少表达、分泌与遗传学证据支持。"
+    ],
+    "related": [
+      { "id": "anno_dbcan", "note": "HMM 路线的主力工具，与本模块互为验证" },
+      { "id": "anno_diamond_nr", "note": "通用同源搜索；比对 nr 可作为家族归属的旁证" },
+      { "id": "anno_interpro", "note": "结构域层面的第三条证据线" }
+    ],
+    "docs": [
+      { "label": "第 6 章 功能注释与耐药毒力", "path": "docs/guidebook/06-annotation-resistance-virulence.md" }
+    ]
+  }
+]

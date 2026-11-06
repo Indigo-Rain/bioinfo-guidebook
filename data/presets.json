@@ -1,0 +1,446 @@
+[
+  {
+    "id": "preset-core-genome-tree",
+    "name": "核心基因组比对与系统发育树",
+    "tags": ["pangenome", "phylogeny", "comparative", "end-to-end"],
+    "difficulty": "进阶",
+    "summary": "从已注释基因组出发构建核心基因组树并评估分支支持度",
+    "starter": false,
+    "steps": ["收集同种基因组并统一注释", "推断直系同源群", "提取核心单拷贝基因并串联比对", "比对修剪", "选替换模型", "最大似然建树", "评估支持度", "带注释可视化"],
+    "nodes": [
+      { "id": "n1", "moduleId": "anno_bakta", "x": 60, "y": 60 },
+      { "id": "n2", "moduleId": "pange_orthofinder", "x": 340, "y": 60 },
+      { "id": "n3", "moduleId": "pange_core_align", "x": 620, "y": 60 },
+      { "id": "n4", "moduleId": "phy_trimal", "x": 900, "y": 60 },
+      { "id": "n5", "moduleId": "phy_modeltest", "x": 1180, "y": 20 },
+      { "id": "n6", "moduleId": "phy_iqtree", "x": 1460, "y": 60 },
+      { "id": "n7", "moduleId": "phy_support_test", "x": 1740, "y": 60 },
+      { "id": "n8", "moduleId": "viz_tree_plot", "x": 2020, "y": 60 }
+    ],
+    "edges": [
+      { "from": "n1", "to": "n2", "fromType": "protein-faa" },
+      { "from": "n2", "to": "n3", "fromType": "gene-list" },
+      { "from": "n3", "to": "n4", "fromType": "alignment-fasta" },
+      { "from": "n4", "to": "n6", "fromType": "alignment-fasta" },
+      { "from": "n5", "to": "n6", "fromType": "tsv-table" },
+      { "from": "n6", "to": "n7", "fromType": "tree" },
+      { "from": "n7", "to": "n8", "fromType": "tree" }
+    ],
+    "notes": [
+      { "nodeId": "n1", "text": "输入是**同一物种**的一组基因组的注释结果。跨物种的泛基因组没有意义（同源关系会混入直系同源与旁系同源）。这里从注释模块起步：如果你的基因组已有注释（GFF3），可以把 n1 换成直接读取注释的模块。" },
+      { "nodeId": "n4", "text": "核心基因的判定依赖聚类阈值。换阈值（如 70% 与 90% 一致度）得到不同的核心基因集，进而得到不同的树 —— 阈值必须与结果一起报告。" },
+      { "nodeId": "n4", "text": "比对修剪是有争议的一步：修剪通常提高支持度，但也可能丢掉真实信息。建议修剪与不修剪各建一树，比较拓扑是否一致。" },
+      { "nodeId": "n5", "text": "更换替换模型会改变分支长度与支持度。不做模型选择而用默认模型是常见问题，ModelFinder 的成本很低。" },
+      { "nodeId": "n7", "text": "支持度高不等于结论正确：bootstrap 只能检出随机误差的影响，无法发现长枝吸引、组成偏倚这类系统误差。结论稳健性需要额外检验（如去长枝重跑）。" }
+    ],
+    "docs": ["docs/guidebook/07-comparative-pangenome.md", "docs/guidebook/10-downstream-analysis-visualization.md"],
+    "expectedOutputs": ["核心基因比对文件", "带支持度的系统发育树（Newick）", "带注释的树图"]
+  },
+  {
+    "id": "preset-16s-diversity",
+    "name": "16S 扩增子：从原始读长到群落差异",
+    "tags": ["amplicon", "16S", "microbiome", "end-to-end"],
+    "difficulty": "入门",
+    "summary": "ASV 去噪、物种注释、多样性与群落差异检验的完整扩增子流程",
+    "starter": true,
+    "steps": ["导入并整理 QIIME 2 数据", "去除低质量与去噪生成 ASV", "物种注释", "识别污染物 ASV", "alpha/beta 多样性与排序", "统计检验与可视化"],
+    "nodes": [
+      { "id": "n1", "moduleId": "amplicon_qiime2_import", "x": 60, "y": 120 },
+      { "id": "n2", "moduleId": "amplicon_dada2", "x": 340, "y": 60 },
+      { "id": "n3", "moduleId": "amplicon_taxonomy_assign", "x": 620, "y": 60 },
+      { "id": "n4", "moduleId": "amplicon_decontam", "x": 900, "y": 20 },
+      { "id": "n5", "moduleId": "amplicon_qiime2_diversity", "x": 1180, "y": 60 },
+      { "id": "n6", "moduleId": "viz_rarefaction_curve", "x": 1460, "y": 0 },
+      { "id": "n7", "moduleId": "amplicon_phyloseq", "x": 1460, "y": 140 },
+      { "id": "n8", "moduleId": "viz_alpha_beta", "x": 1740, "y": 60 },
+      { "id": "n9", "moduleId": "viz_composition_bar", "x": 2020, "y": 60 }
+    ],
+    "edges": [
+      { "from": "n1", "to": "n2", "fromType": "raw-reads" },
+      { "from": "n2", "to": "n3", "fromType": "feature-table" },
+      { "from": "n3", "to": "n4", "fromType": "feature-table" },
+      { "from": "n4", "to": "n5", "fromType": "feature-table" },
+      { "from": "n5", "to": "n6", "fromType": "cluster-dist" },
+      { "from": "n3", "to": "n7", "fromType": "feature-table" },
+      { "from": "n5", "to": "n8", "fromType": "stats-result" },
+      { "from": "n7", "to": "n9", "fromType": "abundance-table" }
+    ],
+    "notes": [
+      { "nodeId": "n2", "text": "ASV **不是物种**，只是为了分析而定义的精确序列单元。不要把 ASV 数量等同于物种丰富度。" },
+      { "nodeId": "n4", "text": "污染物识别需要**同批处理的空白对照**。没有空白样本时 decontam 的阈值判断不可靠，这一点必须在方法中说明。" },
+      { "nodeId": "n5", "text": "**先看稀释曲线**再比较 alpha 多样性。测序深度不一致时低深度样本的丰富度会被系统性低估。深度差异过大时应剔除过浅样本，而不是一味稀释。" },
+      { "nodeId": "n8", "text": "PERMANOVA 显著只说明群落整体结构有差异，**不指向任何具体物种**。要找出差异物种需要差异丰度分析（ANCOM-BC / ALDEx2），而不是从排序图推断。" },
+      { "nodeId": "n9", "text": "相对丰度是组成性数据：一个类群占比上升会伴随其它类群下降，这不代表其它类群的绝对量减少。绝对值结论需要定量手段（spike-in / qPCR）。" }
+    ],
+    "docs": ["docs/guidebook/08-metagenome-microbiome.md", "docs/guidebook/10-downstream-analysis-visualization.md"],
+    "expectedOutputs": ["ASV 特征表", "ASV 物种注释", "多样性指数表", "物种组成图"]
+  },
+  {
+    "id": "preset-metagenome-species",
+    "name": "宏基因组物种与功能谱",
+    "tags": ["metagenome", "taxonomy", "function", "end-to-end"],
+    "difficulty": "入门",
+    "summary": "不依赖组装，直接从读长得到物种组成与通路谱",
+    "starter": false,
+    "steps": ["读长质控", "k-mer 分类", "丰度重估计", "标志基因物种谱（作为交叉验证）", "通路与功能谱", "差异分析与可视化"],
+    "nodes": [
+      { "id": "n1", "moduleId": "qc_fastp", "x": 60, "y": 100 },
+      { "id": "n2", "moduleId": "meta_kraken2", "x": 340, "y": 40 },
+      { "id": "n3", "moduleId": "meta_bracken", "x": 620, "y": 40 },
+      { "id": "n4", "moduleId": "meta_metaphlan", "x": 340, "y": 180 },
+      { "id": "n5", "moduleId": "meta_humann", "x": 620, "y": 200 },
+      { "id": "n6", "moduleId": "py_pandas_io", "x": 900, "y": 100 },
+      { "id": "n7", "moduleId": "py_scipy_stats", "x": 1180, "y": 100 },
+      { "id": "n8", "moduleId": "viz_composition_bar", "x": 1460, "y": 40 },
+      { "id": "n9", "moduleId": "viz_volcano_ma", "x": 1460, "y": 180 }
+    ],
+    "edges": [
+      { "from": "n1", "to": "n2", "fromType": "clean-reads" },
+      { "from": "n2", "to": "n3", "fromType": "abundance-table" },
+      { "from": "n1", "to": "n4", "fromType": "clean-reads" },
+      { "from": "n4", "to": "n5", "fromType": "abundance-table" },
+      { "from": "n3", "to": "n6", "fromType": "abundance-table" },
+      { "from": "n6", "to": "n7", "fromType": "dataframe" },
+      { "from": "n6", "to": "n8", "fromType": "dataframe" },
+      { "from": "n7", "to": "n9", "fromType": "stats-result" }
+    ],
+    "notes": [
+      { "nodeId": "n2", "text": "Kraken 2 的结果**受数据库版本影响极大**：同一批数据换库会得到不同的物种组成。必须记录数据库名称、版本与下载日期。" },
+      { "nodeId": "n3", "text": "Kraken 2 的原始输出是读长计数，Bracken 才把它重估为更接近真实的丰度。直接拿 Kraken 的 report 做定量会系统性偏差。`-r` 必须与实际读长长度接近。" },
+      { "nodeId": "n4", "text": "MetaPhlAn 只能检出**数据库内已有**的物种，因此它的结果与 Kraken 必然不同。两者是互补的交叉验证，不是互相替代；丰度数字**不可直接比较**。" },
+      { "nodeId": "n7", "text": "**不要用常规检验直接比较相对丰度**（组成性数据会产生大量假阳性）。应使用 CLR/ILR 变换或 ANCOM-BC、ALDEx2 等专门方法。这里的普通检验只适合做探索性筛查。" }
+    ],
+    "docs": ["docs/guidebook/08-metagenome-microbiome.md"],
+    "expectedOutputs": ["物种丰度表", "通路丰度表", "组成图与差异分析结果"]
+  },
+  {
+    "id": "preset-mag-binning",
+    "name": "宏基因组组装与 MAG 分箱",
+    "tags": ["metagenome", "MAG", "binning", "end-to-end"],
+    "difficulty": "高阶",
+    "summary": "组装、分箱、优化、质量评估到分类注释的完整 MAG 流程",
+    "starter": false,
+    "steps": ["读长质控与去宿主", "宏基因组组装", "组装质量评估", "分箱", "分箱优化与去冗余", "MAG 质量过滤", "基因组分类注释"],
+    "nodes": [
+      { "id": "n1", "moduleId": "qc_fastp", "x": 60, "y": 120 },
+      { "id": "n2", "moduleId": "qc_remove_host", "x": 340, "y": 120 },
+      { "id": "n3", "moduleId": "meta_megahit", "x": 620, "y": 60 },
+      { "id": "n4", "moduleId": "meta_assembly_qc", "x": 900, "y": 20 },
+      { "id": "n5", "moduleId": "meta_binning_metabat", "x": 900, "y": 180 },
+      { "id": "n6", "moduleId": "meta_bin_refine", "x": 1180, "y": 120 },
+      { "id": "n7", "moduleId": "asmqc_checkm2", "x": 1460, "y": 120 },
+      { "id": "n8", "moduleId": "meta_mag_taxonomy", "x": 1740, "y": 120 },
+      { "id": "n9", "moduleId": "viz_tree_plot", "x": 2020, "y": 120 }
+    ],
+    "edges": [
+      { "from": "n1", "to": "n2", "fromType": "clean-reads" },
+      { "from": "n2", "to": "n3", "fromType": "clean-reads" },
+      { "from": "n3", "to": "n4", "fromType": "contigs" },
+      { "from": "n3", "to": "n5", "fromType": "contigs" },
+      { "from": "n5", "to": "n6", "fromType": "bins" },
+      { "from": "n6", "to": "n7", "fromType": "bins" },
+      { "from": "n6", "to": "n8", "fromType": "bins" },
+      { "from": "n8", "to": "n9", "fromType": "tree" }
+    ],
+    "notes": [
+      { "nodeId": "n3", "text": "组装质量是 MAG 质量的天花板。低覆盖度样本或高多样性群落（如土壤）常常组装不出可用的 MAG，此时应先增加测序深度或改用读长级的物种谱分析（preset-metagenome-species）。" },
+      { "nodeId": "n4", "text": "组装质量评估（MEGAHIT 的统计与去冗余结果）与分箱是**并行的两条线**，不要串起来：分箱需要的是 contigs 与覆盖度，不是质量报告的表格。" },
+      { "nodeId": "n5", "text": "分箱依赖**多个样本的覆盖度差异**。只用单个样本分箱的效果很差；样本数越多（尤其是覆盖度差异大的样本组合）分箱效果越好。" },
+      { "nodeId": "n6", "text": "分箱优化与质量评估是**两条并行的验证**：DAS Tool 汇总多个分箱工具的候选（解决「哪个工具的结果更好」这个问题），CheckM2 从完整度/污染度给出客观门槛。两者都应在筛选 MAG 时用上 —— 用 DAS Tool 的汇总结果做候选，用 CheckM2 的指标做取舍。" },
+      { "nodeId": "n7", "text": "常用质量门槛是完整度 > 90% 且污染度 < 5%。**污染度 0% 不等于没有污染**（CheckM 系方法对近缘序列的分辨能力有限）。此外短读长宏基因组几乎检不到 rRNA，机械套用 MIMAG 的 rRNA 条件会误杀绝大多数 MAG。" },
+      { "nodeId": "n8", "text": "MAG 是**草图（draft）**，缺失的基因不能解释为「该基因组没有这个基因」，只能说明「本次组装没拼出来」。基于 MAG 的基因存在/缺失结论必须带上这一前提。" }
+    ],
+    "docs": ["docs/guidebook/04-assembly-qc.md", "docs/guidebook/08-metagenome-microbiome.md"],
+    "expectedOutputs": ["宏基因组组装 contigs", "MAG 集合与质量报告", "MAG 分类注释与树"]
+  },
+  {
+    "id": "preset-rnaseq-deseq2",
+    "name": "细菌转录组差异表达",
+    "tags": ["transcriptome", "RNA-seq", "differential", "end-to-end"],
+    "difficulty": "进阶",
+    "summary": "去 rRNA、比对计数到差异表达与富集的细菌 RNA-seq 流程",
+    "starter": false,
+    "steps": ["读长质控", "去除 rRNA", "比对到参考基因组", "基因水平计数", "差异表达分析", "富集分析与可视化"],
+    "nodes": [
+      { "id": "n1", "moduleId": "qc_fastp", "x": 60, "y": 100 },
+      { "id": "n2", "moduleId": "tran_rrna_remove", "x": 340, "y": 100 },
+      { "id": "n3", "moduleId": "tran_hisat_align", "x": 620, "y": 100 },
+      { "id": "n4", "moduleId": "tran_featurecounts", "x": 900, "y": 100 },
+      { "id": "n5", "moduleId": "tran_deseq2", "x": 1180, "y": 60 },
+      { "id": "n6", "moduleId": "tran_go_enrich", "x": 1460, "y": 20 },
+      { "id": "n7", "moduleId": "viz_volcano_ma", "x": 1460, "y": 160 },
+      { "id": "n8", "moduleId": "viz_heatmap", "x": 1740, "y": 60 }
+    ],
+    "edges": [
+      { "from": "n1", "to": "n2", "fromType": "clean-reads" },
+      { "from": "n2", "to": "n3", "fromType": "clean-reads" },
+      { "from": "n3", "to": "n4", "fromType": "bam" },
+      { "from": "n4", "to": "n5", "fromType": "count-matrix" },
+      { "from": "n5", "to": "n6", "fromType": "stats-result" },
+      { "from": "n5", "to": "n7", "fromType": "stats-result" },
+      { "from": "n5", "to": "n8", "fromType": "tsv-table" }
+    ],
+    "notes": [
+      { "nodeId": "n2", "text": "**rRNA 去除是细菌 RNA-seq 成败的关键**。细菌 mRNA 没有 poly(A) 尾，无法用真核常用的 oligo-dT 富集；而 rRNA 占比常达 90% 以上。去除效果要看两个指标：去除前后 rRNA 占比，以及剩余读长总数（去得太狠会把 mRNA 一起丢掉）。" },
+      { "nodeId": "n3", "text": "细菌基因密度高、存在操纵子与重叠基因，因此剪接感知的比对器（HISAT2）在这里并无优势；Bowtie2 往往更快且同样合适。" },
+      { "nodeId": "n5", "text": "**每组至少 3 个生物学重复是底线而不是理想值**。n=2 时 DESeq2 能跑出结果但离散度估计极不稳定，结论不可靠，必须明说这是探索性结果。" },
+      { "nodeId": "n6", "text": "富集分析的输入是**筛选后的基因列表**，筛选阈值（校正后 p 值与 log2FC）会实质改变富集结果。阈值必须与富集结果一起报告，且预筛选会让 p 值不再具有标称性质。" }
+    ],
+    "docs": ["docs/guidebook/09-transcriptome-differential-expression.md"],
+    "expectedOutputs": ["计数矩阵", "差异表达结果表", "富集结果", "火山图与聚类热图"]
+  },
+  {
+    "id": "preset-genome-to-species",
+    "name": "细菌基因组：从读长到物种鉴定",
+    "tags": ["assembly", "genomics", "taxonomy", "end-to-end"],
+    "difficulty": "入门",
+    "summary": "组装、质量评估、污染检验到分类学鉴定的单菌基因组流程",
+    "starter": false,
+    "steps": ["读长质控", "组装（长读长）", "contig 过滤", "与参考核对污染", "组装统计评估", "完整度与污染度评估", "基因组分类学注释", "质控汇总"],
+    "nodes": [
+      { "id": "n1", "moduleId": "qc_fastp", "x": 60, "y": 160 },
+      { "id": "n3", "moduleId": "asm_flye", "x": 340, "y": 160 },
+      { "id": "n4", "moduleId": "asm_filter_contigs", "x": 620, "y": 160 },
+      { "id": "n2", "moduleId": "qc_contamination_screen", "x": 900, "y": 20 },
+      { "id": "n5", "moduleId": "asmqc_quast", "x": 900, "y": 170 },
+      { "id": "n6", "moduleId": "asmqc_checkm2", "x": 900, "y": 320 },
+      { "id": "n7", "moduleId": "tax_gtdbtk", "x": 1180, "y": 160 },
+      { "id": "n8", "moduleId": "qc_multi_qc", "x": 1180, "y": 320 }
+    ],
+    "edges": [
+      { "from": "n1", "to": "n3", "fromType": "clean-reads" },
+      { "from": "n3", "to": "n4", "fromType": "contigs" },
+      { "from": "n4", "to": "n2", "fromType": "contigs" },
+      { "from": "n4", "to": "n5", "fromType": "contigs" },
+      { "from": "n4", "to": "n6", "fromType": "contigs" },
+      { "from": "n4", "to": "n7", "fromType": "contigs" },
+      { "from": "n5", "to": "n8", "fromType": "report" }
+    ],
+    "notes": [
+      { "nodeId": "n2", "text": "**先确认是纯培养物再组装**。混入其他菌株时组装会产出嵌合序列，而组装指标看起来可能还不错。污染筛查在组装前做成本最低（吃读长）；接在组装之后（吃 contigs）是另一种用法，能发现「多个菌株被拼到一起」这类嵌合污染 —— 两种用法考察的问题不同。" },
+      { "nodeId": "n3", "text": "这里用的是长读长组装（Flye）。若只有短读长，应把本节点换成 asm_spades；若两者都有，用 asm_unicycler 做混合组装通常能得到更好的完成度。" },
+      { "nodeId": "n6", "text": "分类学注释与质量评估是**并行**的：完整度/污染度（CheckM2）和分类归属（GTDB-Tk）都吃同一份 contigs，互不消费对方的结果。但两者在解读上有依赖——完整度不达标的基因组（如 < 90%）不宜急着做 GTDB-Tk 鉴定，结果可能不可靠。" },
+      { "nodeId": "n7", "text": "GTDB-Tk 给出的是基于 GTDB 体系的分类，与 NCBI 分类命名不完全一致（例如 GTDB 把某些属重新划分）。报告结果时必须说明使用的是哪套体系与哪一版数据库。" }
+    ],
+    "docs": ["docs/guidebook/03-genome-assembly.md", "docs/guidebook/05-taxonomy-identification.md"],
+    "expectedOutputs": ["组装基因组 FASTA（含 contig 过滤）", "组装统计与质量报告", "分类学鉴定结果"]
+  },
+  {
+    "id": "preset-resistance-virulence",
+    "name": "细菌基因组：耐药、毒力与可移动元件筛查",
+    "tags": ["genomics", "resistance", "virulence", "annotation", "end-to-end"],
+    "difficulty": "进阶",
+    "summary": "从读长到基因组，并用多个数据库并行筛查耐药、毒力与质粒",
+    "starter": false,
+    "steps": ["读长质控", "组装", "contig 过滤", "基因组注释", "多数据库并行筛查", "汇总与交叉验证可视化"],
+    "nodes": [
+      { "id": "n1", "moduleId": "qc_fastp", "x": 40, "y": 200 },
+      { "id": "n3", "moduleId": "asm_spades", "x": 300, "y": 200 },
+      { "id": "n4", "moduleId": "asm_filter_contigs", "x": 560, "y": 200 },
+      { "id": "n5", "moduleId": "anno_bakta", "x": 820, "y": 200 },
+      { "id": "n6", "moduleId": "res_card_rgi", "x": 1080, "y": 60 },
+      { "id": "n7", "moduleId": "res_vfdb", "x": 1080, "y": 180 },
+      { "id": "n8", "moduleId": "res_mobilome", "x": 1080, "y": 300 },
+      { "id": "n9", "moduleId": "res_abricate", "x": 1080, "y": 420 },
+      { "id": "n10", "moduleId": "res_plasmidfinder", "x": 1080, "y": 540 },
+      { "id": "n11", "moduleId": "py_pandas_io", "x": 1340, "y": 240 },
+      { "id": "n12", "moduleId": "viz_upset", "x": 1600, "y": 240 },
+      { "id": "n13", "moduleId": "qc_multi_qc", "x": 1340, "y": 560 }
+    ],
+    "edges": [
+      { "from": "n1", "to": "n3", "fromType": "clean-reads" },
+      { "from": "n3", "to": "n4", "fromType": "contigs" },
+      { "from": "n4", "to": "n5", "fromType": "contigs" },
+      { "from": "n5", "to": "n6", "fromType": "protein-faa" },
+      { "from": "n5", "to": "n7", "fromType": "protein-faa" },
+      { "from": "n5", "to": "n8", "fromType": "protein-faa" },
+      { "from": "n4", "to": "n9", "fromType": "contigs" },
+      { "from": "n4", "to": "n10", "fromType": "contigs" },
+      { "from": "n6", "to": "n11", "fromType": "tsv-table" },
+      { "from": "n7", "to": "n11", "fromType": "tsv-table" },
+      { "from": "n8", "to": "n11", "fromType": "tsv-table" },
+      { "from": "n9", "to": "n11", "fromType": "tsv-table" },
+      { "from": "n10", "to": "n11", "fromType": "tsv-table" },
+      { "from": "n11", "to": "n12", "fromType": "dataframe" },
+      { "from": "n5", "to": "n13", "fromType": "log-report" }
+    ],
+    "notes": [
+      { "nodeId": "n2", "text": "抛光用同一份 clean reads 来提高碱基准确度（Pilon 已基本停更，新项目优先 POLCA）。注意 **每个工具只接受一种读长类型**：抛光吃 clean-reads，组装也吃 clean-reads，因此这里是 fastp 扇出到两条路径，而不是把组装产物再喂给抛光以外的读长消费者。" },
+      { "nodeId": "n4", "text": "contig 过滤（长度阈值、去污染 contig）在注释与筛查之前做。**别跳过这一步**：碎片 contig 会让注释产生大量假阳性短基因，也会让耐药筛查误命中。" },
+      { "nodeId": "n5", "text": "注释这一步在耐药筛查里不是可有可无的：蛋白序列（protein-faa）是 RGI / VFDB / mobileOG 的输入。同时 Bakta 会显式标出「已鉴定为可移动元件或质粒来源」的基因，是判断耐药基因是否可能水平转移的直接线索。" },
+      { "nodeId": "n6", "text": "这五个筛查工具是**并行**关系 —— 它们各自吃同一份基因组（contigs 或 protein-faa），**不消费彼此的结果表**。把它们的输出串起来是错的（结果表没有 contigs 信息）。" },
+      { "nodeId": "n6", "text": "各耐药数据库（CARD、ResFinder、NCBI AMRFinderPlus）**覆盖范围不同**，同一样本换库会得到不同的基因清单。这不是矛盾而是工具差异 —— 结论必须说明所用数据库与版本。" },
+      { "nodeId": "n6", "text": "**命中的基因不等于表型耐药**：基因可能存在但不表达；点突变型耐药（如 gyrA）按基因存在/缺失筛查**检不出**。这是很多「基因筛查阴性却表型耐药」案例的原因。" },
+      { "nodeId": "n11", "text": "汇总合并时先统一基因标识体系（不同数据库用的命名完全不同）。合并后立刻校验行数与未匹配项，否则交集会人为地为空。" },
+      { "nodeId": "n12", "text": "用集合交集图展示「哪些基因同时被多个数据库检出」，比逐个列清单更有信息量，也能暴露单库假阳性。**UpSet 展示的是精确组合**（恰好属于这些集合），不是「至少属于这些集合」。" }
+    ],
+    "docs": ["docs/guidebook/06-annotation-resistance-virulence.md", "docs/guidebook/03-genome-assembly.md"],
+    "expectedOutputs": ["组装基因组 FASTA（含 contig 过滤）", "基因组注释（GFF3 + 蛋白序列）", "耐药基因清单（多库交叉）", "毒力因子清单", "质粒与可移动元件清单", "交叉验证图"]
+  },
+  {
+    "id": "preset-pangenome-analysis",
+    "name": "泛基因组构建与分析",
+    "tags": ["pangenome", "comparative", "genomics", "end-to-end"],
+    "difficulty": "进阶",
+    "summary": "从多个基因组构建泛基因组并分析核心/附属基因与饱和趋势",
+    "starter": false,
+    "steps": ["统一注释输入", "泛基因组构建", "核心与附属基因统计", "累积曲线判断饱和度", "核心基因树", "结果可视化"],
+    "nodes": [
+      { "id": "n1", "moduleId": "anno_bakta", "x": 60, "y": 80 },
+      { "id": "n2", "moduleId": "pange_panaroo", "x": 340, "y": 80 },
+      { "id": "n3", "moduleId": "pange_acc_stats", "x": 620, "y": 20 },
+      { "id": "n4", "moduleId": "pange_core_align", "x": 620, "y": 160 },
+      { "id": "n5", "moduleId": "viz_rarefaction_curve", "x": 900, "y": 20 },
+      { "id": "n6", "moduleId": "phy_iqtree", "x": 900, "y": 160 },
+      { "id": "n7", "moduleId": "viz_tree_plot", "x": 1180, "y": 160 }
+    ],
+    "edges": [
+      { "from": "n1", "to": "n2", "fromType": "gff" },
+      { "from": "n2", "to": "n3", "fromType": "tsv-table" },
+      { "from": "n2", "to": "n4", "fromType": "tsv-table" },
+      { "from": "n3", "to": "n5", "fromType": "tsv-table" },
+      { "from": "n4", "to": "n6", "fromType": "alignment-fasta" },
+      { "from": "n6", "to": "n7", "fromType": "tree" }
+    ],
+    "notes": [
+      { "nodeId": "n2", "text": "Panaroo 与 Roary 的核心差异在于是否做比对校正与同源群清理。**两者结果会不同**，且换聚类阈值也会改变核心/附属基因的划分 —— 阈值与工具都必须与结果一起报告。" },
+      { "nodeId": "n3", "text": "「泛基因组是否开放（open pangenome）」是靠累积曲线是否饱和来判断的。曲线仍在明显上升时，说明**加入更多基因组还会带来新基因**，此时「核心基因」的估计不稳定，不应作为最终结论。" },
+      { "nodeId": "n5", "text": "累积曲线**依赖基因组的加入顺序**，单次顺序的结果不可靠。应多次随机顺序取平均值并展示分散度。" },
+      { "nodeId": "n6", "text": "核心基因树反映的是核心基因的一致信号。若与 SNP 树或单基因树拓扑冲突，可能来自不完全谱系分选（ILS）或重组 —— 这种冲突本身是值得报告的生物学信息，而不是需要「修掉」的错误。" }
+    ],
+    "docs": ["docs/guidebook/07-comparative-pangenome.md"],
+    "expectedOutputs": ["泛基因组统计（核心/附属/特有）", "核心基因比对", "累积曲线", "核心基因树"]
+  },
+  {
+    "id": "preset-strain-transmission",
+    "name": "菌株分型与传播关系推断",
+    "tags": ["genomics", "variants", "epidemiology", "comparative"],
+    "difficulty": "进阶",
+    "summary": "从读长到 SNP 距离矩阵与传播聚类，用于医院或暴发调查",
+    "starter": false,
+    "steps": ["读长质控", "比对到参考并检出变异（含序列分型）", "SNP 距离矩阵", "基因存在/缺失", "聚类与传播判断（需结合流行病学）", "可视化"],
+    "nodes": [
+      { "id": "n1", "moduleId": "qc_fastp", "x": 60, "y": 160 },
+      { "id": "n2", "moduleId": "var_snippy", "x": 340, "y": 160 },
+      { "id": "n4", "moduleId": "comp_snp_dist", "x": 620, "y": 160 },
+      { "id": "n5", "moduleId": "comp_gene_presence", "x": 900, "y": 40 },
+      { "id": "n6", "moduleId": "viz_heatmap", "x": 900, "y": 200 },
+      { "id": "n7", "moduleId": "viz_tree_plot", "x": 1180, "y": 200 }
+    ],
+    "edges": [
+      { "from": "n1", "to": "n2", "fromType": "clean-reads" },
+      { "from": "n2", "to": "n4", "fromType": "vcf" },
+      { "from": "n2", "to": "n5", "fromType": "vcf" },
+      { "from": "n4", "to": "n6", "fromType": "cluster-dist" },
+      { "from": "n4", "to": "n7", "fromType": "cluster-dist" }
+    ],
+    "notes": [
+      { "nodeId": "n2", "text": "参考基因组的选择会**实质影响**结果：SNP 距离是在参考坐标系下计算的。同一批样本换参考后距离矩阵不同，传播结论可能改变。参考的 accession 与版本必须记录。" },
+      { "nodeId": "n2", "text": "重组会造出大量看似「近缘」的假距离。对重组频繁的物种（如肺炎链球菌、脑膜炎奈瑟菌）应做重组剔除（Gubbins / ClonalFrameML）后再算 SNP 距离。" },
+      { "nodeId": "n4", "text": "**「SNP 距离小」不等于「有传播关系」**。传播判断必须结合流行病学信息（时间、地点、病房），且需要知道该物种的自然突变速率作为背景 —— 不同物种的阈值完全不同。" },
+      { "nodeId": "n7", "text": "同一受试者的多次分离株在树上是伪重复。把它们当作独立样本会低估多样性，也会人为放大克隆群的证据强度。" }
+    ],
+    "docs": ["docs/guidebook/07-comparative-pangenome.md", "docs/guidebook/06-annotation-resistance-virulence.md"],
+    "expectedOutputs": ["变异位点集合", "与参考基因组的 ANI 核验", "SNP 距离矩阵", "聚类热图与树"]
+  },
+  {
+    "id": "preset-qc-metrics-report",
+    "name": "质控指标汇总与项目报告",
+    "tags": ["QC", "report", "reproducibility"],
+    "difficulty": "入门",
+    "summary": "把各步骤的日志汇总成项目级质控总览与可交付报告",
+    "starter": false,
+    "steps": ["原始读长与清理后读长的质控报告", "汇总各工具指标", "整理成表", "做阈值核查", "生成报告与溯源记录"],
+    "nodes": [
+      { "id": "n1", "moduleId": "qc_fastqc", "x": 60, "y": 40 },
+      { "id": "n2", "moduleId": "qc_fastp", "x": 60, "y": 180 },
+      { "id": "n3", "moduleId": "qc_multi_qc", "x": 340, "y": 110 },
+      { "id": "n4", "moduleId": "r_read_import", "x": 620, "y": 110 },
+      { "id": "n5", "moduleId": "py_export_report", "x": 900, "y": 40 },
+      { "id": "n6", "moduleId": "wf_reproducibility", "x": 900, "y": 180 }
+    ],
+    "edges": [
+      { "from": "n1", "to": "n3", "fromType": "log-report" },
+      { "from": "n2", "to": "n3", "fromType": "log-report" },
+      { "from": "n3", "to": "n4", "fromType": "log-report" },
+      { "from": "n4", "to": "n5", "fromType": "dataframe" },
+      { "from": "n3", "to": "n6", "fromType": "log-report" }
+    ],
+    "notes": [
+      { "nodeId": "n3", "text": "MultiQC 靠日志格式识别工具。上游工具大版本升级后格式变化，**MultiQC 版本过旧会静默漏掉整个模块** —— 报告看起来正常，只是少了内容。升级工具时要一起升级 MultiQC。" },
+      { "nodeId": "n4", "text": "汇总表要能回答「哪个样本异常」。把关键指标并排放在一张表里（而不是分散在多个报告里）是发现离群样本最有效的方式。读入 `multiqc_data.json` 时注意列类型——样本名必须显式当字符读，否则形似日期的样本名会被解析错。" },
+      { "nodeId": "n6", "text": "溯源记录里**参考数据库版本的权重常高于软件版本**。物种分类、功能注释的结果对数据库版本极其敏感，只记软件版本不足以复现。" }
+    ],
+    "docs": ["docs/guidebook/02-upstream-qc.md", "docs/guidebook/11-workflow-reproducibility.md"],
+    "expectedOutputs": ["项目级质控总览", "指标汇总表", "报告与溯源清单"]
+  },
+  {
+    "id": "preset-its-fungal",
+    "name": "真菌 ITS 扩增子分析",
+    "tags": ["amplicon", "ITS", "fungal", "microbiome"],
+    "difficulty": "进阶",
+    "summary": "针对 ITS 区域特点的真菌群落分析流程",
+    "starter": false,
+    "steps": ["导入 ITS 数据", "去噪生成 ASV", "ITS 边界识别与注释", "多样性分析", "组成图与统计"],
+    "nodes": [
+      { "id": "n1", "moduleId": "amplicon_qiime2_import", "x": 60, "y": 120 },
+      { "id": "n2", "moduleId": "amplicon_dada2", "x": 340, "y": 120 },
+      { "id": "n3", "moduleId": "amplicon_its_fungal", "x": 620, "y": 60 },
+      { "id": "n4", "moduleId": "amplicon_qiime2_diversity", "x": 900, "y": 120 },
+      { "id": "n5", "moduleId": "viz_alpha_beta", "x": 1180, "y": 60 },
+      { "id": "n6", "moduleId": "viz_composition_bar", "x": 1180, "y": 200 }
+    ],
+    "edges": [
+      { "from": "n1", "to": "n3", "fromType": "raw-reads" },
+      { "from": "n3", "to": "n2", "fromType": "feature-table" },
+      { "from": "n2", "to": "n4", "fromType": "feature-table" },
+      { "from": "n4", "to": "n5", "fromType": "cluster-dist" },
+      { "from": "n4", "to": "n6", "fromType": "stats-result" }
+    ],
+    "notes": [
+      { "nodeId": "n2", "text": "ITS 区域长度变异极大，去噪参数需要针对 ITS 调整。生搬 16S 的参数（尤其是截断长度）会丢掉大量真实序列。" },
+      { "nodeId": "n3", "text": "ITS 必须先用 ITSx 之类工具**提取 ITS1/ITS2 边界**再比对，否则侧翼的保守区会让不同物种的序列人为地聚在一起，系统性低估多样性。" },
+      { "nodeId": "n4", "text": "真菌数据库（UNITE）的版本差异会明显改变物种归属。ITS 的种水平分辨率本身有限，**不宜把结果报到种**。" }
+    ],
+    "docs": ["docs/guidebook/08-metagenome-microbiome.md"],
+    "expectedOutputs": ["真菌 ASV 表", "ITS 边界提取结果", "物种注释与组成图"]
+  },
+  {
+    "id": "preset-virome",
+    "name": "病毒组识别与质量评估",
+    "tags": ["metagenome", "virome", "phage", "end-to-end"],
+    "difficulty": "高阶",
+    "summary": "从宏基因组数据中识别病毒序列、评估完整度并定量",
+    "starter": false,
+    "steps": ["读长质控", "宏基因组组装", "病毒与质粒序列识别", "病毒 contig 质量评估", "分箱与去冗余", "丰度定量与可视化"],
+    "nodes": [
+      { "id": "n1", "moduleId": "qc_fastp", "x": 60, "y": 120 },
+      { "id": "n2", "moduleId": "meta_megahit", "x": 340, "y": 120 },
+      { "id": "n3", "moduleId": "meta_virome", "x": 620, "y": 60 },
+      { "id": "n4", "moduleId": "phage_genomad", "x": 620, "y": 200 },
+      { "id": "n5", "moduleId": "phage_checkv", "x": 900, "y": 60 },
+      { "id": "n6", "moduleId": "meta_bin_refine", "x": 1180, "y": 60 },
+      { "id": "n7", "moduleId": "meta_coverm", "x": 1460, "y": 60 },
+      { "id": "n8", "moduleId": "viz_composition_bar", "x": 1740, "y": 60 }
+    ],
+    "edges": [
+      { "from": "n1", "to": "n2", "fromType": "clean-reads" },
+      { "from": "n2", "to": "n3", "fromType": "contigs" },
+      { "from": "n3", "to": "n5", "fromType": "contigs" },
+      { "from": "n4", "to": "n5", "fromType": "contigs" },
+      { "from": "n5", "to": "n6", "fromType": "tsv-table" },
+      { "from": "n6", "to": "n7", "fromType": "bins" },
+      { "from": "n7", "to": "n8", "fromType": "count-matrix" }
+    ],
+    "notes": [
+      { "nodeId": "n2", "text": "病毒序列的**丰度通常远低于细菌**，组装对病毒尤其困难。很多病毒只能拼出碎片，因此「识别出的病毒数」强烈依赖测序深度与组装质量，不宜跨项目比较绝对值。" },
+      { "nodeId": "n3", "text": "**不要在这里同时接上 phage_genomad**：meta_virome 内部已经用 geNomad 做识别（它还包含 CheckV 与去冗余步骤），再跑一遍 geNomad 只是对同一份 contigs 做重复计算。如果你希望逐步控制每一步，把 meta_virome 换成 phage_genomad + phage_checkv 的显式组合即可。" },
+      { "nodeId": "n4", "text": "geNomad 做的是**病毒与质粒识别、ICTV 分类（通常只到科级）与基因注释**，它**不做宿主预测** —— 这是最常见的误用。要预测宿主范围需要 iPHoP、CHERRY、WIsH 等工具；要判断质粒是否可接合需要 CONJscan。另外它的默认后处理档位（--relaxed / 默认 / --conservative）会改变识别出的序列数，用哪档必须写在方法里，否则「病毒数量」不可跨项目比较。" },
+      { "nodeId": "n5", "text": "CheckV 输出完整度分级（complete / high / medium / low / not-determined）。**只有 complete 与高质量序列适合做「基因组」层面的分析**；低完整度碎片只适合做丰度与分类。" },
+      { "nodeId": "n6", "text": "从 CheckV 到去冗余用它的**汇总表**（tsv-table）而非序列：DAS Tool 消费的是 contig→bin 归属关系。注意病毒序列没有宿主覆盖度这一维度，因此病毒去冗余主要靠序列相似性，与细菌分箱是不同的问题。" },
+      { "nodeId": "n7", "text": "病毒定量必须比对回**同一套 contig 集合**，且要注意多重比对（病毒序列与宿主或其它病毒有同源区）如何分配读长。" }
+    ],
+    "docs": ["docs/guidebook/08-metagenome-microbiome.md", "docs/guidebook/06-annotation-resistance-virulence.md"],
+    "expectedOutputs": ["宏基因组组装", "病毒序列集合", "完整度评估与 vOTU", "病毒丰度表"]
+  }
+]

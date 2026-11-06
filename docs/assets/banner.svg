@@ -1,0 +1,117 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 360" width="1200" height="360" role="img" aria-labelledby="banner-title banner-desc">
+  <title id="banner-title">Bioinformatics Guidebook — 微生物生物信息学 Pipeline 知识系统</title>
+  <desc id="banner-desc">An offline-first knowledge system for microbial bioinformatics: an interactive pipeline builder plus a 12-chapter field guide. 160 modules, 12 end-to-end workflows, 33 data types, zero dependencies.</desc>
+
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0a1020"/>
+      <stop offset="0.55" stop-color="#0d1730"/>
+      <stop offset="1" stop-color="#131f3d"/>
+    </linearGradient>
+    <linearGradient id="rail" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#34d399"/>
+      <stop offset="0.5" stop-color="#38bdf8"/>
+      <stop offset="1" stop-color="#818cf8"/>
+    </linearGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#ffffff" stroke-opacity="0.035" stroke-width="1"/>
+    </pattern>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#34d399"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#fbbf24"/>
+    </marker>
+    <radialGradient id="halo" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#38bdf8" stop-opacity="0.12"/>
+      <stop offset="1" stop-color="#38bdf8" stop-opacity="0"/>
+    </radialGradient>
+    <style>
+      .sans { font-family: Inter, "Segoe UI", "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif; }
+      .node-label { font: 600 12px/1 Inter, "Segoe UI", "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif; fill: #e2e8f0; }
+      .legend { font: 500 11px/1 Inter, "Segoe UI", "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif; fill: #94a3b8; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="360" fill="url(#bg)"/>
+  <rect width="1200" height="360" fill="url(#grid)"/>
+  <rect x="0" y="0" width="6" height="360" fill="url(#rail)"/>
+  <rect x="0.5" y="0.5" width="1199" height="359" fill="none" stroke="#2a3a5f" stroke-opacity="0.55"/>
+
+  <!-- left: identity -->
+  <g class="sans">
+    <rect x="64" y="42" width="330" height="26" rx="13" fill="#0f241f" stroke="#1f6f55" stroke-opacity="0.9"/>
+    <text x="78" y="59.5" font-size="10.5" letter-spacing="1.7" fill="#6ee7b7">OPEN SOURCE · OFFLINE-FIRST · ZERO DEPS</text>
+
+    <text x="64" y="129" font-size="46" font-weight="700" letter-spacing="-0.8" fill="#f8fafc">Bioinformatics</text>
+    <text x="64" y="177" font-size="46" font-weight="700" letter-spacing="-0.8" fill="#f8fafc">Guidebook</text>
+
+    <text x="64" y="219" font-size="21" fill="#cbd5e1">微生物生物信息学 Pipeline 知识系统</text>
+    <text x="64" y="248" font-size="13.5" fill="#94a3b8">Interactive pipeline builder + a 12-chapter field guide</text>
+
+    <line x1="64" y1="277" x2="640" y2="277" stroke="#1e293b" stroke-width="1"/>
+    <text x="64" y="307" font-size="12.5" fill="#7dd3fc">160 modules · 12 workflows · 33 data types · 0 dependencies</text>
+    <text x="64" y="329" font-size="11.5" fill="#64748b">Drag modules → connect typed ports → export Bash / Python / JSON</text>
+  </g>
+
+  <!-- right: miniature typed pipeline -->
+  <g>
+    <ellipse cx="955" cy="180" rx="235" ry="140" fill="url(#halo)"/>
+    <text x="760" y="66" font-size="10" letter-spacing="2.2" fill="#64748b" class="sans">TYPE-AWARE WIRING</text>
+
+    <!-- edges (drawn first) -->
+    <line x1="856" y1="116" x2="882" y2="116" stroke="#34d399" stroke-width="2.4" marker-end="url(#arrow-green)"/>
+    <line x1="980" y1="116" x2="1006" y2="116" stroke="#34d399" stroke-width="2.4" marker-end="url(#arrow-green)"/>
+    <line x1="1056" y1="136" x2="1056" y2="194" stroke="#34d399" stroke-width="2.4" marker-end="url(#arrow-green)"/>
+    <line x1="1008" y1="216" x2="982" y2="216" stroke="#fbbf24" stroke-width="2.2" stroke-dasharray="5 4" marker-end="url(#arrow-amber)"/>
+    <line x1="884" y1="216" x2="858" y2="216" stroke="#fbbf24" stroke-width="2.2" stroke-dasharray="5 4" marker-end="url(#arrow-amber)"/>
+
+    <!-- row 1 -->
+    <g>
+      <rect x="760" y="96" width="96" height="40" rx="10" fill="#111c33" stroke="#2b3d63"/>
+      <text x="808" y="120.5" text-anchor="middle" class="node-label">raw reads</text>
+      <circle cx="856" cy="116" r="3" fill="#34d399"/>
+    </g>
+    <g>
+      <rect x="884" y="96" width="96" height="40" rx="10" fill="#111c33" stroke="#2b3d63"/>
+      <text x="932" y="120.5" text-anchor="middle" class="node-label">QC</text>
+      <circle cx="884" cy="116" r="3" fill="#34d399"/>
+      <circle cx="980" cy="116" r="3" fill="#34d399"/>
+    </g>
+    <g>
+      <rect x="1008" y="96" width="96" height="40" rx="10" fill="#111c33" stroke="#2b3d63"/>
+      <text x="1056" y="120.5" text-anchor="middle" class="node-label">assembly</text>
+      <circle cx="1008" cy="116" r="3" fill="#34d399"/>
+      <circle cx="1056" cy="136" r="3" fill="#34d399"/>
+    </g>
+
+    <!-- row 2 (flow runs right to left) -->
+    <g>
+      <rect x="1008" y="196" width="96" height="40" rx="10" fill="#111c33" stroke="#2b3d63"/>
+      <text x="1056" y="220.5" text-anchor="middle" class="node-label">annotation</text>
+      <circle cx="1056" cy="196" r="3" fill="#34d399"/>
+      <circle cx="1008" cy="216" r="3" fill="#fbbf24"/>
+    </g>
+    <g>
+      <rect x="884" y="196" width="96" height="40" rx="10" fill="#111c33" stroke="#2b3d63"/>
+      <text x="932" y="220.5" text-anchor="middle" class="node-label">pangenome</text>
+      <circle cx="980" cy="216" r="3" fill="#fbbf24"/>
+      <circle cx="884" cy="216" r="3" fill="#fbbf24"/>
+    </g>
+    <g>
+      <rect x="760" y="196" width="96" height="40" rx="10" fill="#111c33" stroke="#2b3d63"/>
+      <text x="808" y="220.5" text-anchor="middle" class="node-label">figures</text>
+      <circle cx="856" cy="216" r="3" fill="#fbbf24"/>
+    </g>
+
+    <!-- legend -->
+    <line x1="760" y1="286" x2="790" y2="286" stroke="#34d399" stroke-width="2.4"/>
+    <text x="798" y="290" class="legend">direct</text>
+
+    <line x1="862" y1="286" x2="892" y2="286" stroke="#fbbf24" stroke-width="2.2" stroke-dasharray="5 4"/>
+    <text x="900" y="290" class="legend">adapter</text>
+
+    <line x1="972" y1="286" x2="1002" y2="286" stroke="#f87171" stroke-width="2.2" stroke-dasharray="2 4"/>
+    <text x="1010" y="290" class="legend">invalid</text>
+  </g>
+</svg>

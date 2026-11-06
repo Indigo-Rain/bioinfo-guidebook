@@ -1,0 +1,409 @@
+[
+  {
+    "id": "pange_panaroo",
+    "name": "泛基因组构建 (Panaroo)",
+    "category": "pangenome",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "active",
+    "domains": ["genomics", "phylogenetics"],
+    "tags": ["泛基因组", "同源基因簇", "核心基因", "panaroo", "gff", "附属基因"],
+    "summary": "带比对校正的泛基因组构建与核心基因推断",
+    "what": [
+      "Panaroo 接收一组已注释基因组的 GFF（通常来自 Prokka 或 Bakta），先做全对全蛋白相似性搜索与图聚类得到初始基因簇，再对每个簇内的成员做多序列比对，把明显放错簇的序列（移码、碎片、注释边界偏差、污染序列、被拆成两段的同一基因）挑出来重新分配。这一步「比对校正」是它与 Roary 最实质的区别，也是它核心基因数通常更稳定的原因。主要产物是基因家族 × 基因组的存在/缺失矩阵、核心基因比对，以及每个家族的代表序列。",
+      "核心与附属基因的定义并非生物学事实，而是聚类阈值的产物：序列一致性阈值、长度差异容忍度、是否合并旁系同源（paralog）都会改变结果。同一批基因组换一组阈值，核心家族数变化上百个是常见的。因此核心基因组数字必须连同工具版本与阈值一起报告，否则不同论文之间的「核心基因组」根本不可比。",
+      "输入注释的同源性比基因组数量更重要。混用 Prokka、Bakta 与 NCBI 已提交的 GFF 时，基因边界与命名策略不同，同一个基因可能被切成两段或合并成一段，凭空造出大量假家族——表现为附属基因组虚高、核心基因组偏低。正确做法是先用同一套流程重注释全部基因组，再进入泛基因组构建。具体输出文件清单在版本间有过调整，以官方文档为准。"
+    ],
+    "inputs": [
+      { "type": "gff", "name": "各基因组注释 (GFF3)", "required": true, "note": "Prokka/Bakta 输出；顺序与基因组集合必须固定并在报告中记录" },
+      { "type": "genome-fasta", "name": "对应基因组序列", "required": false, "note": "注释文件不含序列段（无 ##FASTA）时必须一起提供" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "基因家族存在/缺失矩阵", "ext": "gene_presence_absence.csv", "note": "行=家族，列=基因组；下游做关联分析、曲线统计的基础" },
+      { "type": "alignment-fasta", "name": "核心基因比对", "ext": "core_gene_alignment.aln", "note": "已串联的核心基因比对，可直接进入建树流程" },
+      { "type": "cds-fasta", "name": "家族代表序列", "ext": "pan_genome_reference.fa", "note": "每个家族一条代表序列，用于功能注释与分类" },
+      { "type": "log-report", "name": "统计摘要", "ext": "summary_statistics.txt", "note": "核心/软核心/附属家族计数；第一眼先看这个文件" }
+    ],
+    "provides": [
+      { "tool": "Panaroo", "version": "1.5.x", "access": "cli", "install": "conda", "note": "Python 实现；1.6 之后的版本在依赖与输出细节上有变化，务必固定版本" },
+      { "tool": "MAFFT", "version": "7.5xx", "access": "cli", "install": "conda", "note": "Panaroo 内部调用的比对器；大规模数据时是主要耗时点" },
+      { "tool": "CD-HIT", "version": "4.8.x", "access": "cli", "install": "conda", "note": "Panaroo 内部用于初始去冗余的聚类步骤" }
+    ],
+    "feeds": [
+      { "target": "pange_core_align", "viaType": "alignment-fasta", "note": "核心基因比对直接作为串联与 SNP 提取的输入" },
+      { "target": "pange_acc_stats", "viaType": "tsv-table", "note": "存在/缺失矩阵用于核心-附属分区与泛基因组曲线" },
+      { "target": "comp_gene_presence", "viaType": "tsv-table", "note": "把家族矩阵整理成比较基因组用的 0/1 矩阵" },
+      { "target": "anno_eggnog", "viaType": "cds-fasta", "note": "对家族代表序列做功能归类，解释附属基因的功能偏向" }
+    ],
+    "usage": [
+      {
+        "label": "基本用法（推荐显式指定清理模式）",
+        "lang": "bash",
+        "code": "panaroo -i gff/*.gff -o results --clean-mode strict -t 8"
+      },
+      {
+        "label": "注释文件不含序列时，把基因组 FASTA 一起传入",
+        "lang": "bash",
+        "code": "panaroo -i gff/*.gff genomes/*.fna -o results --clean-mode strict -t 8"
+      },
+      {
+        "label": "先看结果规模，再决定是否进入建树",
+        "lang": "bash",
+        "code": "head -20 results/summary_statistics.txt\n# 核心家族数应落在该属的常见区间；明显偏低先查注释一致性与污染"
+      }
+    ],
+    "recipes": {
+      "bash": "panaroo -i 03_annotation/*/*.gff -o 05_pangenome/panaroo \\\n  --clean-mode strict -t ${THREADS} > 10_logs/${PROJECT}.panaroo.log 2>&1",
+      "python": "gffs = sorted(str(p) for p in (ANNO_DIR).glob(\"*/*.gff\"))\nlog = open(LOG_DIR / f\"{project}.panaroo.log\", \"w\", encoding=\"utf-8\")\ntry:\n    subprocess.run([\"panaroo\", \"-i\", *gffs, \"-o\", str(PANGE_DIR / \"panaroo\"),\n                    \"--clean-mode\", \"strict\", \"-t\", str(THREADS)],\n                   check=True, stdout=log, stderr=subprocess.STDOUT)\nfinally:\n    log.close()"
+    },
+    "params": [
+      { "flag": "--clean-mode", "default": "以官方文档为准", "note": "strict 最激进地清理可疑注释，moderate 折中，retain 保留全部；注释质量参差时用 strict，重注释过的同源数据可用 moderate" },
+      { "flag": "-a / --alignment", "default": "core", "note": "选择输出核心基因比对还是全基因组比对；只做核心 SNP 树时用 core 可省时间与磁盘" },
+      { "flag": "--aligner", "default": "以官方文档为准", "note": "mafft 更快、prank 更慢但对移码与插入缺失更敏感；需要精确密码子对齐时值得换 prank" },
+      { "flag": "--merge_paralogs", "default": "关闭", "note": "把高度相似的旁系同源家族合并；会明显减少家族总数，必须在报告里说明是否开启" },
+      { "flag": "-t / --threads", "default": "1", "note": "线程数。默认值在批量任务里非常慢，务必按机器核数显式设置" },
+      { "flag": "阈值参数（家族一致性 / 长度差异）", "default": "以官方文档为准", "note": "默认值随版本调整过；正式分析应在报告中写出实际使用的阈值，否则结果无法复现" }
+    ],
+    "pitfalls": [
+      "核心/附属的划分完全由阈值决定。换一组一致性或长度差异阈值就能让核心家族数变化上百个，所以「核心基因组大小」这个数字离开阈值与版本号没有意义。",
+      "Panaroo 与 Roary 给出不同结果是预期的，不是 bug：Panaroo 会做比对校正、合并被拆开的基因、清理低置信注释，因此家族数通常更少、核心基因更稳定。两个工具的数字不能混在同一张表里引用。",
+      "输入注释必须同源。Prokka、Bakta、NCBI 提交的 GFF 在基因边界和命名上互不兼容，混用会造成大量假家族（附属基因组虚高、核心基因组偏低），而且不会报任何错。",
+      "未做污染筛查的草图基因组会把质粒、接头甚至宿主序列带进泛基因组，直接污染附属基因集；入组前先做完整度与污染评估（CheckM2 / GUNC），并把结果一并记录。",
+      "样本选择决定曲线形状：同一克隆复合体的暴发株系放在一起，泛基因组必然看起来「闭合」。要回答物种层面的问题，样本必须覆盖该物种的多样度，否则结论只在采样范围内成立。",
+      "Prokka 的 GFF 自带 ##FASTA 段，而只输出坐标表的注释工具没有序列；后者必须把基因组 FASTA 一起传给 -i，否则提取不到基因序列，报错信息往往与真正原因相隔很远。"
+    ],
+    "related": [
+      { "id": "pange_roary", "note": "经典替代方案：更快但不做比对校正，适合复现旧结果" },
+      { "id": "pange_core_align", "note": "典型下游：从核心基因比对到建树矩阵" },
+      { "id": "pange_acc_stats", "note": "从存在/缺失矩阵出发做核心-附属统计与曲线" },
+      { "id": "anno_prokka", "note": "最常用的上游注释；与 Bakta 二选一但全项目必须统一" }
+    ],
+    "docs": [
+      { "label": "第 7 章 比较基因组与泛基因组", "path": "docs/guidebook/07-comparative-pangenome.md" }
+    ]
+  },
+  {
+    "id": "pange_roary",
+    "name": "泛基因组构建：Roary（经典）",
+    "category": "pangenome",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "legacy",
+    "domains": ["genomics", "phylogenetics"],
+    "tags": ["泛基因组", "roary", "核心基因", "经典流程", "prokka"],
+    "summary": "经典泛基因组流程；快但依赖注释质量",
+    "what": [
+      "Roary 是泛基因组分析最早被广泛采用的流程：输入一组 Prokka 注释的 GFF，先按 BLASTP 相似性做预聚类，再用 CD-HIT 去冗余、用 MCL 做图聚类得到基因家族，最后输出家族 × 基因组的存在/缺失矩阵、核心基因比对与统计摘要。它的优势是快：几十到一两百个基因组的距离上，比做比对校正的流程省很多时间。",
+      "它与 Panaroo 的差别不在「谁更准」而在处理策略：Roary 完全依赖注释给出的基因边界与 BLAST 相似度，不做聚类后的比对校正，也不会主动合并被注释拆开的基因或剔除污染序列。因此当输入注释质量不齐（混用不同注释器、含有碎片化或污染基因组）时，Roary 会把同一基因拆成多个家族、把污染序列当成真实家族，核心基因组被人为压小。",
+      "Roary 已不再积极维护，但它并未过时：大量已发表流程与数据库仍基于它，参数语义稳定，复现旧结果或与既有数据集对齐时仍有价值。新项目建议先用 Panaroo；若坚持用 Roary，至少要做到注释器统一、阈值固定，并在报告中明确说明未做比对校正这一点。"
+    ],
+    "inputs": [
+      { "type": "gff", "name": "各基因组注释 (GFF3)", "required": true, "note": "Roary 官方流程假定来自 Prokka；混用其他注释器会引入假家族" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "基因家族存在/缺失矩阵", "ext": "gene_presence_absence.csv", "note": "与 Panaroo 同名但内容不可直接互换" },
+      { "type": "alignment-fasta", "name": "核心基因比对", "ext": "core_gene_alignment.aln", "note": "串联后的核心基因比对，可直接建树" },
+      { "type": "log-report", "name": "统计摘要", "ext": "summary_statistics.txt", "note": "核心/软核心/附属家族数与聚类参数" }
+    ],
+    "provides": [
+      { "tool": "Roary", "version": "3.13.x", "access": "cli", "install": "conda", "note": "Perl 实现，依赖 BLAST+、CD-HIT、MCL、MAFFT、PRANK 等外部程序" },
+      { "tool": "Prokka", "version": "1.14.x", "access": "cli", "install": "conda", "note": "Roary 官方推荐的配套注释器；全项目统一使用" }
+    ],
+    "feeds": [
+      { "target": "pange_core_align", "viaType": "alignment-fasta", "note": "用核心基因比对做串联与 SNP 提取" },
+      { "target": "pange_acc_stats", "viaType": "tsv-table", "note": "做核心-附属分区与泛基因组曲线" },
+      { "target": "comp_gene_presence", "viaType": "tsv-table", "note": "整理成比较基因组用的 0/1 矩阵" }
+    ],
+    "usage": [
+      {
+        "label": "标准用法（GFF 通配符展开）",
+        "lang": "bash",
+        "code": "roary -e -n -v gff/*.gff -f roary_out -p 8"
+      },
+      {
+        "label": "用 MAFFT 代替默认比对器做核心基因比对（更快）",
+        "lang": "bash",
+        "code": "roary -e -n -v --mafft gff/*.gff -f roary_out -p 8"
+      },
+      {
+        "label": "确认阈值与参数，复现旧结果时尤其重要",
+        "lang": "bash",
+        "code": "roary -h   # 关注 -i（BLASTP 一致性）、-cd（CD-HIT 一致性）与 -g（是否拆分旁系同源）"
+      }
+    ],
+    "recipes": {
+      "bash": "roary -e -n -v --mafft gff/*.gff -f 05_pangenome/roary -p ${THREADS} \\\n  > 10_logs/${PROJECT}.roary.log 2>&1",
+      "python": "gffs = sorted(str(p) for p in ANNO_DIR.glob(\"*.gff\"))\nrun([\"roary\", \"-e\", \"-n\", \"-v\", \"--mafft\", *gffs,\n     \"-f\", str(PANGE_DIR / \"roary\"), \"-p\", str(THREADS)],\n    log_name=f\"{project}.roary.log\")"
+    },
+    "params": [
+      { "flag": "-i", "default": "95", "note": "BLASTP 最小一致性百分比；下调会合并更多家族，核心基因数随之上升，必须与旧结果保持一致才能比较" },
+      { "flag": "-cd", "default": "99", "note": "CD-HIT 去冗余的一致性阈值；与 -i 的搭配决定家族边界，两个都要写进报告" },
+      { "flag": "-e", "default": "1e-5", "note": "BLASTP 的 E 值上限；放松会引入更多远缘匹配" },
+      { "flag": "-n", "default": "关闭", "note": "快速模式：用 MAFFT 的快速参数而非全长迭代比对，速度明显更快" },
+      { "flag": "-g", "default": "关闭", "note": "不拆分旁系同源（paralogs）；默认会拆分，关闭后家族数明显减少" },
+      { "flag": "-p", "default": "1", "note": "并行进程数；默认单进程在几十个基因组时就会明显变慢" }
+    ],
+    "pitfalls": [
+      "Roary 不做比对校正。同一个基因因注释边界不同被切成两段时，它会记成两个家族，结果就是附属基因组虚高、核心基因组偏低，而且不会给出任何警告。",
+      "默认会拆分旁系同源（paralogs），因此含多拷贝基因（rRNA 操纵子、IS 元件、耐药基因重复）的家族会被拆成多个；如果研究问题涉及拷贝数，必须显式记录是否用了 -g。",
+      "阈值（-i 与 -cd）会改变结论。与旧论文比较前先确认对方用的是哪组阈值，否则家族数差异会被误读为生物学差异。",
+      "Roary 是 Perl + 多个外部程序组成的流程，conda 环境里 BLAST+、MCL 版本不匹配会出现难以定位的失败（尤其是并行步骤静默退出）；建议改用容器固定环境。",
+      "输出与 Panaroo 同名文件（gene_presence_absence.csv、core_gene_alignment.aln）内容却不同，两者放在同一个结果目录里极易被下游脚本误用；按工具分目录存放。",
+      "它已停止积极维护：新项目若无复现需求，优先用 Panaroo；坚持用 Roary 时应在方法部分说明未做比对校正，并附上注释器与版本。"
+    ],
+    "related": [
+      { "id": "pange_panaroo", "note": "带比对校正的现代替代方案；新项目首选" },
+      { "id": "pange_core_align", "note": "下游的串联与 SNP 提取" },
+      { "id": "pange_acc_stats", "note": "基于家族矩阵做曲线与分区统计" },
+      { "id": "anno_prokka", "note": "官方配套注释器；保持全项目一致" }
+    ],
+    "docs": [
+      { "label": "第 7 章 比较基因组与泛基因组", "path": "docs/guidebook/07-comparative-pangenome.md" }
+    ]
+  },
+  {
+    "id": "pange_orthofinder",
+    "name": "直系同源群推断 (OrthoFinder)",
+    "category": "pangenome",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics", "phylogenetics"],
+    "tags": ["直系同源", "同源群", "物种树", "orthofinder", "paralog"],
+    "summary": "用蛋白组推断直系同源群、基因树与物种树",
+    "what": [
+      "OrthoFinder 输入每个基因组一套蛋白序列（通常一个基因组一个 FASTA 文件），先做全对全相似性搜索（默认 DIAMOND，可切换 MMseqs2 或 BLAST），用长度校正后的相似度做 MCL 图聚类得到 orthogroups，再通过基因树与物种树的重复-丢失推断把 orthogroup 细分为直系同源群，最后输出一棵带支持度的有根物种树。它不限定分类阶元，细菌、古菌、真核的蛋白组集合都能直接跑。",
+      "它与泛基因组工具的定位不同：OrthoFinder 在蛋白层面工作，显式处理旁系同源与多拷贝家族，适合跨属甚至跨门的「这个基因组有没有这个家族」类问题；但它不会替你把单拷贝直系同源基因挑出来、比对并串成建树矩阵——那一步仍要接核心基因比对环节。反过来，如果研究对象是同一物种的几十个株系、目标是核心基因组 SNP，用 Panaroo / Roary 更省事。",
+      "结果对输入完整性很敏感。蛋白组缺基因（注释不全、基因组碎片化、短 ORF 被滤掉）会同时压低 orthogroup 总数与单拷贝群数量，而且不会报错，只会让物种树少几个分支。默认只跑到 orthogroups 的快速模式能省很多时间，但就没有直系同源与物种树；开启逐 orthogroup 多序列比对建基因树的模式会慢一个数量级，规模大的项目必须先摸清耗时再全量运行。"
+    ],
+    "inputs": [
+      { "type": "protein-faa", "name": "各基因组蛋白序列", "required": true, "note": "每个基因组一个 FASTA；文件名即物种名，不要混入备份文件" },
+      { "type": "tree", "name": "用户指定的物种树", "required": false, "note": "已有可靠系统发育假设时可作为输入，避免工具自行推断" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "直系同源群成员表", "ext": "Orthogroups.tsv", "note": "每个 orthogroup 在各基因组中的基因 ID 列表" },
+      { "type": "tsv-table", "name": "基因计数矩阵", "ext": "Orthogroups.GeneCount.tsv", "note": "家族 × 基因组的拷贝数；判断单拷贝与多拷贝的入口" },
+      { "type": "gene-list", "name": "单拷贝直系同源群 ID", "ext": "Orthogroups_SingleCopyOrthologues.txt", "note": "每基因组恰好一个拷贝的家族，是建树与系统发育分析的起点" },
+      { "type": "tree", "name": "有根物种树", "ext": "SpeciesTree_rooted.txt", "note": "由 gene tree 汇总推断，属于工作树，发表前应与串联核心基因树比较" },
+      { "type": "log-report", "name": "统计摘要", "ext": "Statistics_Overall.tsv", "note": "orthogroup 数、单拷贝群数、未分配基因数；先看这里判断输入质量" }
+    ],
+    "provides": [
+      { "tool": "OrthoFinder", "version": "3.1.x", "access": "cli", "install": "conda", "note": "Python 实现；3.x 引入层级直系同源群，结果目录结构与 2.x 不兼容" },
+      { "tool": "DIAMOND", "version": "2.1.x", "access": "cli", "install": "conda", "note": "默认的全对全搜索器；换成 MMseqs2 会改变搜索灵敏度与耗时" },
+      { "tool": "MAFFT", "version": "7.5xx", "access": "cli", "install": "conda", "note": "开启逐 orthogroup 建基因树模式时用于多序列比对" }
+    ],
+    "feeds": [
+      { "target": "pange_core_align", "viaType": "gene-list", "note": "按单拷贝直系同源群列表挑选并比对核心基因" },
+      { "target": "pange_acc_stats", "viaType": "tsv-table", "note": "用基因计数矩阵做家族分区与累积曲线" },
+      { "target": "comp_gene_presence", "viaType": "tsv-table", "note": "转成 0/1 存在缺失矩阵做比较基因组分析" },
+      { "target": "viz_tree_plot", "viaType": "tree", "note": "物种树带支持度可视化，检查是否存在异常分支" }
+    ],
+    "usage": [
+      {
+        "label": "基本用法（输入目录内含每基因组一个蛋白 FASTA）",
+        "lang": "bash",
+        "code": "orthofinder -f proteomes/ -o orthofinder_out -t 16"
+      },
+      {
+        "label": "只推断 orthogroups（快速探索，数百基因组也够快）",
+        "lang": "bash",
+        "code": "orthofinder -f proteomes/ -o orthofinder_out -og -t 16"
+      },
+      {
+        "label": "更可靠的物种树：逐 orthogroup 比对建基因树（慢，参数名以官方文档为准）",
+        "lang": "bash",
+        "code": "orthofinder -f proteomes/ -o orthofinder_out -M msa -S diamond -A mafft -T iqtree -t 16 -a 8"
+      }
+    ],
+    "recipes": {
+      "bash": "orthofinder -f 04_proteins -o 05_pangenome/orthofinder -t ${THREADS} \\\n  > 10_logs/${PROJECT}.orthofinder.log 2>&1\nhead -20 05_pangenome/orthofinder/Results_*/Comparative_Genomics_Statistics/Statistics_Overall.tsv",
+      "python": "run([\"orthofinder\", \"-f\", str(PROTEIN_DIR), \"-o\", str(PANGE_DIR / \"orthofinder\"),\n     \"-t\", str(THREADS)], log_name=f\"{project}.orthofinder.log\")\n# 结果目录带 Results_<日期> 前缀，取最新一个再读统计表\nlatest = sorted((PANGE_DIR / \"orthofinder\").glob(\"Results_*\"), key=lambda p: p.stat().st_mtime)[-1]\nwith open(LOG_DIR / f\"{project}.orthofinder_stats.tsv\", \"w\", encoding=\"utf-8\") as fh:\n    subprocess.run([\"head\", \"-20\", str(latest / \"Comparative_Genomics_Statistics\" / \"Statistics_Overall.tsv\")],\n                   check=True, stdout=fh)"
+    },
+    "params": [
+      { "flag": "-f", "default": "无", "note": "输入目录：每个基因组一个蛋白 FASTA。目录里多放一个备份文件就会被当成一个额外物种" },
+      { "flag": "-og", "default": "关闭", "note": "只推断 orthogroups 后停止。用于快速评估基因家族规模，不产出物种树" },
+      { "flag": "-S", "default": "diamond", "note": "全对全搜索程序（diamond / blast / mmseqs）。diamond 最快，mmseqs 在远缘序列上常更敏感" },
+      { "flag": "-M", "default": "dendroblast", "note": "基因树推断策略；msa 会逐 orthogroup 做多序列比对，精度更高但耗时相差一个数量级" },
+      { "flag": "-I", "default": "1.5", "note": "MCL 的 inflation 参数；调大得到更细碎的家族，调小会合并更多家族" },
+      { "flag": "-t / -a", "default": "以官方文档为准", "note": "搜索线程与比对/建树线程；两者要分别设置，否则多核机器上会有大量时间只跑单线程" }
+    ],
+    "pitfalls": [
+      "输入文件名就是物种名。输入目录里残留 .bak、旧版本或合并的 all_proteins.faa 会被当成额外物种，结果里凭空多出分支，而且很难从统计表看出来。",
+      "蛋白组完整性直接决定结论：注释不全或碎片化的基因组会同时压低 orthogroup 数与单拷贝群数，不报错。入组前先用 BUSCO 检查单拷贝基因完整性并记录数值。",
+      "OrthoFinder 的物种树是推断出来的工作树（由基因树汇总而成），不等于系统发育结论。正式发表前应用串联核心基因比对重新建树并比较拓扑；两者冲突时先查旁系同源与缺失数据，而不是直接选好看的那棵。",
+      "不要把它与 Panaroo/Roary 的家族数混着引用：一个基于蛋白相似度与 MCL，一个基于图聚类加比对校正，同一批基因组上家族数差几百到上千完全正常，两个数字之间没有换算关系。",
+      "单拷贝直系同源群只占一部分。下游建树前必须显式过滤「每基因组恰好一个拷贝」，否则多拷贝家族里被随意挑出的那条序列会让拓扑不稳定、可重复性极差。",
+      "开启逐 orthogroup 建树的模式在「上百基因组 × 上千家族」规模下耗时极长且中间文件极多；先用快速模式摸清家族规模，再决定是否全量运行，并预留磁盘。"
+    ],
+    "related": [
+      { "id": "pange_core_align", "note": "承接单拷贝直系同源群，产出建树矩阵" },
+      { "id": "pange_panaroo", "note": "同为泛基因组构建，但基于核酸/注释层面；两者结论要分别报告" },
+      { "id": "anno_diamond_nr", "note": "单个蛋白集合的功能同源搜索；与跨基因组的直系同源推断不是一回事" },
+      { "id": "viz_tree_plot", "note": "物种树可视化与支持度检查" }
+    ],
+    "docs": [
+      { "label": "第 7 章 比较基因组与泛基因组", "path": "docs/guidebook/07-comparative-pangenome.md" }
+    ]
+  },
+  {
+    "id": "pange_core_align",
+    "name": "核心基因比对与串联 (core SNP alignment)",
+    "category": "pangenome",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics", "phylogenetics"],
+    "tags": ["核心基因", "串联", "SNP", "建树输入", "mafft", "trimal"],
+    "summary": "把核心基因比对串联成建树用的 SNP 矩阵",
+    "what": [
+      "这一步把「哪些基因属于核心」变成一张能直接建树的矩阵：从泛基因组结果里挑出所有基因组共有的单拷贝核心基因（或按 95%/99% 出现率定义的软核心），逐基因做多序列比对，再按固定顺序首尾相接成一个超矩阵；随后把每个位点还原成 A/C/G/T、抽出变异位点，得到 core SNP alignment 交给最大似然建树程序。串联顺序与序列命名必须固定并写进记录，否则两次运行的矩阵无法互相比较。",
+      "关键判断有三处。第一是核心的定义：100% 共有会纳入最保守的基因集、几乎没有缺失，放宽到 95% 能多拿进几百个基因，但会引入缺失数据，建树时含缺失的分支支持度会被系统性压低。第二是核酸还是氨基酸：蛋白比对信息量更高但株系水平分辨力不足，株系层面通常回到按密码子对齐的核酸矩阵，而且要用回译（back-translation）而不是直接把氨基酸比对当核酸用。第三是重组：克隆性物种可以直接用串联 SNP，重组频繁的物种（如肺炎链球菌、脑膜炎奈瑟菌）必须先剔除重组区，否则高 bootstrap 支持的是重组历史而非垂直遗传。",
+      "产物必须先自检再建树：所有序列等长、taxa 数与预期完全一致、缺失与模糊碱基比例在可接受范围内、信息位点数量足够。用 trimAl 修剪 gap 密集列通常能提高支持度，但也会删掉真实的分辨位点——修剪前后各建一次树比较拓扑，比反复调阈值可靠得多。"
+    ],
+    "inputs": [
+      { "type": "alignment-fasta", "name": "核心基因比对", "required": true, "note": "每个核心基因一份比对，或 Panaroo/Roary 已串联好的核心基因比对" },
+      { "type": "tsv-table", "name": "基因存在/缺失矩阵", "required": false, "note": "用于按出现率定义核心/软核心基因集" },
+      { "type": "gene-list", "name": "单拷贝基因 ID 列表", "required": false, "note": "来自 OrthoFinder 等工具时用它直接确定基因集，避免重复计算" }
+    ],
+    "outputs": [
+      { "type": "alignment-fasta", "name": "串联核心 SNP 比对", "ext": ".core_snp.aln.fasta", "note": "所有序列等长；建树程序的直接输入" },
+      { "type": "tsv-table", "name": "SNP 位点与等位表", "ext": ".snp_sites.tsv", "note": "每个变异位点的坐标与各样本碱基，用于追溯具体突变" },
+      { "type": "log-report", "name": "串联统计", "ext": ".concat_stats.txt", "note": "基因数、矩阵长度、缺失率、信息位点数；建树前必看" }
+    ],
+    "provides": [
+      { "tool": "MAFFT", "version": "7.5xx", "access": "cli", "install": "conda", "note": "逐基因比对；大批量时是主要耗时点" },
+      { "tool": "trimAl", "version": "1.4.x", "access": "cli", "install": "conda", "note": "比对修剪；参数直接决定最终可用位点数" },
+      { "tool": "snp-sites", "version": "2.5.x", "access": "cli", "install": "conda", "note": "从串联比对中抽取变异位点，输出可直接建树的比对" }
+    ],
+    "feeds": [
+      { "target": "phy_trimal", "viaType": "alignment-fasta", "note": "先修剪 gap 密集列再建树" },
+      { "target": "phy_iqtree", "viaType": "alignment-fasta", "note": "最大似然建树的标准输入" },
+      { "target": "phy_fasttree", "viaType": "alignment-fasta", "note": "样本多、只想要快速拓扑时的近似建树" }
+    ],
+    "usage": [
+      {
+        "label": "逐基因比对并串联（示意）",
+        "lang": "bash",
+        "code": "mkdir -p aln\nfor g in core_genes/*.fna; do\n  mafft --auto --thread 4 \"$g\" > \"aln/$(basename \"$g\" .fna).aln.fasta\"\ndone\n# 串联：所有文件必须 taxa 名一致、顺序固定\ncat aln/*.aln.fasta > core_concat.aln.fasta   # 仅示意：实际串联需按基因对齐 taxa 顺序"
+      },
+      {
+        "label": "从串联比对中抽取 SNP 位点",
+        "lang": "bash",
+        "code": "snp-sites -c -o core_snp.aln.fasta core_concat.aln.fasta\nseqkit stats -T core_snp.aln.fasta   # 核对 taxa 数与比对长度"
+      },
+      {
+        "label": "修剪：用自动化方法选列，而不是凭感觉设阈值",
+        "lang": "bash",
+        "code": "trimal -in core_concat.aln.fasta -out core_trim.aln.fasta -automated1\n# 修剪前后各建一次树，比较拓扑是否稳定"
+      }
+    ],
+    "recipes": {
+      "bash": "mkdir -p 06_phylo/aln\nfor g in 05_pangenome/core_genes/*.fna; do\n  mafft --auto --thread ${THREADS} \"$g\" > \"06_phylo/aln/$(basename \"$g\" .fna).aln.fasta\"\ndone\nsnp-sites -c -o 06_phylo/${PROJECT}.core_snp.aln.fasta 05_pangenome/core_gene_alignment.aln\nseqkit stats -T 06_phylo/${PROJECT}.core_snp.aln.fasta > 10_logs/${PROJECT}.core_snp.stats.tsv",
+      "python": "run([\"snp-sites\", \"-c\", \"-o\", str(PHYLO_DIR / f\"{project}.core_snp.aln.fasta\"),\n     str(PANGE_DIR / \"core_gene_alignment.aln\")])\n# 用 seqkit stats 自检：taxa 数、长度、是否有重复 ID\nsubprocess.run([\"seqkit\", \"stats\", \"-T\", str(PHYLO_DIR / f\"{project}.core_snp.aln.fasta\")],\n               check=True, stdout=open(LOG_DIR / f\"{project}.core_snp.stats.tsv\", \"w\", encoding=\"utf-8\"))"
+    },
+    "params": [
+      { "flag": "核心基因出现率阈值", "default": "100%", "note": "100% 最保守、无缺失；95%（软核心）能多纳入数百基因，代价是引入缺失数据" },
+      { "flag": "mafft --auto", "default": "自动", "note": "按序列数与长度自动选策略；逐基因比对时用 auto 可避免手动挑算法" },
+      { "flag": "trimal -automated1", "default": "关闭", "note": "自动选择修剪策略，适合建树前的通用场景；与 -gt（gap 比例阈值）二选一即可" },
+      { "flag": "snp-sites -c", "default": "关闭", "note": "只保留完全不含模糊碱基的位点；会丢弃部分真实变异，但能避免 N 影响建树" },
+      { "flag": "是否剔除重组区", "default": "不剔除", "note": "克隆性物种可不剔；重组频繁的物种必须先用 Gubbins/ClonalFrameML 处理，否则树反映的是重组历史" }
+    ],
+    "pitfalls": [
+      "串联顺序不一致等于结果不可比。基因顺序、每个 taxon 的 ID 拼写必须完全一致；中途增删基因组要重跑整条链路，而不是把新序列拼到旧矩阵后面。",
+      "缺失数据不是「没影响」。基因在部分基因组缺失时会写成 gap 或 N，缺失比例高的分支支持度会被系统性压低，甚至把真实分群拆散；报告里必须给出每个基因的缺失率。",
+      "只有核心 SNP 树会丢掉附属基因的信号。耐药、毒力岛、可移动元件的进化信息都在附属基因上，只做核心树会看不见；这类问题需要另建 accessory 分析。",
+      "把氨基酸比对当作核酸矩阵是最常见的静默错误之一：密码子错位后统计出的「SNP」数量与位置都是错的。株系水平建树必须按密码子回译成核酸。",
+      "修剪要留痕。不修剪会让高变区主导距离，过度修剪（如 gap 阈值设到 0.5 以上）可能只剩几百个位点、支持度反而崩掉；trimAl 参数与修剪前后位点数都要写进方法与日志。",
+      "大规模数据下 MAFFT 逐基因比对是瓶颈；并行时务必保证每个基因的比对参数一致，混合使用不同参数会把比对差异带进树里。"
+    ],
+    "related": [
+      { "id": "pange_panaroo", "note": "提供核心基因比对的主流上游" },
+      { "id": "pange_roary", "note": "经典上游；结果不做校正，需更谨慎解释" },
+      { "id": "phy_trimal", "note": "比对修剪模块，通常接在本模块与建树之间" },
+      { "id": "phy_iqtree", "note": "最大似然建树的典型下游" }
+    ],
+    "docs": [
+      { "label": "第 7 章 比较基因组与泛基因组", "path": "docs/guidebook/07-comparative-pangenome.md" }
+    ]
+  },
+  {
+    "id": "pange_acc_stats",
+    "name": "核心/附属基因统计与曲线 (rarefaction / accumulation)",
+    "category": "pangenome",
+    "layer": "core",
+    "kind": "template",
+    "maturity": "stable",
+    "domains": ["genomics", "phylogenetics"],
+    "tags": ["泛基因组曲线", "核心基因", "附属基因", "rarefaction", "开放型", "micropan"],
+    "summary": "统计核心与附属基因数并拟合泛基因组曲线",
+    "what": [
+      "从基因家族存在/缺失矩阵出发，把每个家族按在多少个基因组中出现划分成 core（≈100%）、soft-core（≈95%）、shell（中间区间）与 cloud（罕见）四类，然后做两条曲线：泛基因组累积曲线（随机依次加入基因组时累计到的家族总数，通常做数百次随机置换取均值与标准差）和核心基因组衰减曲线（随着基因组增加，仍在全部基因组中出现的家族数）。曲线是否进入平台，直接决定「还需要测多少基因组」这个问题的答案：持续上升说明泛基因组是开放型的，进入平台则说明在当前采样范围内已经闭合。",
+      "定量回答靠拟合。常用 Heap 定律 n = κ·N^γ：γ 明显小于 1 说明曲线在减速，可用拟合参数外推「再加 10 个基因组大约新增多少家族」。但外推只在采样覆盖的多样度内成立——如果样本全部来自同一次暴发或同一个克隆复合体，曲线必然很快平台化，这不代表该物种泛基因组闭合，只代表采样太窄。因此结论必须与采样策略一起写。",
+      "实现上通常用 R 的 micropan 或自写置换脚本，工程重点是可复现：固定随机种子、置换次数（建议 ≥100 并在报告中写明）、明确分类阈值、说明是否去除只出现一次的家族、是否用代表序列做过去冗余。这些选择会直接改变 shell 与 cloud 的边界数字，也是泛基因组论文之间数字对不上的主要原因。"
+    ],
+    "inputs": [
+      { "type": "tsv-table", "name": "基因家族存在/缺失矩阵", "required": true, "note": "Panaroo/Roary 的 gene_presence_absence，或 OrthoFinder 的基因计数矩阵" },
+      { "type": "tsv-table", "name": "样本分组与元数据", "required": false, "note": "按来源/年份/克隆群分组画曲线，用于检验采样是否偏倚" }
+    ],
+    "outputs": [
+      { "type": "stats-result", "name": "核心-附属分区统计表", "ext": ".pangenome_stats.tsv", "note": "各类别的家族计数、占比与所用阈值" },
+      { "type": "tsv-table", "name": "曲线数据表", "ext": ".accumulation_curve.tsv", "note": "每个基因组数对应的置换均值与标准差，可复用于绘图" },
+      { "type": "figure-vector", "name": "泛基因组曲线图", "ext": ".pdf", "note": "累积曲线与核心衰减曲线；图注必须写明置换次数与阈值" },
+      { "type": "log-report", "name": "拟合参数与随机种子", "ext": ".fit_params.txt", "note": "Heap 定律拟合值与种子；缺了它这条曲线无法复现" }
+    ],
+    "provides": [
+      { "tool": "micropan", "version": "2.0.x", "access": "r-api", "install": "cran", "note": "R 包：家族分区、累积曲线与拟合；版本以 CRAN 上的实际发布为准" },
+      { "tool": "R", "version": "4.x", "access": "r-api", "install": "conda", "note": "分析脚本宿主环境；建议整条流程固定同一个 R 版本" }
+    ],
+    "feeds": [
+      { "target": "viz_rarefaction_curve", "viaType": "stats-result", "note": "把曲线数据重画成投稿用图" },
+      { "target": "viz_pub_style", "viaType": "figure-vector", "note": "统一配色、字号与图注规范后再交付" },
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "曲线数据交给脚本做批量汇总或表格输出" }
+    ],
+    "usage": [
+      {
+        "label": "在 R 里做家族分区与累积曲线（示意骨架，需按矩阵列名改写）",
+        "lang": "r",
+        "code": "library(micropan)\npa <- read.table(\"gene_presence_absence.tsv\", header = TRUE, sep = \"\\t\", row.names = 1, check.names = FALSE)\npan  <- panMatrix(pa > 0)          # 家族 × 基因组 的 0/1 矩阵\nset.seed(20240101)                  # 固定种子：不写这一行，曲线不可复现\ncurve <- rarefactionCurve(pan, n.perm = 100)\nwrite.table(curve, \"accumulation_curve.tsv\", sep = \"\\t\", quote = FALSE, row.names = FALSE)"
+      },
+      {
+        "label": "分布统计：每类家族有多少（参数以官方文档为准）",
+        "lang": "r",
+        "code": "freq <- fluctPartition(pan)   # 按出现频率给家族分区\ntable(freq$partitions)          # core / soft-core / shell / cloud 计数"
+      },
+      {
+        "label": "核对输入矩阵的形状",
+        "lang": "bash",
+        "code": "head -1 gene_presence_absence.tsv | tr '\\t' '\\n' | wc -l   # 列数 = 基因组数 + 注释列\nawk -F'\\t' 'NR>1{print NF}' gene_presence_absence.tsv | sort -u   # 所有行列数必须一致"
+      }
+    ],
+    "recipes": {
+      "r": "library(micropan)\npa <- read.table(file.path(PANGE_DIR, \"gene_presence_absence.tsv\"),\n                 header = TRUE, sep = \"\\t\", row.names = 1, check.names = FALSE)\npan <- panMatrix(pa > 0)\nset.seed(SEED)\ncurve <- rarefactionCurve(pan, n.perm = N_PERM)\nwrite.table(curve, file.path(LOG_DIR, paste0(PROJECT, \".accumulation_curve.tsv\")),\n            sep = \"\\t\", quote = FALSE, row.names = FALSE)",
+      "bash": "Rscript 11_scripts/pangenome_curve.R \\\n  --matrix 05_pangenome/panaroo/gene_presence_absence.csv \\\n  --perm 100 --seed 20240101 \\\n  --out 09_results/pangenome_curve.tsv > 10_logs/${PROJECT}.pangenome_curve.log 2>&1"
+    },
+    "params": [
+      { "flag": "core / soft-core 阈值", "default": "100% / 95%", "note": "约定而非定义；换一组边界能让上百个家族改变归属，必须与统计表一起报告" },
+      { "flag": "shell / cloud 边界", "default": "15%–95% / <15%", "note": "常见约定；不同论文取值不同，比较前先对齐定义" },
+      { "flag": "置换次数", "default": "100", "note": "次数太少会低估标准差、让曲线显得异常平滑；正式分析建议 ≥100 次" },
+      { "flag": "随机种子", "default": "必须显式设置", "note": "曲线与拟合值依赖抽样顺序；不固定种子等于放弃可复现性" },
+      { "flag": "是否保留单例家族", "default": "保留", "note": "只在一个基因组出现的家族会显著抬高 cloud 计数；若过滤必须说明，否则与文献数字不可比" }
+    ],
+    "pitfalls": [
+      "「还需要测多少基因组」不能靠目测曲线：要么给出拟合参数与外推区间，要么明确写「未饱和，不做外推」。把仍在明显上升的曲线描述成「接近闭合」是这一环节最常见的过度解读。",
+      "分类阈值必须写明。core/soft-core/shell/cloud 的百分比边界是社区约定，换一组边界能改变上百个家族的归属，也就改变了所有后续统计。",
+      "置换次数太少（例如只做 10 次）时方差被低估，曲线看起来过于平滑；固定种子并用 ≥100 次置换，否则同一份数据两次运行数字都不一样。",
+      "采样偏倚会让曲线假性饱和：近缘暴发株系、同一地理来源或同一克隆复合体的样本几乎不带来新家族。要回答物种层面的问题，样本必须覆盖该物种的多样度，并在方法里描述采样策略。",
+      "矩阵本身的质量决定一切。注释不统一或被拆分的基因会同时抬高 cloud 家族数并压低 core 家族数；先确认核心家族数落在该物种的常见区间，再谈曲线拟合。",
+      "附属基因数与基因组数量强相关，不能直接拿「附属基因更多」推断菌株致病性更强；要做这类比较，应在相同基因组数下稀释取样，或使用系统发育校正的关联方法。"
+    ],
+    "related": [
+      { "id": "pange_panaroo", "note": "存在/缺失矩阵的主要来源" },
+      { "id": "comp_gene_presence", "note": "把多来源矩阵统一成可比格式后再统计" },
+      { "id": "viz_rarefaction_curve", "note": "曲线绘图与样式统一" },
+      { "id": "pange_core_align", "note": "曲线确定核心基因集后，进入建树流程" }
+    ],
+    "docs": [
+      { "label": "第 7 章 比较基因组与泛基因组", "path": "docs/guidebook/07-comparative-pangenome.md" }
+    ]
+  }
+]

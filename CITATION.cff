@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: "If you use this knowledge base in teaching or research, please cite it as below."
+title: "Microbial Bioinformatics Pipeline Guidebook"
+abstract: >-
+  An offline-first, data-driven knowledge base for microbial bioinformatics:
+  an interactive pipeline builder with 160 typed modules and 12 end-to-end
+  workflows, plus a 12-chapter Chinese-language field guide. The panel, the
+  generated tool index and the exports are all derived from the same data
+  registry, so documentation and behaviour cannot drift apart.
+type: software
+authors:
+  - name: "Indigo-Rain"
+repository-code: "https://github.com/Indigo-Rain/bioinfo-guidebook"
+url: "https://indigo-rain.github.io/bioinfo-guidebook/"
+license: MIT
+version: "1.0.0"
+date-released: "2026-11-06"
+keywords:
+  - bioinformatics
+  - microbial-genomics
+  - metagenomics
+  - genome-assembly
+  - pipeline
+  - reproducible-research
+  - knowledge-base
+  - offline-first

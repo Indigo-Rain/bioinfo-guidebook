@@ -1,0 +1,2381 @@
+[
+  {
+    "id": "viz_ggplot2",
+    "name": "通用统计绘图 (ggplot2)",
+    "category": "visualization",
+    "layer": "viz",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics"
+    ],
+    "tags": [
+      "R",
+      "ggplot2",
+      "绘图",
+      "图形语法",
+      "出版级"
+    ],
+    "summary": "用图层语法把数据框画成统计图形",
+    "what": [
+      "ggplot2 实现了「图形语法」：一张图由数据、坐标映射（aes）和几何对象（geom）三层组成，再通过分面（facet）与标度（scale）调整细节。这种结构让「换一种画法」变成换一个 geom 而不是重写整段代码，也让同一套分组变量能一致地贯穿颜色、形状与分面。",
+      "它真正的效率优势在于**同一份数据可以产出整套图**。微生物组或比较基因组的分析通常需要几十张图（每个指标一张、每个分组一版），用 ggplot2 写一个函数 + 循环 `facet` 或 `map` 就能批量产出，且所有图的配色与主题天然一致。手工作图很难做到这一点。",
+      "使用它需要理解一个容易踩的约定：aes 里的映射是「按数据列」，而颜色/形状的具体取值是「按标度」。把颜色直接在 aes 外面写成固定字符串（`colour = \"red\"`）不会按分组区分，这是初学者最常见的困惑。"
+    ],
+    "inputs": [
+      {
+        "type": "dataframe",
+        "name": "tidy 长表",
+        "required": true,
+        "note": "每行一个观测，分组变量占一列；这是 ggplot2 最自然的输入形态"
+      },
+      {
+        "type": "stats-result",
+        "name": "统计结果表",
+        "required": false,
+        "note": "需要标注显著性时提供"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "figure-vector",
+        "name": "矢量图",
+        "ext": ".pdf",
+        "note": "投稿首选，可无损缩放"
+      },
+      {
+        "type": "figure-png",
+        "name": "位图",
+        "ext": ".png",
+        "note": "汇报与预览用；需设足够 dpi"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "ggplot2",
+        "version": "3.5.x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "图形语法的标准实现"
+      },
+      {
+        "tool": "patchwork",
+        "version": "1.2.x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "多图拼版；比 gridExtra 更简洁"
+      },
+      {
+        "tool": "scales",
+        "version": "1.3.x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "坐标轴与标度的格式化"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "py_export_report",
+        "viaType": "figure-vector",
+        "note": "图件作为报告附件交付"
+      },
+      {
+        "target": "viz_pub_style",
+        "viaType": "figure-vector",
+        "note": "投稿前统一字号与配色规范"
+      }
+    ],
+    "usage": [
+      {
+        "label": "箱线图 + 散点 + 分组着色（微生物组最常见的一张图）",
+        "lang": "r",
+        "code": "library(ggplot2)\n\nggplot(long, aes(x = group, y = shannon, fill = group)) +\n  geom_boxplot(alpha = 0.7, outlier.shape = NA, width = 0.6) +\n  geom_jitter(width = 0.15, size = 1.8, alpha = 0.8) +   # 显示真实样本点，别只给箱线\n  scale_fill_brewer(palette = \"Set2\") +\n  labs(x = NULL, y = \"Shannon 指数\", title = \"各组 alpha 多样性\") +\n  theme_classic(base_size = 12) +\n  theme(legend.position = \"none\")\n\nggsave(\"09_results/alpha_diversity.pdf\", width = 4.5, height = 4)"
+      },
+      {
+        "label": "分面 + 批量出一组图（同一条代码应对多个指标）",
+        "lang": "r",
+        "code": "long |>\n  tidyr::pivot_longer(c(shannon, simpson, observed), names_to = \"metric\", values_to = \"value\") |>\n  ggplot(aes(x = group, y = value, fill = group)) +\n  geom_boxplot(alpha = 0.7, outlier.shape = NA) +\n  geom_jitter(width = 0.15, size = 1.4, alpha = 0.7) +\n  facet_wrap(~ metric, scales = \"free_y\", nrow = 1) +     # scales='free_y' 很关键\n  scale_fill_brewer(palette = \"Set2\") +\n  labs(x = NULL, y = \"指数值\") +\n  theme_bw(base_size = 11) +\n  theme(legend.position = \"none\")\n\nggsave(\"09_results/diversity_panel.pdf\", width = 9, height = 3.2)"
+      },
+      {
+        "label": "有序列（ordered factor）决定坐标顺序",
+        "lang": "r",
+        "code": "# ggplot2 按因子水平排序。想让分组按实验顺序而不是字母序：\nlong$group <- factor(long$group, levels = c(\"control\", \"low\", \"high\"))\n\n# 想按数值大小重新排列分类：\n# long$species <- forcats::fct_reorder(long$species, long$abundance, .fun = median)\n\nggplot(long, aes(x = group, y = abundance, colour = group)) +\n  geom_point(position = position_jitter(width = 0.2), alpha = 0.7) +\n  scale_colour_viridis_d(option = \"D\") +      # 色盲友好\n  theme_classic()"
+      }
+    ],
+    "recipes": {
+      "bash": "Rscript -e 'library(ggplot2); d <- read.csv(\"09_results/diversity_pcoa.csv\"); p <- ggplot(d, aes(Axis1, Axis2, colour=group)) + geom_point(size=2.6, alpha=.85) + stat_ellipse(level=.68) + theme_classic(base_size=12) + labs(title=\"PCoA (Bray-Curtis)\"); ggsave(\"09_results/pcoa.pdf\", p, width=5, height=4.2)'",
+      "r": "library(ggplot2)\n\ndf <- read.csv(\"09_results/diversity_pcoa.csv\", stringsAsFactors = FALSE)\ndf$group <- factor(df$group, levels = unique(df$group))   # 固定顺序\n\nvar1 <- round(100 * var(df$Axis1) / (var(df$Axis1) + var(df$Axis2)), 1)\n\np <- ggplot(df, aes(x = Axis1, y = Axis2, colour = group)) +\n  geom_point(size = 2.8, alpha = 0.85) +\n  stat_ellipse(level = 0.68, linetype = 2) +\n  scale_colour_brewer(palette = \"Set2\") +\n  labs(x = paste0(\"Axis1 (\", var1, \"%)\"), y = \"Axis2\",\n       title = \"PCoA (Bray-Curtis)\", colour = NULL) +\n  theme_classic(base_size = 12)\n\nggsave(\"09_results/pcoa.pdf\", p, width = 5.2, height = 4.3)\nggsave(\"09_results/pcoa.png\", p, width = 5.2, height = 4.3, dpi = 300)\nprint(p)"
+    },
+    "params": [
+      {
+        "flag": "aes(colour = ) 在内部还是外部",
+        "default": "—",
+        "note": "写在 aes() 内部才按数据分组映射；写在外面（colour=\"red\"）只是设一个固定颜色，不会分组"
+      },
+      {
+        "flag": "facet_wrap(scales)",
+        "default": "\"fixed\"",
+        "note": "多指标同图时必须用 \"free_y\"，否则量纲小的指标会被压成一条线看不出差别"
+      },
+      {
+        "flag": "geom_boxplot(outlier.shape)",
+        "default": "19",
+        "note": "配合 geom_jitter 时应设 NA，否则离群点会被画两遍，让读者误判样本数"
+      },
+      {
+        "flag": "stat_ellipse(level)",
+        "default": "0.95",
+        "note": "默认 95% 椭圆在样本少时极不稳定甚至无法计算；常改成 0.68（约一个标准差）并说明"
+      },
+      {
+        "flag": "scale_fill/colour_*",
+        "default": "默认色盘",
+        "note": "默认调色板在色盲读者与黑白打印下都不友好；viridis 或 ColorBrewer 更稳妥"
+      },
+      {
+        "flag": "theme(base_size)",
+        "default": "11",
+        "note": "统一基准字号，让多张图缩放后字重一致；拼图时尤其重要"
+      }
+    ],
+    "pitfalls": [
+      "**只画箱线图不画散点**。箱线图会掩盖样本数（n=3 与 n=30 看起来一样）和分布形状。发表级图应叠加 jitter 或小提琴图，让读者看到真实数据点。",
+      "把连续变量当分类映射到颜色（例如按数值直接给 colour），会得到渐变图例而不是分组图例。要分组先把变量转成 factor。",
+      "`facet_wrap` 不设 `scales = \"free_y\"` 就拼多个量纲不同的指标，图形看起来「很平」但很难发现原因。",
+      "坐标轴截断（`coord_cartesian(ylim=)` 与 `scale_y_continuous(limits=)`）语义不同：后者会**丢弃范围外的数据点**，前者只是放大视野。做裁剪展示时用前者，否则统计量会与实际数据不一致。",
+      "在图上手工标注显著性星号而不写检验方法。星号本身不携带信息，读者无法判断用的是哪种检验、校正了多少次比较。图注必须写清检验与 p 值阈值。",
+      "`ggsave` 不指定宽高，会沿用当前设备尺寸，导致批量出图尺寸不一致。所有 `ggsave` 都应显式给 width/height/units。",
+      "把离散的 p 值或百分比放在连续坐标上画折线图。p 值不是随位置连续变化量，折线会暗示不存在的趋势。",
+      "用彩虹色盘（rainbow/jet）表示连续量。它在感知上不等距，会让读者看出虚假的分界与极值。连续量用 viridis 或单色渐变。",
+      "一张图里塞进超过 5 个分组或 20 个分类。这类图应改成分面、热图或小倍数图，而不是继续加颜色。"
+    ],
+    "related": [
+      {
+        "id": "viz_seaborn",
+        "note": "Python 侧的等价工具；同一项目里两个语言混用时配色与字号应统一"
+      },
+      {
+        "id": "viz_pub_style",
+        "note": "出图前的主题与规范统一"
+      },
+      {
+        "id": "viz_alpha_beta",
+        "note": "微生物组多样性的标准图形；本质是 ggplot2 的应用"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 10 章 下游分析与可视化",
+        "path": "docs/guidebook/10-downstream-analysis-visualization.md"
+      }
+    ]
+  },
+  {
+    "id": "viz_seaborn",
+    "name": "Python 统计绘图 (seaborn / matplotlib)",
+    "category": "visualization",
+    "layer": "viz",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics"
+    ],
+    "tags": [
+      "Python",
+      "seaborn",
+      "matplotlib",
+      "绘图",
+      "统计图"
+    ],
+    "summary": "用 seaborn 快速画出带统计聚合的图",
+    "what": [
+      "seaborn 建立在 matplotlib 之上，专注于「按分组变量做统计聚合再绘图」：`sns.boxplot(data=df, x='group', y='value', hue='batch')` 一句话就完成了分组、聚合与图例。这意味着数据整理与绘图之间的接口就是 tidy 长表，不需要手工算均值标准差。",
+      "它和 ggplot2 的关系是「同层不同语言」：概念一一对应（数据 + 映射 + 几何对象 + 分面），但 seaborn 的默认外观更「开箱可用」，而 matplotlib 层提供了精确到像素的控制。实践中通常 seaborn 出图、必要时用 matplotlib API 微调（`ax.set_*`、`ax.tick_params`）。",
+      "在生信项目里，Python 侧绘图往往出现在两类场景：一是流程中自动生成的质量控制图（需要在无 R 环境时也能出图）；二是与 numpy/pandas 分析紧接的探索性可视化。最终投稿图则常交给 R/ggplot2 或 Illustrator 处理。"
+    ],
+    "inputs": [
+      {
+        "type": "dataframe",
+        "name": "pandas 长表",
+        "required": true,
+        "note": "分组变量占一列；这是 seaborn 的标准输入形态"
+      },
+      {
+        "type": "csv-table",
+        "name": "结果表",
+        "required": false,
+        "note": "从磁盘读入的结果表"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "figure-png",
+        "name": "位图",
+        "ext": ".png",
+        "note": "汇报与探索用；dpi 需 ≥ 300"
+      },
+      {
+        "type": "figure-vector",
+        "name": "矢量图",
+        "ext": ".pdf",
+        "note": "matplotlib 同时支持 PDF/SVG，可投稿"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "seaborn",
+        "version": "0.13.x",
+        "access": "python-api",
+        "install": "pip",
+        "note": "统计聚合绘图；API 在 0.12 前后有较大变化"
+      },
+      {
+        "tool": "matplotlib",
+        "version": "3.9.x",
+        "access": "python-api",
+        "install": "pip",
+        "note": "底层绘图引擎与精确控制"
+      },
+      {
+        "tool": "adjustText",
+        "version": "1.1.x",
+        "access": "python-api",
+        "install": "pip",
+        "note": "自动避免散点图标签重叠"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "py_export_report",
+        "viaType": "figure-png",
+        "note": "位图作为报告附件交付"
+      },
+      {
+        "target": "viz_pub_style",
+        "viaType": "figure-png",
+        "note": "投稿前统一字号与配色规范"
+      }
+    ],
+    "usage": [
+      {
+        "label": "分组箱线图 + 散点（探索与汇报通用）",
+        "lang": "python",
+        "code": "import matplotlib.pyplot as plt\nimport seaborn as sns\n\nsns.set_theme(style=\"ticks\", context=\"paper\", font_scale=1.1)\n\nfig, ax = plt.subplots(figsize=(4.6, 3.8))\nsns.boxplot(data=long, x=\"group\", y=\"shannon\", ax=ax,\n            width=0.6, fill=False, showfliers=False, color=\"0.35\")\nsns.stripplot(data=long, x=\"group\", y=\"shannon\", ax=ax,\n              size=3.2, alpha=0.75, jitter=0.16)\n\nax.set_xlabel(\"\")\nax.set_ylabel(\"Shannon 指数\")\nsns.despine(ax=ax)                       # 去掉上右边框，符合多数期刊要求\nfig.tight_layout()\nfig.savefig(\"09_results/alpha_diversity.pdf\", dpi=300)\nfig.savefig(\"09_results/alpha_diversity.png\", dpi=300)"
+      },
+      {
+        "label": "热图（相关性或丰度矩阵）",
+        "lang": "python",
+        "code": "import numpy as np\nimport seaborn as sns\nimport matplotlib.pyplot as plt\n\nfig, ax = plt.subplots(figsize=(6.2, 5.2))\nsns.heatmap(corr, cmap=\"vlag\", center=0, vmin=-1, vmax=1,\n            square=True, linewidths=0.4, linecolor=\"white\",\n            cbar_kws={\"label\": \"相关系数\", \"shrink\": 0.72}, ax=ax)\nax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha=\"right\")\nfig.tight_layout()\nfig.savefig(\"09_results/correlation_heatmap.pdf\", dpi=300)"
+      },
+      {
+        "label": "分面小倍数图（每个指标一格）",
+        "lang": "python",
+        "code": "grid = sns.FacetGrid(metrics_long, col=\"metric\", sharey=False, height=3.0, aspect=0.85)\ngrid.map_dataframe(sns.boxplot, x=\"group\", y=\"value\", fill=False, showfliers=False, color=\"0.35\")\ngrid.map_dataframe(sns.stripplot, x=\"group\", y=\"value\", size=2.6, alpha=0.7, jitter=0.16)\ngrid.set_titles(\"{col_name}\")\ngrid.set_axis_labels(\"\", \"值\")\ngrid.figure.tight_layout()\ngrid.figure.savefig(\"09_results/metrics_panel.pdf\", dpi=300)"
+      }
+    ],
+    "recipes": {
+      "bash": "python -c \"import pandas as pd, seaborn as sns, matplotlib.pyplot as plt; d=pd.read_csv('09_results/abundance_long.csv'); sns.set_theme(style='ticks'); ax=sns.boxplot(data=d, x='group', y='abundance', fill=False, showfliers=False); sns.stripplot(data=d, x='group', y='abundance', size=3, alpha=.7); plt.tight_layout(); plt.savefig('09_results/abundance_box.pdf', dpi=300)\"",
+      "python": "import matplotlib\nimport matplotlib.pyplot as plt\nimport pandas as pd\nimport seaborn as sns\n\nmatplotlib.use(\"Agg\")                 # 无显示环境下必须设定后端，否则可能挂起\nsns.set_theme(style=\"ticks\", context=\"paper\", font_scale=1.1)\n\ndf = pd.read_csv(\"09_results/abundance_long.csv\")\n\ngrid = sns.catplot(\n    data=df, x=\"group\", y=\"abundance\", kind=\"box\",\n    fill=False, showfliers=False, height=3.6, aspect=1.2, color=\"0.4\",\n)\ngrid.map_dataframe(sns.stripplot, x=\"group\", y=\"abundance\", size=2.8, alpha=0.7, jitter=0.16)\ngrid.set_axis_labels(\"\", \"相对丰度\")\nsns.despine(fig=grid.figure)\n\ngrid.figure.tight_layout()\nfor ext in (\"pdf\", \"png\"):\n    grid.figure.savefig(f\"09_results/abundance_box.{ext}\", dpi=300)\nprint(\"已导出 abundance_box.pdf / .png\")"
+    },
+    "params": [
+      {
+        "flag": "matplotlib.use(\"Agg\")",
+        "default": "自动",
+        "note": "无图形界面的服务器上必须显式设定，否则可能因尝试打开窗口而报错或挂起"
+      },
+      {
+        "flag": "sns.set_theme(context)",
+        "default": "\"notebook\"",
+        "note": "context 控制字号与线宽比例；paper/talk/poster 会让图在目标媒介上比例合适"
+      },
+      {
+        "flag": "boxplot(fill/showfliers)",
+        "default": "True/True",
+        "note": "叠加 stripplot 时应设 fill=False, showfliers=False，避免离群点被画两遍"
+      },
+      {
+        "flag": "heatmap(center, vmin, vmax)",
+        "default": "自动",
+        "note": "相关系数必须设 center=0 且 vmin/vmax 对称，否则 0 不在色标中点，视觉上会夸大正相关"
+      },
+      {
+        "flag": "savefig(dpi)",
+        "default": "100",
+        "note": "位图必须 ≥ 300 dpi；矢量格式（pdf/svg）不受 dpi 限制但仍要设字号"
+      },
+      {
+        "flag": "tight_layout / constrained_layout",
+        "default": "无",
+        "note": "不调布局时标签常被裁掉。两者选一即可，混用会报警告"
+      }
+    ],
+    "pitfalls": [
+      "在无头服务器上忘了 `matplotlib.use(\"Agg\")`，程序在 `plt.show()` 处报错或卡住。批量出图脚本必须设定后端。",
+      "seaborn 0.12 之后不少 API 有破坏性变化（如 `sns.distplot` 被移除、参数名改变）。老代码升级时不要盲目照抄旧示例。",
+      "`fig.savefig` 在 `tight_layout()` 之前调用，导致标签被裁切。顺序必须是先调布局后保存。",
+      "热图不设 `center=0` 与对称色标范围，0 值落在色标中部以外的位置，视觉上把弱相关夸大成强相关。",
+      "用默认 dpi=100 出位图然后要求印刷。300 dpi 是印刷底线，且要按最终物理尺寸设置 figsize 而不是事后缩放。",
+      "`plt.show()` 与 `plt.savefig()` 混用导致保存出空白图（某些后端在 show 之后清空 buffer）。脚本里只用 savefig。",
+      "把分类变量映射到连续色盘，读者无法判断颜色代表的类别。分类用离散调色板，连续量用渐变。",
+      "seaborn 的 `hue` 与 matplotlib 的 subsampling 机制会在样本很多时**静默丢弃数据**（只画一部分点）。样本数较大时必须显式设 `sns.stripplot(..., size=, jitter=)` 之外的参数或改用 `dodge`，否则图上的点数与实际不符。"
+    ],
+    "related": [
+      {
+        "id": "viz_ggplot2",
+        "note": "R 侧的等价工具；ggplot2 的语法更接近图形语法，seaborn 的默认外观更省事"
+      },
+      {
+        "id": "py_pandas_tidy",
+        "note": "seaborn 的输入需要 tidy 长表"
+      },
+      {
+        "id": "viz_pub_style",
+        "note": "多图统一规范"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 10 章 下游分析与可视化",
+        "path": "docs/guidebook/10-downstream-analysis-visualization.md"
+      }
+    ]
+  },
+  {
+    "id": "viz_heatmap",
+    "name": "热图与聚类热图 (ComplexHeatmap / pheatmap)",
+    "category": "visualization",
+    "layer": "viz",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics"
+    ],
+    "tags": [
+      "热图",
+      "聚类",
+      "ComplexHeatmap",
+      "pheatmap",
+      "矩阵"
+    ],
+    "summary": "用聚类热图展示矩阵中的结构与分组",
+    "what": [
+      "热图把矩阵的每个单元格映射成颜色，再通过同时聚类行与列来暴露块结构。在生信里它常用于三类数据：表达矩阵（基因 × 样本）、丰度矩阵（物种 × 样本）以及基因存在/缺失矩阵（基因 × 基因组）。一张好的热图能让人一眼看出样本分组是否与实验设计一致。",
+      "ComplexHeatmap 是 R 里控制力最强的实现：它支持列注释条（annotation）、多个并排热图共享行聚类、以及把分组信息作为颜色条画在图旁边。pheatmap 更简单，适合快速出图。Python 侧通常用 seaborn.heatmap 或 seaborn.clustermap。",
+      "使用热图最核心的判断是**标准化方向**。把基因标准化（按行 scale）后再画，比较的是「同一基因在不同样本间的相对变化」；不标准化则画的是绝对水平，会被少数高表达基因主导。两者回答的问题完全不同，图中必须说明选了哪一种。"
+    ],
+    "inputs": [
+      {
+        "type": "dataframe",
+        "name": "数值矩阵",
+        "required": true,
+        "note": "特征 × 样本；必须先处理缺失值"
+      },
+      {
+        "type": "csv-table",
+        "name": "样本分组注释表",
+        "required": false,
+        "note": "用于在图上方画分组色条，是「图能否自我解释」的关键"
+      },
+      {
+        "type": "cluster-dist",
+        "name": "聚类与距离结果",
+        "required": false,
+        "note": "已有聚类结果时直接使用，保证与其它分析一致"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "figure-vector",
+        "name": "矢量热图",
+        "ext": ".pdf",
+        "note": "特征数适中时投稿首选"
+      },
+      {
+        "type": "figure-png",
+        "name": "位图热图",
+        "ext": ".png",
+        "note": "大矩阵（上万行）用位图更实际"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "ComplexHeatmap",
+        "version": "2.1x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "R 里控制力最强的热图实现；支持注释条与多热图并排"
+      },
+      {
+        "tool": "pheatmap",
+        "version": "1.0.12",
+        "access": "r-api",
+        "install": "cran",
+        "note": "简单易用，快速出图"
+      },
+      {
+        "tool": "seaborn",
+        "version": "0.13.x",
+        "access": "python-api",
+        "install": "pip",
+        "note": "clustermap 提供 Python 侧的聚类热图"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "py_export_report",
+        "viaType": "figure-vector",
+        "note": "热图作为报告附件交付"
+      },
+      {
+        "target": "viz_pub_style",
+        "viaType": "figure-vector",
+        "note": "色标与字号规范"
+      }
+    ],
+    "usage": [
+      {
+        "label": "ComplexHeatmap：带分组注释条的标准热图",
+        "lang": "r",
+        "code": "library(ComplexHeatmap)\nlibrary(circlize)\n\n# 关键决策：按行标准化 => 比较「同一基因在不同样本间的相对变化」\nmat_scaled <- t(scale(t(as.matrix(expr))))\n\n# 分组注释条：让图能自我解释，而不是靠图注说明哪一列是哪组\nha <- HeatmapAnnotation(\n  group = meta$group,\n  col = list(group = c(control = \"#4C72B0\", treat = \"#DD8452\"))\n)\n\nHeatmap(\n  mat_scaled,\n  name = \"Z-score\",\n  top_annotation = ha,\n  col = colorRamp2(c(-2, 0, 2), c(\"#2C7BB6\", \"white\", \"#D7191C\")),\n  cluster_rows = TRUE, cluster_columns = TRUE,\n  show_row_names = FALSE,          # 几千个基因时行名会变成黑块\n  show_column_names = TRUE,\n  column_split = meta$group,       # 按分组切分，块结构更清楚\n  row_names_gp = grid::gpar(fontsize = 7),\n  column_names_gp = grid::gpar(fontsize = 8)\n)"
+      },
+      {
+        "label": "pheatmap：快速出图（含注释与固定色标）",
+        "lang": "r",
+        "code": "library(pheatmap)\n\npheatmap(\n  mat_scaled,\n  annotation_col = data.frame(group = meta$group, row.names = meta$sample),\n  color = colorRampPalette(c(\"#2C7BB6\", \"white\", \"#D7191C\"))(100),\n  breaks = seq(-3, 3, length.out = 101),   # 固定色标范围，便于跨图比较\n  cluster_rows = TRUE, cluster_cols = TRUE,\n  show_rownames = FALSE,\n  fontsize = 8,\n  filename = \"09_results/heatmap.pdf\",\n  width = 6, height = 7\n)"
+      },
+      {
+        "label": "Python：seaborn 聚类热图",
+        "lang": "python",
+        "code": "import matplotlib\nimport seaborn as sns\n\nmatplotlib.use(\"Agg\")\n\n# 按行标准化（axis=1）\nz = (mat.sub(mat.mean(axis=1), axis=0)).div(mat.std(axis=1), axis=0)\n\ngrid = sns.clustermap(\n    z,\n    cmap=\"vlag\", center=0, vmin=-2, vmax=2,\n    row_cluster=True, col_cluster=True,\n    yticklabels=False, xticklabels=True,\n    figsize=(6, 8), dendrogram_ratio=0.12,\n    cbar_kws={\"label\": \"Z-score\"},\n)\ngrid.ax_heatmap.set_xlabel(\"\")\ngrid.figure.savefig(\"09_results/heatmap_py.pdf\", dpi=300)"
+      }
+    ],
+    "recipes": {
+      "bash": "Rscript -e 'library(ComplexHeatmap); library(circlize); m <- as.matrix(read.csv(\"09_results/expr.csv\", row.names=1)); z <- t(scale(t(m))); z[is.na(z)] <- 0; pdf(\"09_results/heatmap.pdf\", width=6, height=7); Heatmap(z, name=\"Z-score\", col=colorRamp2(c(-2,0,2), c(\"#2C7BB6\",\"white\",\"#D7191C\")), show_row_names=nrow(z)<200); dev.off(); cat(\"行数:\", nrow(z), \"\\n\")'",
+      "r": "library(circlize)\nlibrary(ComplexHeatmap)\n\nexpr <- as.matrix(read.csv(\"09_results/expr.csv\", row.names = 1, check.names = FALSE))\nmeta <- read.csv(\"sample_metadata.csv\", stringsAsFactors = FALSE)\n\nstopifnot(identical(colnames(expr), meta$sample))\n\n# 去除方差不稳定的行，否则聚类会被噪声主导\nv <- apply(expr, 1, var, na.rm = TRUE)\nkeep <- is.finite(v) & v > 0\ncat(\"剔除方差为 0 或 NA 的行:\", sum(!keep), \"\\n\")\nexpr <- expr[keep, , drop = FALSE]\n\nz <- t(scale(t(expr)))\nz[is.na(z)] <- 0\nz[z > 3] <- 3\nz[z < -3] <- -3                      # 截断极值，避免个别值把色标拉开\n\nha <- HeatmapAnnotation(group = meta$group,\n                        col = list(group = c(control = \"#4C72B0\", treat = \"#DD8452\")))\n\npdf(\"09_results/heatmap.pdf\", width = 6, height = 7)\ndraw(Heatmap(z, name = \"Z-score\", top_annotation = ha,\n             col = colorRamp2(c(-3, 0, 3), c(\"#2C7BB6\", \"white\", \"#D7191C\")),\n             show_row_names = nrow(z) < 200, column_split = meta$group,\n             row_names_gp = grid::gpar(fontsize = 6)))\ndev.off()\ncat(\"已导出 heatmap.pdf（\", nrow(z), \"行 x\", ncol(z), \"列）\\n\")"
+    },
+    "params": [
+      {
+        "flag": "scale（按行还是按列）",
+        "default": "不标准化",
+        "note": "按行（对基因）标准化比较相对变化；不标准化会被高表达基因主导。两选择回答不同问题，图中必须注明"
+      },
+      {
+        "flag": "colorRamp2 / center",
+        "default": "对称白中点",
+        "note": "Z-score 或相关系数必须让 0 落在色标中点，否则视觉上夸大方向性差异"
+      },
+      {
+        "flag": "breaks (pheatmap)",
+        "default": "数据范围",
+        "note": "多张热图需固定同一 breaks 才能比较颜色；自动范围会让不同的图看起来一样"
+      },
+      {
+        "flag": "show_row_names",
+        "default": "TRUE",
+        "note": "行数超过约 200 时行名会重叠成黑块，应设为 FALSE 或只标注感兴趣的行"
+      },
+      {
+        "flag": "column_split",
+        "default": "无",
+        "note": "按分组切分列，让块结构显式可见；比事后用图注说明更有效"
+      },
+      {
+        "flag": "clustering_distance_rows",
+        "default": "\"euclidean\"",
+        "note": "欧氏距离对离群值敏感；表达数据常用 1-相关系数，可能暴露不同的块结构"
+      }
+    ],
+    "pitfalls": [
+      "**不说明标准化方向**。按行标准化与不标准化画出的图看起来都「像热图」，但含义完全不同。图注必须写明是按行 Z-score 还是原始水平。",
+      "色标范围随数据自动变化，导致多张热图之间颜色不可比较。同一组图必须固定 `breaks`（pheatmap）或 `colorRamp2` 的范围。",
+      "不剔除方差为 0 或含 NA 的行。这些行会让 `scale` 产生 NaN，且会干扰聚类：要么报错，要么把无信息的行聚成奇怪的块。",
+      "热图不标分组注释条，读者只能靠图注猜哪几列属于哪个组。加一条 annotation 色条成本极低，收益极大。",
+      "行数列数过多（上万行）时仍输出 PDF。文件会巨大且打开缓慢，此时应改用位图并合理降低尺寸，或先做特征筛选。",
+      "用热图的聚类结果替代正式的聚类分析。热图的行列顺序依赖具体距离与连接方法，换一个参数块结构就变；作为结论需要做稳健性检查并报告方法。",
+      "行列顺序依赖输入矩阵的行序，而不同工具产生的矩阵行序不同。要让两张热图可比，必须先按同一规则排序再画。",
+      "把两个差异极大的量（例如覆盖度与 GC 含量）放进同一热图共享色标。它们需要各自的标度，或分别画图后并排。"
+    ],
+    "related": [
+      {
+        "id": "viz_ggplot2",
+        "note": "非聚类矩阵图可用 ggplot2 实现，版面控制更自由"
+      },
+      {
+        "id": "viz_pub_style",
+        "note": "色标与字号规范"
+      },
+      {
+        "id": "comp_gene_presence",
+        "note": "基因存在/缺失矩阵的构建；热图是其标准呈现方式"
+      },
+      {
+        "id": "py_sklearn_cluster",
+        "note": "聚类算法与距离选择的理论部分"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 10 章 下游分析与可视化",
+        "path": "docs/guidebook/10-downstream-analysis-visualization.md"
+      }
+    ]
+  },
+  {
+    "id": "viz_alpha_beta",
+    "name": "Alpha/Beta 多样性图 (PCoA / NMDS)",
+    "category": "visualization",
+    "layer": "viz",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "metagenomics"
+    ],
+    "tags": [
+      "多样性",
+      "PCoA",
+      "NMDS",
+      "beta 多样性",
+      "微生物组"
+    ],
+    "summary": "把群落多样性与样本间差异画成箱线图与排序图",
+    "what": [
+      "微生物组的核心可视化是两张图：alpha 多样性箱线图（每个样本一个值，按组比较）与 beta 多样性排序图（每个样本一个点，在二维平面上展示样本间的相似关系）。这两张图构成了「组内丰富度」与「组间结构差异」的标准呈现方式。",
+      "排序方法的选择很重要。PCoA（主坐标分析）能处理任意距离矩阵并给出各轴解释的方差比例，是群落数据的默认选择；NMDS 保留秩次关系，在距离非单调时表现更好，但必须报告 stress 值。PCA 只在数据是欧氏距离且变量量纲一致时适用，直接套用到丰度数据上通常不合适。",
+      "判断一张排序图是否可解读，看三件事：**轴解释的百分比**（两轴合计低于 20% 时二维图不足以代表数据结构）、**组内离散度**（某组特别分散时组间差异的检验结论要谨慎），以及**样本量**（每组 3 个点的分离不能当作结论）。"
+    ],
+    "inputs": [
+      {
+        "type": "cluster-dist",
+        "name": "样本距离矩阵",
+        "required": true,
+        "note": "Bray-Curtis、Jaccard 或 UniFrac；由多样性分析步骤产生"
+      },
+      {
+        "type": "dataframe",
+        "name": "多样性与分组数据",
+        "required": true,
+        "note": "含 alpha 指数与分组变量"
+      },
+      {
+        "type": "stats-result",
+        "name": "检验结果",
+        "required": false,
+        "note": "PERMANOVA 与组间 alpha 检验结果，用于图上标注"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "figure-vector",
+        "name": "排序图与箱线图",
+        "ext": ".pdf",
+        "note": "投稿用矢量图"
+      },
+      {
+        "type": "figure-png",
+        "name": "位图",
+        "ext": ".png",
+        "note": "汇报与预览用"
+      },
+      {
+        "type": "dataframe",
+        "name": "绘图用坐标表",
+        "ext": ".coords.csv",
+        "note": "含各样本排序坐标与分组，供复现或换工具重绘"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "vegan",
+        "version": "2.6-x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "提供 metaMDS（NMDS）与 adonis2"
+      },
+      {
+        "tool": "ggplot2",
+        "version": "3.5.x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "绘制排序散点与箱线图"
+      },
+      {
+        "tool": "phyloseq",
+        "version": "1.4x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "提供 plot_ordination 等便捷封装"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "viz_pub_style",
+        "viaType": "figure-vector",
+        "note": "统一配色与字号后进入投稿流程"
+      },
+      {
+        "target": "r_export_table",
+        "viaType": "dataframe",
+        "note": "坐标与检验结果作为补充材料"
+      },
+      {
+        "target": "amplicon_phyloseq",
+        "viaType": "dataframe",
+        "note": "回到 phyloseq 体系继续做其它分析"
+      }
+    ],
+    "usage": [
+      {
+        "label": "PCoA 排序图（含方差解释比例与置信椭圆）",
+        "lang": "r",
+        "code": "library(ggplot2)\nlibrary(vegan)\n\npcoa <- cmdscale(dist_bc, k = 2, eig = TRUE)\n\n# 关键：解释度只对正特征值求和，负特征值没有意义\npos_eig <- pcoa$eig[pcoa$eig > 0]\nvar_pct <- round(pcoa$eig[1:2] / sum(pos_eig) * 100, 1)\n\ncoords <- data.frame(sample = rownames(pcoa$points),\n                     Axis1 = pcoa$points[, 1],\n                     Axis2 = pcoa$points[, 2])\ncoords <- merge(coords, meta[, c(\"sample\", \"group\")], by = \"sample\")\ncoords$group <- factor(coords$group, levels = unique(coords$group))\n\nggplot(coords, aes(Axis1, Axis2, colour = group)) +\n  geom_point(size = 2.8, alpha = 0.85) +\n  stat_ellipse(level = 0.68, linetype = 2) +     # 默认 0.95 在小样本下不稳定\n  scale_colour_brewer(palette = \"Set2\") +\n  labs(x = sprintf(\"PCoA1 (%.1f%%)\", var_pct[1]),\n       y = sprintf(\"PCoA2 (%.1f%%)\", var_pct[2]),\n       colour = NULL, title = \"Bray-Curtis PCoA\") +\n  theme_classic(base_size = 12)\n\nggsave(\"09_results/pcoa.pdf\", width = 5.4, height = 4.4)\ncat(\"两轴累计解释:\", sum(var_pct), \"%\\n\")"
+      },
+      {
+        "label": "NMDS（必须报告 stress）",
+        "lang": "r",
+        "code": "set.seed(42)                       # NMDS 是迭代算法，必须固定随机种子\nnmds <- metaMDS(dist_bc, k = 2, trymax = 100, trace = FALSE)\n\ncat(\"stress =\", round(nmds$stress, 4), \"\\n\")\ncat(\"判读: <0.1 好, <0.2 可接受, >0.2 结果不可用（不要拿去解读）\\n\")\n\npts <- as.data.frame(scores(nmds, display = \"sites\"))\npts$sample <- rownames(pts)\npts <- merge(pts, meta[, c(\"sample\", \"group\")], by = \"sample\")\n\nggplot(pts, aes(NMDS1, NMDS2, colour = group)) +\n  geom_point(size = 2.8, alpha = 0.85) +\n  stat_ellipse(level = 0.68, linetype = 2) +\n  scale_colour_brewer(palette = \"Set2\") +\n  labs(subtitle = sprintf(\"stress = %.3f\", nmds$stress), colour = NULL) +\n  theme_classic(base_size = 12)"
+      },
+      {
+        "label": "alpha 多样性箱线图 + 组间检验",
+        "lang": "r",
+        "code": "library(ggplot2)\n\n# 两组用 Wilcoxon，多组用 Kruskal-Wallis；不要用 t 检验\nkw <- kruskal.test(shannon ~ group, data = long)\ncat(\"Kruskal-Wallis p =\", format.pval(kw$p.value, digits = 3), \"\\n\")\n\nggplot(long, aes(x = group, y = shannon, fill = group)) +\n  geom_boxplot(alpha = 0.65, outlier.shape = NA, width = 0.6) +\n  geom_jitter(width = 0.15, size = 1.8, alpha = 0.8) +\n  scale_fill_brewer(palette = \"Set2\") +\n  annotate(\"text\", x = 1.5, y = max(long$shannon) * 1.03,\n           label = sprintf(\"Kruskal-Wallis p = %.3g\", kw$p.value), size = 3.2) +\n  labs(x = NULL, y = \"Shannon 指数\") +\n  theme_classic(base_size = 12) +\n  theme(legend.position = \"none\")"
+      }
+    ],
+    "recipes": {
+      "r": "library(ggplot2)\nlibrary(vegan)\n\nabundance <- read.csv(\"09_results/abundance.csv\", row.names = 1, check.names = FALSE)\nmeta <- read.csv(\"sample_metadata.csv\", stringsAsFactors = FALSE)\nmat <- t(as.matrix(abundance))                  # 样本 x 特征\nstopifnot(identical(rownames(mat), meta$sample))\n\ndist_bc <- vegdist(mat, method = \"bray\")\npcoa <- cmdscale(dist_bc, k = 2, eig = TRUE)\npos <- pcoa$eig[pcoa$eig > 0]\nvar_pct <- round(pcoa$eig[1:2] / sum(pos) * 100, 1)\n\ncoords <- data.frame(sample = rownames(mat),\n                     Axis1 = pcoa$points[, 1], Axis2 = pcoa$points[, 2],\n                     shannon = diversity(mat, index = \"shannon\"))\ncoords <- merge(coords, meta, by = \"sample\")\nwrite.csv(coords, \"09_results/diversity_pcoa.csv\", row.names = FALSE)\n\np1 <- ggplot(coords, aes(Axis1, Axis2, colour = group)) +\n  geom_point(size = 2.8, alpha = 0.85) + stat_ellipse(level = 0.68, linetype = 2) +\n  scale_colour_brewer(palette = \"Set2\") +\n  labs(x = sprintf(\"PCoA1 (%.1f%%)\", var_pct[1]), y = sprintf(\"PCoA2 (%.1f%%)\", var_pct[2]),\n       colour = NULL) + theme_classic(base_size = 12)\n\nggsave(\"09_results/pcoa.pdf\", p1, width = 5.4, height = 4.4)\nggsave(\"09_results/pcoa.png\", p1, width = 5.4, height = 4.4, dpi = 300)\n\ncat(\"两轴解释:\", sum(var_pct), \"%\\n\")\ncat(\"--- 必做的伴随检验 ---\\n\")\nprint(adonis2(dist_bc ~ group, data = meta, permutations = 999))\nprint(anova(betadisper(dist_bc, meta$group)))"
+    },
+    "params": [
+      {
+        "flag": "cmdscale(k)",
+        "default": "2",
+        "note": "要画二维图就取 2；要报告更多轴的解释度需要更大的 k"
+      },
+      {
+        "flag": "cmdscale(eig)",
+        "default": "FALSE",
+        "note": "必须设 TRUE 才能算解释度。负特征值必须排除，否则百分比无意义"
+      },
+      {
+        "flag": "stat_ellipse(level)",
+        "default": "0.95",
+        "note": "小样本下 95% 椭圆会超出数据范围甚至无法计算；0.68 更常用且需在图注说明"
+      },
+      {
+        "flag": "metaMDS(k, trymax)",
+        "default": "2, 20",
+        "note": "k=2 时 stress 偏高可尝试 k=3；trymax 提高收敛概率，但每次运行结果都可能不同"
+      },
+      {
+        "flag": "set.seed",
+        "default": "无",
+        "note": "NMDS 与稀释都是随机过程，不固定种子结果无法复现"
+      },
+      {
+        "flag": "kruskal.test vs wilcox.test",
+        "default": "—",
+        "note": "多组用 Kruskal-Wallis + 事后两两比较（需校正）；直接对多组做多次 Wilcoxon 会膨胀假阳性"
+      }
+    ],
+    "pitfalls": [
+      "**不报告轴解释的百分比**。两轴合计只解释 15% 的变异时，图上的「分离」很可能只是噪声在二维投影上的偶然表现。坐标轴标签必须带百分比。",
+      "NMDS 不报 stress 值，或者 stress > 0.2 仍照常解读。stress 高意味着二维表示失真严重，此时结论不成立。",
+      "每组 3~4 个样本，看到点分开就下结论。小样本下的分离极不稳定，必须配合 PERMANOVA 与 betadisper 的定量结果，并说明样本量限制。",
+      "用 t 检验比较 alpha 多样性。群落数据通常不满足正态性且样本少，应使用非参数方法（Wilcoxon / Kruskal-Wallis）并做多重校正。",
+      "**在测序深度不一致时直接比较 alpha 多样性**。深度低会系统性低估 richness。要么稀释到统一深度，要么使用稳健指标，并在方法里说明。",
+      "用 PERMANOVA 的显著性声称「找到了差异物种」。PERMANOVA 只说明群落整体结构有差异，具体特征需要差异丰度分析。",
+      "不检查组内离散度（betadisper）。某组内部特别分散时，PERMANOVA 会因为该组的平均距离更大而给出显著结果，这是离散度差异而非结构差异。",
+      "用点的颜色区分超过 5~6 个分组。超过这个数量后颜色无法区分，应改分面或减少分组。"
+    ],
+    "related": [
+      {
+        "id": "r_vegan_diversity",
+        "note": "多样性与检验的计算部分；本模块负责呈现"
+      },
+      {
+        "id": "viz_ggplot2",
+        "note": "绘图实现与通用规范"
+      },
+      {
+        "id": "amplicon_qiime2_diversity",
+        "note": "QIIME 2 侧的等价多样性分析"
+      },
+      {
+        "id": "viz_pub_style",
+        "note": "配色与字号规范"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 8 章 宏基因组与微生物组",
+        "path": "docs/guidebook/08-metagenome-microbiome.md"
+      },
+      {
+        "label": "第 10 章 下游分析与可视化",
+        "path": "docs/guidebook/10-downstream-analysis-visualization.md"
+      }
+    ]
+  },
+  {
+    "id": "viz_volcano_ma",
+    "name": "差异表达火山图与 MA 图",
+    "category": "visualization",
+    "layer": "viz",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "transcriptomics",
+      "metagenomics",
+      "genomics"
+    ],
+    "tags": [
+      "火山图",
+      "MA 图",
+      "差异表达",
+      "ggplot2",
+      "可视化"
+    ],
+    "summary": "把差异分析结果画成火山图与 MA 图",
+    "what": [
+      "差异分析的结果表有三个核心列：log2 fold change（效应量）、平均丰度（表达水平）、校正后 p 值（统计显著性）。火山图把「效应量」对「显著性」作图，MA 图把「效应量」对「平均丰度」作图，两者回答不同问题：火山图找「变化大且显著」的特征，MA 图检查「变化是否依赖于丰度」这一技术偏差。",
+      "MA 图常被忽略，但它是重要的诊断工具。如果低丰度特征的 log2FC 分布明显比高丰度特征宽（经典的「漏斗」形状），说明低丰度特征的估计方差大，其显著结果更可能是噪声——这直接影响你对筛选结果的信任程度。",
+      "画火山图时需要明确三个设计决定：显著性阈值用什么（校正后 p 值，不是原始 p 值）、效应量阈值用什么（|log2FC| > 1 是常见但并非普适）、以及**是否用对称的坐标轴**。坐标轴不对称会视觉上夸大一侧的变化。"
+    ],
+    "inputs": [
+      {
+        "type": "stats-result",
+        "name": "差异分析结果表",
+        "required": true,
+        "note": "至少含 log2FC、平均丰度、校正后 p 值三列"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "figure-vector",
+        "name": "火山图与 MA 图",
+        "ext": ".pdf",
+        "note": "投稿用矢量图"
+      },
+      {
+        "type": "figure-png",
+        "name": "位图",
+        "ext": ".png",
+        "note": "汇报用"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "ggplot2",
+        "version": "3.5.x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "R 侧实现；配合 ggrepel 标注基因名"
+      },
+      {
+        "tool": "ggrepel",
+        "version": "0.9.x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "自动避免标签重叠"
+      },
+      {
+        "tool": "matplotlib",
+        "version": "3.9.x",
+        "access": "python-api",
+        "install": "pip",
+        "note": "Python 侧实现"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "py_export_report",
+        "viaType": "figure-vector",
+        "note": "火山图与 MA 图进报告"
+      },
+      {
+        "target": "viz_pub_style",
+        "viaType": "figure-vector",
+        "note": "投稿色彩与字号规范"
+      }
+    ],
+    "usage": [
+      {
+        "label": "火山图（对称阈值 + 基因标注）",
+        "lang": "r",
+        "code": "library(ggplot2)\nlibrary(ggrepel)\n\nfc_cut <- 1        # |log2FC| > 1\np_cut  <- 0.05     # 校正后 p 值\n\nres$category <- \"不显著\"\nres$category[res$adj.P.Val < p_cut & res$log2FC >  fc_cut] <- \"上调\"\nres$category[res$adj.P.Val < p_cut & res$log2FC < -fc_cut] <- \"下调\"\nres$category <- factor(res$category, levels = c(\"下调\", \"不显著\", \"上调\"))\n\nlabel_df <- head(res[res$category != \"不显著\", ], 15)   # 只标前 15 个，否则图会糊\n\nggplot(res, aes(x = log2FC, y = -log10(adj.P.Val), colour = category)) +\n  geom_point(size = 1.6, alpha = 0.75) +\n  geom_vline(xintercept = c(-fc_cut, fc_cut), linetype = 2, colour = \"grey55\") +\n  geom_hline(yintercept = -log10(p_cut), linetype = 2, colour = \"grey55\") +\n  geom_text_repel(data = label_df, aes(label = feature), size = 2.8,\n                  max.overlaps = 20, show.legend = FALSE) +\n  scale_colour_manual(values = c(\"下调\" = \"#4C72B0\", \"不显著\" = \"grey75\", \"上调\" = \"#C44E52\")) +\n  labs(x = \"log2 fold change\", y = \"-log10 (校正后 p 值)\", colour = NULL,\n       title = \"差异表达火山图\") +\n  theme_classic(base_size = 12)\n\nggsave(\"09_results/volcano.pdf\", width = 5.6, height = 4.8)\ncat(\"上调:\", sum(res$category == \"上调\"), \" 下调:\", sum(res$category == \"下调\"), \"\\n\")"
+      },
+      {
+        "label": "MA 图（诊断丰度依赖的偏差）",
+        "lang": "r",
+        "code": "library(ggplot2)\n\nres$sig <- ifelse(res$adj.P.Val < 0.05, \"显著\", \"不显著\")\n\nggplot(res, aes(x = baseMean, y = log2FC, colour = sig)) +\n  geom_point(size = 1.4, alpha = 0.7) +\n  geom_hline(yintercept = 0, colour = \"grey35\") +\n  scale_x_log10() +                              # 丰度跨度大，必须取对数\n  scale_colour_manual(values = c(\"显著\" = \"#C44E52\", \"不显著\" = \"grey78\")) +\n  labs(x = \"平均标准化计数 (log10)\", y = \"log2 fold change\", colour = NULL,\n       title = \"MA 图\",\n       subtitle = \"低丰度端呈漏斗状说明其 log2FC 估计方差更大\") +\n  theme_classic(base_size = 12) +\n  coord_cartesian(ylim = quantile(res$log2FC, c(0.005, 0.995), na.rm = TRUE))"
+      },
+      {
+        "label": "Python 侧实现",
+        "lang": "python",
+        "code": "import matplotlib\nmatplotlib.use(\"Agg\")\nimport matplotlib.pyplot as plt\nimport numpy as np\nimport pandas as pd\n\nres = pd.read_csv(\"09_results/limma_diff.csv\")\nres[\"neg_log_p\"] = -np.log10(res[\"adj.P.Val\"].clip(lower=1e-300))   # 防止 log10(0)\n\nfig, ax = plt.subplots(figsize=(5.4, 4.6))\nmask_sig = (res[\"adj.P.Val\"] < 0.05) & (res[\"logFC\"].abs() > 1)\nax.scatter(res.loc[~mask_sig, \"logFC\"], res.loc[~mask_sig, \"neg_log_p\"],\n           s=6, c=\"0.78\", label=\"不显著\")\nax.scatter(res.loc[mask_sig, \"logFC\"], res.loc[mask_sig, \"neg_log_p\"],\n           s=8, c=\"#C44E52\", label=f\"显著 (n={int(mask_sig.sum())})\")\nax.axvline(1, ls=\":\", c=\"0.5\"); ax.axvline(-1, ls=\":\", c=\"0.5\")\nax.axhline(-np.log10(0.05), ls=\":\", c=\"0.5\")\nax.set_xlabel(\"log2 fold change\"); ax.set_ylabel(\"-log10 (校正后 p 值)\")\nax.legend(frameon=False, fontsize=8)\nfig.tight_layout()\nfig.savefig(\"09_results/volcano.pdf\", dpi=300)"
+      }
+    ],
+    "recipes": {
+      "r": "library(ggplot2)\n\nres <- read.csv(\"09_results/limma_diff.csv\", stringsAsFactors = FALSE)\nres <- res[!is.na(res$adj.P.Val), ]\n\nfc_cut <- 1; p_cut <- 0.05\nres$category <- ifelse(res$adj.P.Val >= p_cut, \"不显著\",\n                ifelse(res$log2FC >= fc_cut, \"上调\",\n                ifelse(res$log2FC <= -fc_cut, \"下调\", \"不显著\")))\nres$category <- factor(res$category, levels = c(\"下调\", \"不显著\", \"上调\"))\n\np <- ggplot(res, aes(log2FC, -log10(adj.P.Val), colour = category)) +\n  geom_point(size = 1.6, alpha = 0.75) +\n  geom_vline(xintercept = c(-fc_cut, fc_cut), linetype = 2, colour = \"grey55\") +\n  geom_hline(yintercept = -log10(p_cut), linetype = 2, colour = \"grey55\") +\n  scale_colour_manual(values = c(\"下调\" = \"#4C72B0\", \"不显著\" = \"grey75\", \"上调\" = \"#C44E52\")) +\n  labs(x = \"log2 fold change\", y = \"-log10 (校正后 p 值)\", colour = NULL) +\n  theme_classic(base_size = 12)\n\nggsave(\"09_results/volcano.pdf\", p, width = 5.6, height = 4.8)\nggsave(\"09_results/volcano.png\", p, width = 5.6, height = 4.8, dpi = 300)\n\ncat(\"阈值: |log2FC| >=\", fc_cut, \", 校正后 p <\", p_cut, \"\\n\")\ncat(\"上调:\", sum(res$category == \"上调\"), \" 下调:\", sum(res$category == \"下调\"),\n    \" 不显著:\", sum(res$category == \"不显著\"), \"\\n\")\nrange_p <- range(-log10(res$adj.P.Val), na.rm = TRUE)\ncat(\"y 轴范围:\", round(range_p, 2), \"—— 注意两端是否对称\\n\")"
+    },
+    "params": [
+      {
+        "flag": "adj.P.Val vs P.Value",
+        "default": "—",
+        "note": "**必须用校正后 p 值**。用原始 p 值会把几千个假阳性画成「显著」"
+      },
+      {
+        "flag": "log2FC 阈值",
+        "default": "1（即 2 倍）",
+        "note": "阈值应结合数据本身的变化范围决定；变化普遍很小的体系用 |log2FC|>1 会几乎没有结果"
+      },
+      {
+        "flag": "clip / 截断极值",
+        "default": "无",
+        "note": "个别极大的 -log10(p) 会把其它点压成一团。必要时截断并在图注说明"
+      },
+      {
+        "flag": "geom_text_repel(max.overlaps)",
+        "default": "10",
+        "note": "不设上限时标签会铺满整张图；只标注 top N 特征更可读"
+      },
+      {
+        "flag": "coord_cartesian(ylim)",
+        "default": "数据范围",
+        "note": "用 coord_cartesian 只是缩放视野、不丢数据；用 scale_*_continuous(limits=) 会**丢弃**范围外的点"
+      },
+      {
+        "flag": "对称坐标轴",
+        "default": "自动",
+        "note": "log2FC 轴应关于 0 对称（如 -6 到 6），不对称会视觉上夸大某个方向的变化"
+      }
+    ],
+    "pitfalls": [
+      "**用原始 p 值画火山图**。这在多重检验场景下会把大量假阳性标成显著点。必须使用 `adj.P.Val` / `padj`。",
+      "坐标轴不对称。x 轴从 -8 到 3 会让上调侧看起来「变化更大」，而实际上下调侧范围更宽。y 轴同理应从中点对称。",
+      "标注太多基因名。标满几十个名字会盖住数据点，读者反而什么都看不清。只标最能说明问题的少数几个。",
+      "不报告阈值就在图注里下结论。任何「显著」的说法都必须明确 p 值阈值、是否校正、以及 log2FC 阈值。",
+      "`log10(0)` 得到 Inf，让绘图范围失控。校正后 p 值极小或为 0 时必须裁剪（clip）到有限值并说明。",
+      "不画 MA 图，因此没发现低丰度端的漏斗形分布。这个形状提示低丰度特征结果不可靠，是判断结果可信度的重要依据。",
+      "把火山图当作定量结论。它只展示结果表的分布；具体哪些特征显著、效应多大，仍要回到结果表与统计方法。",
+      "点太多（几万个）时用默认点大小与透明度，图变成一团实心色块。应减小 size、降低 alpha，必要时先做特征过滤。"
+    ],
+    "related": [
+      {
+        "id": "py_scipy_stats",
+        "note": "产生差异结果表的上游统计步骤"
+      },
+      {
+        "id": "r_limma_stats",
+        "note": "结果表的来源之一"
+      },
+      {
+        "id": "tran_deseq2",
+        "note": "另一常见来源；注意其 padj 为 NA 的处理"
+      },
+      {
+        "id": "viz_pub_style",
+        "note": "配色与字号规范"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 9 章 转录组与差异表达",
+        "path": "docs/guidebook/09-transcriptome-differential-expression.md"
+      },
+      {
+        "label": "第 10 章 下游分析与可视化",
+        "path": "docs/guidebook/10-downstream-analysis-visualization.md"
+      }
+    ]
+  },
+  {
+    "id": "viz_plotly",
+    "name": "交互式图表 (plotly)",
+    "category": "visualization",
+    "layer": "viz",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics"
+    ],
+    "tags": [
+      "Python",
+      "plotly",
+      "交互式",
+      "html",
+      "探索"
+    ],
+    "summary": "生成可缩放悬停的交互式图表用于探索与分享",
+    "what": [
+      "plotly 生成的是 HTML 里的 SVG/WebGL 图形，读者可以缩放、平移、悬停查看数值、点选图例隐藏分组。它解决的是静态图无法解决的问题：样本上千时静态散点图会重叠成一片，而交互图可以逐点查看；物种几百个时静态堆叠图无法分辨，交互图可以点图例筛选。",
+      "它最适合两个场景：**探索阶段**（数据量大、需要反复筛选和查看具体点）与**网页化交付**（把结果做成可交互的 HTML 报告给合作方）。反过来，投稿用的图不应该用 plotly——期刊要求静态矢量或高分辨率位图，而且交互功能在纸面上毫无意义。",
+      "需要注意的是体积与性能。plotly 的 HTML 会把数据内嵌进文件，几千个点的文件约几 MB，上百万个点会到几百 MB 并让浏览器卡顿。大数据量时应改用 WebGL 渲染（`go.Scattergl`）或先做聚合/抽样。"
+    ],
+    "inputs": [
+      {
+        "type": "dataframe",
+        "name": "结果表",
+        "required": true,
+        "note": "长表最方便；宽表可先在 pandas 里整理"
+      },
+      {
+        "type": "stats-result",
+        "name": "统计结果",
+        "required": false,
+        "note": "用于悬停显示 p 值、丰度等附加信息"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "report",
+        "name": "交互式 HTML 图",
+        "ext": ".html",
+        "note": "单文件，可直接发给合作方在浏览器打开"
+      },
+      {
+        "type": "figure-png",
+        "name": "静态位图",
+        "ext": ".png",
+        "note": "交互图导出为静态图用于汇报或投稿附件"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "plotly",
+        "version": "5.2x",
+        "access": "python-api",
+        "install": "pip",
+        "note": "Python 接口；生成的 HTML 自包含"
+      },
+      {
+        "tool": "kaleido",
+        "version": "0.2.x",
+        "access": "python-api",
+        "install": "pip",
+        "note": "静态导出的后端；无图形界面环境下导出 PNG 需要它"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "py_export_report",
+        "viaType": "report",
+        "note": "交互式 HTML 报告可作为报告的独立章节"
+      },
+      {
+        "target": "viz_pub_style",
+        "viaType": "figure-png",
+        "note": "需要投稿时导出静态图并重新应用出版规范"
+      }
+    ],
+    "usage": [
+      {
+        "label": "交互式散点图（悬停显示样本信息，适合样本多的项目）",
+        "lang": "python",
+        "code": "import plotly.express as px\n\ndf = px.data.iris  # 换成你的结果表\nfig = px.scatter(\n    df,\n    x=\"Axis1\", y=\"Axis2\",\n    color=\"group\",\n    hover_name=\"sample\",\n    hover_data={\"shannon\": \":.2f\", \"observed\": True},\n    title=\"PCoA（鼠标悬停查看样本，点图例可隐藏分组）\",\n)\nfig.update_traces(marker={\"size\": 9, \"opacity\": 0.85, \"line\": {\"width\": 0.5, \"color\": \"white\"}})\nfig.update_layout(template=\"plotly_white\", legend_title_text=\"\", width=760, height=560)\nfig.write_html(\"09_results/pcoa_interactive.html\", include_plotlyjs=\"cdn\")\nprint(\"已导出 pcoa_interactive.html\")"
+      },
+      {
+        "label": "大数据量：用 WebGL 渲染",
+        "lang": "python",
+        "code": "import plotly.graph_objects as go\n\n# 注意：include_plotlyjs=True 会把库内嵌（文件大但离线可用），\n# 而 'cdn' 体积小但打开时需要联网——离线分发的场景必须用 True。\nfig = go.Figure()\nfor group, sub in df.groupby(\"group\"):\n    fig.add_trace(go.Scattergl(          # Scattergl 用 WebGL，几万点也很流畅\n        x=sub[\"Axis1\"], y=sub[\"Axis2\"],\n        mode=\"markers\", name=str(group),\n        marker={\"size\": 5, \"opacity\": 0.6},\n        text=sub[\"sample\"],\n        hovertemplate=\"%{text}<br>Axis1=%{x:.3f}<br>Axis2=%{y:.3f}<extra></extra>\",\n    ))\n\nfig.update_layout(template=\"plotly_white\", width=780, height=580)\nfig.write_html(\"09_results/pcoa_webgl.html\", include_plotlyjs=True)\nprint(\"已导出（离线自包含版本）\")"
+      },
+      {
+        "label": "导出静态图（需要 kaleido）",
+        "lang": "python",
+        "code": "import plotly.express as px\n\nfig = px.box(df, x=\"group\", y=\"shannon\", points=\"all\", color=\"group\")\nfig.update_layout(template=\"plotly_white\", showlegend=False)\n\n# 需要安装 kaleido；无图形界面环境下也可用\nfig.write_image(\"09_results/shannon_box.png\", width=760, height=520, scale=3)\nprint(\"已导出静态 PNG（scale=3 相当于约 300 dpi）\")"
+      }
+    ],
+    "recipes": {
+      "python": "from pathlib import Path\n\nimport pandas as pd\nimport plotly.express as px\n\ndf = pd.read_csv(\"09_results/diversity_pcoa.csv\")\nout = Path(\"09_results/pcoa_interactive.html\")\nout.parent.mkdir(parents=True, exist_ok=True)\n\nfig = px.scatter(\n    df, x=\"Axis1\", y=\"Axis2\", color=\"group\", hover_name=\"sample\",\n    hover_data={\"shannon\": \":.2f\"},\n    title=\"PCoA（Bray-Curtis）— 交互式\",\n)\nfig.update_traces(marker={\"size\": 9, \"opacity\": 0.85})\nfig.update_layout(template=\"plotly_white\", legend_title_text=\"\",\n                  width=760, height=560, margin={\"l\": 60, \"r\": 20, \"t\": 50, \"b\": 50})\n\n# include_plotlyjs=True => 离线自包含；文件较大但打开不需要网络\nfig.write_html(out, include_plotlyjs=True, full_html=True)\nprint(f\"已导出 {out}（{out.stat().st_size / 1024:.0f} KB，离线可用）\")\nprint(\"提醒: 投稿请用静态矢量图，交互只用于探索与网页交付\")"
+    },
+    "params": [
+      {
+        "flag": "include_plotlyjs",
+        "default": "True",
+        "note": "True 内嵌库（约 3 MB，离线可用）；'cdn' 体积小但打开需联网。**离线分发必须用 True**"
+      },
+      {
+        "flag": "go.Scattergl vs go.Scatter",
+        "default": "Scatter",
+        "note": "Scatter 基于 SVG，超过约 1 万个点后明显卡顿；大数据量必须改用 WebGL 版本"
+      },
+      {
+        "flag": "hovertemplate",
+        "default": "自动",
+        "note": "显式指定悬停内容与格式；默认会附带 trace 名，信息杂乱"
+      },
+      {
+        "flag": "write_image(scale)",
+        "default": "1",
+        "note": "scale=3 约等于 300 dpi；静态导出需要 kaleido"
+      },
+      {
+        "flag": "full_html",
+        "default": "True",
+        "note": "False 只输出 div 片段，便于嵌入已有页面"
+      }
+    ],
+    "pitfalls": [
+      "**用 plotly 出投稿图**。期刊要求静态矢量或高分辨率位图，交互功能在纸上没有意义。plotly 应定位在探索与网页交付，最终图用 ggplot2/matplotlib 重绘。",
+      "`include_plotlyjs` 用默认以外的方式时忘记离线需求。用 'cdn' 生成的 HTML 在没有网络的机器上会显示空白，而这个失败现象不会给出任何提示。",
+      "未安装 kaleido 就调用 `write_image`，报错信息不够直观（常表现为「需要 plotly-orca」之类）。无图形界面环境下导出静态图必须装 kaleido。",
+      "把几十万行数据直接内嵌进 HTML，文件数百 MB 且浏览器卡死。应先聚合、抽样或改用 WebGL，并考虑是否需要交互。",
+      "在 Jupyter / Colab 里能显示图，导出到文件后却空白。这类问题通常与环境配置有关；脚本化时应直接调 `write_html` 并检查产物文件大小是否合理。",
+      "依赖浏览器渲染截图来出版，导致分辨率与字体不可控。需要精确控制排版时应回到静态绘图库。",
+      "把交互图作为唯一的图形式，没有同时输出静态版本。合作方可能没法方便地用浏览器打开，归档也需要静态格式。"
+    ],
+    "related": [
+      {
+        "id": "viz_ggplot2",
+        "note": "静态出版级图的正确工具"
+      },
+      {
+        "id": "viz_seaborn",
+        "note": "静态图；与 plotly 在探索阶段可并用"
+      },
+      {
+        "id": "py_export_report",
+        "note": "交互图嵌入 HTML 报告的用法"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 10 章 下游分析与可视化",
+        "path": "docs/guidebook/10-downstream-analysis-visualization.md"
+      }
+    ]
+  },
+  {
+    "id": "viz_composition_bar",
+    "name": "群落组成堆叠柱状图",
+    "category": "visualization",
+    "layer": "viz",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "metagenomics"
+    ],
+    "tags": [
+      "组成图",
+      "堆叠柱",
+      "相对丰度",
+      "微生物组",
+      "可视化"
+    ],
+    "summary": "用堆叠柱状图展示各样本的物种组成",
+    "what": [
+      "堆叠柱状图是微生物组最常见的图：每个样本一根柱子，柱内按分类单元的相对丰度堆叠，横轴是样本、纵轴是 100%。它直观地回答「这些样本的群落由什么组成、彼此像不像」。",
+      "真正的技术难点在于**怎么处理低丰度类群**。一个环境样本可能有几百上千个物种，每个占 0.01%，全画出来就是一片无法分辨的杂色。通行做法是「只画 Top N（通常 5~15 个），其余合并为 Others」，但 N 的选择会实质影响读者的印象——N 太小时看不出差异，太大时图变成噪声。N 与合并策略都必须在图注里说明。",
+      "另一个必须注意的点是**相对丰度是组成性数据**：所有柱子都归一到 100%，因此「某物种占比上升」在图上必然伴随其它物种占比下降，但这不一定代表其它物种的绝对量减少。涉及绝对值变化的结论不能从组成图推断。"
+    ],
+    "inputs": [
+      {
+        "type": "abundance-table",
+        "name": "物种丰度表",
+        "required": true,
+        "note": "分类单元 × 样本；绝对值或相对丰度均可，画图前需归一化"
+      },
+      {
+        "type": "feature-table",
+        "name": "ASV/OTU 特征表",
+        "required": false,
+        "note": "扩增子项目的原始输入；需先做物种注释聚合"
+      },
+      {
+        "type": "csv-table",
+        "name": "样本元数据",
+        "required": true,
+        "note": "分组变量用于分面或图例"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "figure-vector",
+        "name": "组成堆叠图",
+        "ext": ".pdf",
+        "note": "投稿用；样本多时需注意横轴标签重叠"
+      },
+      {
+        "type": "figure-png",
+        "name": "位图",
+        "ext": ".png",
+        "note": "汇报用"
+      },
+      {
+        "type": "tsv-table",
+        "name": "绘图所用聚合表",
+        "ext": ".composition.tsv",
+        "note": "Top N + Others 的实际数据，供核对与复现"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "ggplot2",
+        "version": "3.5.x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "R 侧实现；geom_col + position_stack"
+      },
+      {
+        "tool": "phyloseq",
+        "version": "1.4x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "plot_bar 提供快速封装"
+      },
+      {
+        "tool": "plotly",
+        "version": "5.2x",
+        "access": "python-api",
+        "install": "pip",
+        "note": "样本或分类单元很多时的交互式版本"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "py_export_report",
+        "viaType": "figure-vector",
+        "note": "组成图进报告"
+      },
+      {
+        "target": "py_pandas_io",
+        "viaType": "tsv-table",
+        "note": "绘图所用的聚合表（Top N + Others）交给下游复用"
+      }
+    ],
+    "usage": [
+      {
+        "label": "R：Top N + Others 的标准组成图",
+        "lang": "r",
+        "code": "library(dplyr)\nlibrary(ggplot2)\nlibrary(tidyr)\n\nTOP_N <- 10\n\nlong <- abundance |>                       # 分类单元 x 样本 的宽表\n  tibble::rownames_to_column(\"taxon\") |>\n  pivot_longer(-taxon, names_to = \"sample\", values_to = \"abundance\") |>\n  left_join(meta, by = \"sample\")\n\n# 先按总体平均丰度选出 Top N，其余合并为 Others\n# 注意：合并必须显式，且要在图注里写明 N 是多少\ntop_taxa <- long |>\n  group_by(taxon) |>\n  summarise(mean_abund = mean(abundance), .groups = \"drop\") |>\n  slice_max(mean_abund, n = TOP_N) |>\n  pull(taxon)\n\nplot_df <- long |>\n  mutate(taxon_lab = if_else(taxon %in% top_taxa, taxon, \"Others\")) |>\n  group_by(sample, group, taxon_lab) |>\n  summarise(abundance = sum(abundance), .groups = \"drop\") |>\n  group_by(sample) |>\n  mutate(rel = abundance / sum(abundance)) |>     # 每根柱子归一到 100%\n  ungroup()\n\n# 让 Others 永远在最上面，其余按丰度排序，配色才稳定\nlvl <- plot_df |> group_by(taxon_lab) |> summarise(m = mean(rel)) |> arrange(desc(m)) |> pull(taxon_lab)\nlvl <- c(setdiff(lvl, \"Others\"), \"Others\")\nplot_df$taxon_lab <- factor(plot_df$taxon_lab, levels = lvl)\n\nggplot(plot_df, aes(x = sample, y = rel, fill = taxon_lab)) +\n  geom_col(width = 0.92) +\n  scale_y_continuous(labels = scales::percent, expand = c(0, 0)) +\n  scale_fill_viridis_d(option = \"turbo\", direction = -1) +\n  labs(x = NULL, y = \"相对丰度\", fill = NULL,\n       subtitle = sprintf(\"Top %d 分类单元，其余合并为 Others\", TOP_N)) +\n  theme_classic(base_size = 10) +\n  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 7))"
+      },
+      {
+        "label": "按分组分面（显示组间组成差异）",
+        "lang": "r",
+        "code": "library(ggplot2)\n\n# facet_grid 的 scales=\"free_x\" 让每组只显示自己的样本并独立排布轴\nggplot(plot_df, aes(x = sample, y = rel, fill = taxon_lab)) +\n  geom_col(width = 0.92) +\n  facet_grid(~ group, scales = \"free_x\", space = \"free_x\") +\n  scale_y_continuous(labels = scales::percent, expand = c(0, 0)) +\n  scale_fill_viridis_d(option = \"turbo\", direction = -1) +\n  labs(x = NULL, y = \"相对丰度\", fill = NULL) +\n  theme_classic(base_size = 10) +\n  theme(\n    axis.text.x  = element_blank(),          # 分面后样本名太多，改为不显示\n    axis.ticks.x = element_blank(),\n    strip.background = element_blank(),\n    legend.key.size = unit(0.35, \"cm\")\n  )\n\ncat(\"提示: 分面图适合比较组间组成差异；单个样本的精确值应查补充表\\n\")"
+      },
+      {
+        "label": "Python / plotly：样本多的交互版本",
+        "lang": "python",
+        "code": "import pandas as pd\nimport plotly.express as px\n\nTOP_N = 12\nlong = long.copy()                       # 列：sample, group, taxon, abundance\ntop = (long.groupby(\"taxon\")[\"abundance\"].mean()\n           .nlargest(TOP_N).index.tolist())\nlong[\"taxon_lab\"] = long[\"taxon\"].where(long[\"taxon\"].isin(top), \"Others\")\n\nagg = (long.groupby([\"sample\", \"group\", \"taxon_lab\"], as_index=False)[\"abundance\"]\n           .sum())\ndf = agg.rename(columns={\"taxon_lab\": \"taxon\"})\n\nfig = px.bar(df, x=\"sample\", y=\"abundance\", color=\"taxon\",\n             facet_col=\"group\", facet_col_wrap=1,\n             title=f\"群落组成（Top {TOP_N} + Others）\",\n             labels={\"abundance\": \"相对丰度\", \"sample\": \"\"})\nfig.update_layout(barmode=\"stack\", template=\"plotly_white\", legend_title_text=\"\")\nfig.write_html(\"09_results/composition.html\", include_plotlyjs=True)\nprint(\"已导出 composition.html\")"
+      }
+    ],
+    "recipes": {
+      "bash": "Rscript -e 'library(dplyr); library(tidyr); library(ggplot2); a <- read.csv(\"09_results/abundance.csv\", row.names=1, check.names=FALSE); m <- read.csv(\"sample_metadata.csv\"); l <- a |> tibble::rownames_to_column(\"taxon\") |> pivot_longer(-taxon, names_to=\"sample\", values_to=\"abundance\") |> left_join(m, by=\"sample\"); top <- l |> group_by(taxon) |> summarise(mn=mean(abundance), .groups=\"drop\") |> slice_max(mn, n=10) |> pull(taxon); d <- l |> mutate(taxon_lab=ifelse(taxon %in% top, taxon, \"Others\")) |> group_by(sample, group, taxon_lab) |> summarise(abundance=sum(abundance), .groups=\"drop\") |> group_by(sample) |> mutate(rel=abundance/sum(abundance)) |> ungroup(); p <- ggplot(d, aes(sample, rel, fill=taxon_lab)) + geom_col() + scale_y_continuous(labels=scales::percent, expand=c(0,0)) + scale_fill_viridis_d(option=\"turbo\", direction=-1) + labs(x=NULL, y=\"相对丰度\", fill=NULL) + theme_classic(10) + theme(axis.text.x=element_text(angle=90, hjust=1, size=7)); ggsave(\"09_results/composition.pdf\", p, width=18, height=9, units=\"cm\"); cat(\"已导出 composition.pdf\\n\")'",
+      "r": "library(dplyr)\nlibrary(ggplot2)\nlibrary(tidyr)\n\nabundance <- read.csv(\"09_results/abundance.csv\", row.names = 1, check.names = FALSE)\nmeta <- read.csv(\"sample_metadata.csv\", stringsAsFactors = FALSE)\nTOP_N <- 10\n\nlong <- abundance |>\n  tibble::rownames_to_column(\"taxon\") |>\n  pivot_longer(-taxon, names_to = \"sample\", values_to = \"abundance\") |>\n  left_join(meta, by = \"sample\")\n\n# 合并前后必须能对上：总和应一致\ntotal_before <- sum(long$abundance)\n\ntop_taxa <- long |>\n  group_by(taxon) |>\n  summarise(mean_abund = mean(abundance), .groups = \"drop\") |>\n  slice_max(mean_abund, n = TOP_N) |>\n  pull(taxon)\n\nplot_df <- long |>\n  mutate(taxon_lab = if_else(taxon %in% top_taxa, taxon, \"Others\")) |>\n  group_by(sample, group, taxon_lab) |>\n  summarise(abundance = sum(abundance), .groups = \"drop\") |>\n  group_by(sample) |>\n  mutate(rel = abundance / sum(abundance)) |>\n  ungroup()\n\nstopifnot(abs(sum(plot_df$abundance) - total_before) < 1e-6)\nstopifnot(all(abs((plot_df |> group_by(sample) |> summarise(s = sum(rel)) |> pull(s)) - 1) < 1e-9))\n\nwrite.table(plot_df, \"09_results/composition.tsv\", sep = \"\\t\",\n            row.names = FALSE, quote = FALSE)\n\np <- ggplot(plot_df, aes(sample, rel, fill = taxon_lab)) +\n  geom_col(width = 0.92) +\n  scale_y_continuous(labels = scales::percent, expand = c(0, 0)) +\n  scale_fill_viridis_d(option = \"turbo\", direction = -1) +\n  labs(x = NULL, y = \"相对丰度\", fill = NULL,\n       subtitle = sprintf(\"Top %d 分类单元，其余合并为 Others\", TOP_N)) +\n  theme_classic(base_size = 10) +\n  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 7))\n\nggsave(\"09_results/composition.pdf\", p, width = 18, height = 9, units = \"cm\")\nggsave(\"09_results/composition.png\", p, width = 18, height = 9, units = \"cm\", dpi = 300)\ncat(\"样本数:\", dplyr::n_distinct(plot_df$sample), \" 分类数(含 Others):\", dplyr::n_distinct(plot_df$taxon_lab), \"\\n\")"
+    },
+    "params": [
+      {
+        "flag": "TOP_N",
+        "default": "10",
+        "note": "只画 Top N、其余合并为 Others。N 太小看不出差异，太大图变噪声；**N 与合并策略必须写进图注**"
+      },
+      {
+        "flag": "归一化方向",
+        "default": "按样本",
+        "note": "每根柱子归一到 100%（按样本）才可比。按分类单元归一化会得到完全不同的图与含义"
+      },
+      {
+        "flag": "fill 的因子顺序",
+        "default": "字母序",
+        "note": "堆叠顺序由因子水平决定。不显式排序会让每次运行的颜色与堆叠位置变化，无法跨图比较"
+      },
+      {
+        "flag": "配色方案",
+        "default": "默认",
+        "note": "10 个以上分类时彩虹色盘也难区分；改用 viridis 的离散版本，或把次要分类合并"
+      },
+      {
+        "flag": "position = \"fill\"",
+        "default": "\"stack\"",
+        "note": "**position_fill 会自动归一化到 100%**，若数据已是相对丰度则会重复归一（结果不变但含义易混淆）；用 stack 时自己控制归一化更清晰"
+      }
+    ],
+    "pitfalls": [
+      "**不说明 Top N 与合并策略**。读者无法知道图上少了哪些分类、Others 占比多少。N 值、合并规则（按平均丰度还是按最大值）、以及 Others 的总占比都应在图注里给出。",
+      "从组成图推断绝对数量的变化。相对丰度是组成性数据：某分类占比从 10% 升到 20%，可能只是别的分类减少了，而它的绝对量没变。绝对值结论需要定量数据（如 qPCR 或 spike-in）。",
+      "样本数超过约 30 个仍用静态堆叠图，样本名重叠成黑条。此时应改分面、按分组聚合（每组一根柱子显示均值），或用交互式图。",
+      "分类单元的配色每次运行都不同（因子顺序未固定），导致同一篇文章里两张组成图的颜色含义不一致。必须显式设定因子水平并固定调色板。",
+      "柱子之间不留空隙，相邻样本看起来像一整块。设 `width` 略小于 1 让样本边界可见。",
+      "用堆叠图比较组间差异并据此下结论。堆叠图适合展示「组成」，不适合精确比较。组间差异应由统计检验（差异丰度分析）支撑，图只是展示。",
+      "把未鉴定的分类（如 `unclassified`、`Other Bacteria`）悄悄合并进 Others。这些类群的比例是数据质量的信号，应在图注中单独说明其占比。",
+      "y 轴不标百分比刻度或加了超出 0~100% 的范围，让读者误判比例。应固定 0~100% 并标注百分比。"
+    ],
+    "related": [
+      {
+        "id": "viz_sankey_flow",
+        "note": "需要展示流向或层级归属时改用桑基图"
+      },
+      {
+        "id": "amplicon_taxonomy_assign",
+        "note": "分类注释的上游步骤"
+      },
+      {
+        "id": "viz_pub_style",
+        "note": "配色与字号规范"
+      },
+      {
+        "id": "meta_bracken",
+        "note": "物种丰度表的来源之一"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 8 章 宏基因组与微生物组",
+        "path": "docs/guidebook/08-metagenome-microbiome.md"
+      },
+      {
+        "label": "第 10 章 下游分析与可视化",
+        "path": "docs/guidebook/10-downstream-analysis-visualization.md"
+      }
+    ]
+  },
+  {
+    "id": "viz_rarefaction_curve",
+    "name": "稀释曲线与累积曲线",
+    "category": "visualization",
+    "layer": "viz",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "metagenomics",
+      "genomics"
+    ],
+    "tags": [
+      "稀释曲线",
+      "累积曲线",
+      "饱和度",
+      "采样深度",
+      "可视化"
+    ],
+    "summary": "判断测序深度是否足够、泛基因组是否饱和",
+    "what": [
+      "稀释曲线（rarefaction curve）回答「测得够不够」：横轴是抽取的序列数或样本数，纵轴是观察到的特征数（物种、ASV、基因）。曲线上升变缓说明继续增加数据量带来的新特征越来越少；仍在陡升则说明还没测够。这在两个场景里都常用——扩增子/宏基因组的采样深度评估，以及泛基因组分析的饱和判断。",
+      "曲线的形状本身就是结论。**如果某样本的曲线还明显上升而其它样本已经平缓**，说明该样本的测序深度不足，此时比较它的 alpha 多样性会系统性偏低（因为稀有物种还没被发现）。这类样本应在大规模比较前识别出来。",
+      "绘制时有两种常见混淆：一是把不同样本画在同一张图上而不归一化横轴（每条曲线的 x 范围不同，无法直接比较）；二是把稀释曲线与累积曲线混用。稀释曲线是「随机抽样」的期望值，累积曲线是「按给定顺序逐步加入」的结果，后者依赖样本顺序，用于泛基因组时更合适。"
+    ],
+    "inputs": [
+      {
+        "type": "abundance-table",
+        "name": "丰度表或特征表",
+        "required": true,
+        "note": "ASV/OTU 表或物种丰度表；用于抽样重采样"
+      },
+      {
+        "type": "tsv-table",
+        "name": "泛基因组累积数据",
+        "required": false,
+        "note": "按基因组顺序统计的基因数，用于泛基因组饱和曲线"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "figure-vector",
+        "name": "稀释/累积曲线图",
+        "ext": ".pdf",
+        "note": "含各样本曲线或平均曲线"
+      },
+      {
+        "type": "tsv-table",
+        "name": "曲线数据表",
+        "ext": ".rarefaction.tsv",
+        "note": "抽样深度与对应特征数，供复现与核对"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "vegan",
+        "version": "2.6-x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "rarecurve 提供标准的稀释曲线"
+      },
+      {
+        "tool": "iNEXT",
+        "version": "3.0.x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "基于覆盖率的插值与外推，比简单稀释更有统计依据"
+      },
+      {
+        "tool": "QIIME 2",
+        "version": "2024.x",
+        "access": "cli",
+        "install": "conda",
+        "note": "alpha-rarefaction 可视化"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "viz_alpha_beta",
+        "viaType": "tsv-table",
+        "note": "判断深度足够后再做 alpha 多样性比较"
+      },
+      {
+        "target": "pange_acc_stats",
+        "viaType": "tsv-table",
+        "note": "泛基因组饱和判断；本模块负责可视化"
+      },
+      {
+        "target": "viz_pub_style",
+        "viaType": "figure-vector",
+        "note": "统一配色与线型"
+      },
+      {
+        "target": "amplicon_qiime2_diversity",
+        "viaType": "tsv-table",
+        "note": "深度评估结果反馈到多样性分析的稀释深度选择"
+      }
+    ],
+    "usage": [
+      {
+        "label": "vegan：各样本稀释曲线（不归一化横轴，用于看形状）",
+        "lang": "r",
+        "code": "library(vegan)\n\n# 行是样本、列是特征\nmat <- t(as.matrix(abundance))\ndepth <- rowSums(mat)\n\ncat(\"测序深度范围:\", min(depth), \"-\", max(depth), \"\\n\")\ncat(\"最大/最小 = \", round(max(depth) / min(depth), 1), \"倍\\n\")\n\nset.seed(42)                       # 稀释是随机过程，必须固定种子\npdf(\"09_results/rarefaction.pdf\", width = 7, height = 5)\nrarecurve(mat, step = 200, sample = min(depth),\n          col = \"#4C72B0\", lwd = 1.2, cex = 0.6,\n          xlab = \"抽样序列数\", ylab = \"观察到的特征数\",\n          label = FALSE)\nlegend(\"bottomright\", legend = c(paste(\"最小深度\", min(depth)), paste(\"最大深度\", max(depth))),\n       lty = 1, col = \"#4C72B0\", bty = \"n\", cex = 0.8)\ndev.off()\n\n# 报告每个样本在最小深度处是否已接近平缓\nat_min <- rarefy(mat, sample = min(depth))\nfull   <- rowSums(mat > 0)\ncat(\"在最小深度下平均能观察到\", round(mean(at_min / full) * 100, 1), \"% 的已检出特征\\n\")"
+      },
+      {
+        "label": "泛基因组累积曲线（是否饱和）",
+        "lang": "r",
+        "code": "library(ggplot2)\n\n# 累积曲线依赖基因组加入顺序，因此用多次随机顺序的均值更稳健\nrandomize_pangenome <- function(mat, n_iter = 20) {\n  n <- nrow(mat)\n  out <- vector(\"list\", n_iter)\n  for (i in seq_len(n_iter)) {\n    ord <- sample(n)\n    seen <- integer(ncol(mat))\n    counts <- integer(n)\n    for (k in seq_len(n)) {\n      seen <- seen + mat[ord[k], ]\n      counts[k] <- sum(seen > 0)\n    }\n    out[[i]] <- data.frame(n_genomes = seq_len(n), genes = counts, iter = i)\n  }\n  do.call(rbind, out)\n}\n\ngenome_gene <- as.matrix(presence_absence)   # 基因组 x 基因，1/0\ncurves <- randomize_pangenome(genome_gene)\n\np <- ggplot(curves, aes(n_genomes, genes)) +\n  geom_line(aes(group = iter), colour = \"grey70\", alpha = 0.35, linewidth = 0.3) +\n  stat_summary(fun = mean, geom = \"line\", colour = \"#C44E52\", linewidth = 1) +\n  labs(x = \"加入的基因组数\", y = \"累积基因数\",\n       subtitle = \"灰线为不同随机顺序，红线为均值\") +\n  theme_classic(base_size = 11)\n\nggsave(\"09_results/pangenome_curve.pdf\", p, width = 5.6, height = 4.4)\n\n# 饱和度判据：最后 10% 的基因组带来的新基因占比\nlast <- subset(curves, iter == 1 & n_genomes > nrow(genome_gene) * 0.9)\ncat(\"新增基因占比（末段）:\", round((max(last$genes) - min(last$genes)) / max(last$genes) * 100, 2), \"%\\n\")"
+      },
+      {
+        "label": "iNEXT：带外推的插值曲线（更有统计依据）",
+        "lang": "r",
+        "code": "library(iNEXT)\n\nlst <- as.list(as.data.frame(t(mat)))     # iNEXT 需要「每样本一个向量」的列表\nout <- iNEXT(lst, q = 0, datatype = \"abundance\", nboot = 50)\n\n# ggiNEXT 直接出图；注意区分观测区间与外推区间\np <- ggiNEXT(out, type = 1, facet.var = \"none\") +\n  labs(x = \"样本量\", y = \"物种数 (q=0)\",\n       subtitle = \"实线为插值，虚线为外推（外推结论比插值弱）\") +\n  theme_classic(base_size = 11)\n\nggsave(\"09_results/inext_rarefaction.pdf\", p, width = 6.4, height = 4.8)\n\ncat(\"覆盖率估计:\\n\")\nprint(out$iNextEst$size_based |>\n        dplyr::filter(Method == \"Observed\") |>\n        dplyr::select(Assemblage, SC, qD, SC.95) |>\n        head(10))"
+      }
+    ],
+    "recipes": {
+      "bash": "Rscript -e 'library(vegan); a <- read.csv(\"09_results/abundance.csv\", row.names=1, check.names=FALSE); m <- t(as.matrix(a)); d <- rowSums(m); cat(\"深度范围:\", min(d), \"-\", max(d), \"\\n\"); set.seed(42); pdf(\"09_results/rarefaction.pdf\", width=7, height=5); rarecurve(m, step=200, sample=min(d), col=\"#4C72B0\", lwd=1.2, label=FALSE, xlab=\"抽样序列数\", ylab=\"观察到的特征数\"); dev.off(); at <- rarefy(m, sample=min(d)); cat(\"最小深度下平均覆盖已检出特征的\", round(mean(at/rowSums(m>0))*100,1), \"%\\n\")'",
+      "r": "library(vegan)\n\nabundance <- read.csv(\"09_results/abundance.csv\", row.names = 1, check.names = FALSE)\nmat <- t(as.matrix(abundance))                 # 样本 x 特征\ndepth <- rowSums(mat)\n\nlines <- c(paste(\"样本数:\", nrow(mat)),\n           paste(\"测序深度范围:\", min(depth), \"-\", max(depth)),\n           paste(\"最大/最小:\", round(max(depth) / min(depth), 1), \"倍\"))\n\n# 深度差异过大时，直接比较 alpha 多样性会系统性偏差\nif (max(depth) / min(depth) > 5) {\n  lines <- c(lines, \"警告: 深度差异超过 5 倍，比较 alpha 多样性前必须先归一化深度\")\n}\n\nset.seed(42)\npdf(\"09_results/rarefaction.pdf\", width = 7, height = 5)\nrarecurve(mat, step = max(1, floor(min(depth) / 20)), sample = min(depth),\n          col = \"#4C72B0\", lwd = 1.2, cex = 0.6, label = FALSE,\n          xlab = \"抽样序列数\", ylab = \"观察到的特征数\")\ndev.off()\n\nat_min <- rarefy(mat, sample = min(depth))\ncoverage <- at_min / rowSums(mat > 0)\nlines <- c(lines, paste(\"最小深度下覆盖比例 中位数:\", round(median(coverage) * 100, 1), \"%\"))\nlines <- c(lines, paste(\"覆盖比例 < 80% 的样本数:\", sum(coverage < 0.8)))\n\ncurve_df <- data.frame(sample = rownames(mat), depth = depth,\n                       observed = rowSums(mat > 0),\n                       observed_at_min_depth = as.numeric(at_min),\n                       coverage_ratio = as.numeric(coverage))\nwrite.table(curve_df, \"09_results/rarefaction_summary.tsv\", sep = \"\\t\",\n            row.names = FALSE, quote = FALSE)\n\ncat(paste(lines, collapse = \"\\n\"), \"\\n\")\ncat(\"\\n已导出 rarefaction.pdf 与 rarefaction_summary.tsv\\n\")"
+    },
+    "params": [
+      {
+        "flag": "set.seed",
+        "default": "无",
+        "note": "稀释是随机重采样，不固定种子每次运行曲线都略有不同，结果无法复现"
+      },
+      {
+        "flag": "rarecurve(sample)",
+        "default": "最小深度",
+        "note": "抽样到的深度。取最小深度可让所有样本可比，但会丢掉高深度样本的信息"
+      },
+      {
+        "flag": "rarecurve(step)",
+        "default": "1",
+        "note": "step 太小会让点数过多、绘图极慢；设成最小深度/20 左右通常足够"
+      },
+      {
+        "flag": "rarecurve(label)",
+        "default": "TRUE",
+        "note": "样本多时标签会糊成一片；应设 FALSE 并在图注说明曲线顺序，或只标少数关键样本"
+      },
+      {
+        "flag": "iNEXT(nboot)",
+        "default": "50",
+        "note": "bootstrap 次数决定置信区间平滑度；正式报告建议 100 以上"
+      },
+      {
+        "flag": "累积曲线的随机顺序次数",
+        "default": "单次",
+        "note": "泛基因组累积曲线依赖基因组顺序。单次结果不可靠，应多次随机顺序取均值（如 20 次）"
+      }
+    ],
+    "pitfalls": [
+      "**把未归一化的稀释曲线并排比较**。不同样本横轴范围不同时，曲线的高低主要反映测序深度而不是多样性。要比较必须稀释到统一样本量（或统一深度）。",
+      "不固定随机种子。稀释与随机抽样都是随机的，不固定种子会让同一份数据跑出略有差异的曲线，评审要求复现时会很尴尬。",
+      "深度差异大（如 10 倍）时仍直接比较 alpha 多样性。低深度样本的 richness 会被系统性低估，差异趋势由深度驱动。稀释曲线的作用正是识别这类问题。",
+      "把稀释曲线的读数当作真实物种数。稀释给出的是「在给定深度下的期望观察数」，不是群落真实丰富度；基于覆盖率的插值/外推（iNEXT）在统计上更合理。",
+      "过度稀释。为了让所有样本可比而稀释到最小深度，若最小深度很小（如只有几千条序列），等于把绝大部分数据扔掉并让所有样本的多样性估计都很粗糙。此时更好的做法是剔除深度过低的样本，或改用覆盖率为基础的比较。",
+      "泛基因组累积曲线只用一种基因组加入顺序，得到的曲线会明显偏高或偏低。必须用多次随机顺序的平均并展示分散度。",
+      "把稀释曲线画成折线图时用平滑曲线连接，暗示中间存在连续变化。实际是离散抽样点，保留原始点更诚实。",
+      "曲线图上不标出实际使用的深度/样本量位置，读者无法判断「平缓」的判断依据在哪里。"
+    ],
+    "related": [
+      {
+        "id": "amplicon_qiime2_diversity",
+        "note": "扩增子侧的等价深度评估"
+      },
+      {
+        "id": "pange_acc_stats",
+        "note": "泛基因组累积曲线的统计部分"
+      },
+      {
+        "id": "viz_alpha_beta",
+        "note": "深度评估之后才做多样性的正式比较"
+      },
+      {
+        "id": "r_vegan_diversity",
+        "note": "提供 rarefy 与 rarity 等基础函数"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 8 章 宏基因组与微生物组",
+        "path": "docs/guidebook/08-metagenome-microbiome.md"
+      },
+      {
+        "label": "第 7 章 比较基因组与泛基因组",
+        "path": "docs/guidebook/07-comparative-pangenome.md"
+      }
+    ]
+  },
+  {
+    "id": "viz_upset",
+    "name": "集合交集可视化 (UpSet)",
+    "category": "visualization",
+    "layer": "viz",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics"
+    ],
+    "tags": [
+      "UpSet",
+      "韦恩图",
+      "交集",
+      "集合",
+      "共享基因"
+    ],
+    "summary": "用条形与矩阵展示多个集合的交集关系",
+    "what": [
+      "比较多个基因组或样本的共享与特有元素（基因、ASV、差异表达基因）时，韦恩图只在 2~3 个集合时好用；4 个以上集合的韦恩图会变成难以解读的椭圆堆叠。UpSet 用另一种方式表达同样的信息：下方矩阵的每一列代表一种交集组合（用实心点表示参与的集合），上方的条形高度表示该组合的元素个数。",
+      "它最大的优势是**可以按大小排序**，因此「最大的交集是哪几个集合共享的」一眼可见。这在比较十几个基因组的核心基因、或比较多组差异分析结果的交叠时非常实用。反过来，如果只想看两三个集合的简单交集，韦恩图更直观，不必上 UpSet。",
+      "使用时需要注意一个常见的解读陷阱：UpSet 展示的是**精确组合**（恰好属于这些集合、不属于其它集合），而不是「至少属于这些集合」。想看「至少共享」需要另外设置或改用累积统计。这个区别在讨论核心基因组时尤其重要。"
+    ],
+    "inputs": [
+      {
+        "type": "gene-list",
+        "name": "多个集合的元素列表",
+        "required": true,
+        "note": "每个集合一个列表文件，或一行一个集合的列表对象"
+      },
+      {
+        "type": "dataframe",
+        "name": "基因存在/缺失矩阵",
+        "required": false,
+        "note": "基因组 × 基因的 0/1 矩阵，可直接转成集合"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "figure-vector",
+        "name": "UpSet 图",
+        "ext": ".pdf",
+        "note": "含交集条形与成员矩阵"
+      },
+      {
+        "type": "tsv-table",
+        "name": "交集统计表",
+        "ext": ".intersections.tsv",
+        "note": "每种交集组合的元素个数与成员清单"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "ComplexUpset",
+        "version": "1.3.x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "基于 ggplot2；可叠加额外的统计面板"
+      },
+      {
+        "tool": "UpSetR",
+        "version": "1.4.x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "经典实现；简单场景够用"
+      },
+      {
+        "tool": "upsetplot",
+        "version": "0.9.x",
+        "access": "python-api",
+        "install": "pip",
+        "note": "Python 实现，与 pandas 生态衔接好"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "py_export_report",
+        "viaType": "figure-vector",
+        "note": "交集图进报告"
+      },
+      {
+        "target": "r_export_table",
+        "viaType": "tsv-table",
+        "note": "交集明细表作为补充材料"
+      }
+    ],
+    "usage": [
+      {
+        "label": "R：从多个基因列表生成 UpSet 图",
+        "lang": "r",
+        "code": "library(ComplexUpset)\nlibrary(ggplot2)\n\n# 每个元素是「一个集合的元素清单」\nsets <- list(\n  core_genes    = core_list,\n  accessory     = accessory_list,\n  unique_genes  = unique_list,\n  resistance    = res_list,\n  virulence     = vf_list\n)\n\n# 转成 membership 表：每行一个元素，每列一个集合的 0/1\nall_items <- unique(unlist(sets))\nmembership <- as.data.frame(\n  lapply(sets, function(s) as.integer(all_items %in% s))\n)\nrownames(membership) <- all_items\n\n# 交集按大小排序；(1) 表示只统计出现在至少一个集合中的组合\nComplexUpset::upset(\n  membership,\n  colnames(membership),\n  name = \"集合\",\n  sort_intersections = \"descending\",\n  sort_intersections_by = \"cardinality\",\n  base_annotations = list(\n    \"交集大小\" = intersection_size(\n      text = list(vjust = -0.4, size = 3),\n      mapping = aes(fill = \"bars\")\n    )\n  ),\n  themes = upset_modify_themes(\n    list(\n      \"intersections\" = theme(legend.position = \"none\"),\n      \"overall_sizes\" = theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 8))\n    )\n  )\n) +\n  labs(subtitle = \"实心点表示该元素属于对应集合；柱高为恰好属于这些集合的元素数\")\n\nggsave(\"09_results/upset.pdf\", width = 8, height = 5.2)\n\n# 同时导出交集明细表（图不够精确，表才是数据）\nintersections <- membership |> \n  dplyr::mutate(pattern = apply(membership, 1, paste, collapse = \"\"))\nprint(table(intersections$pattern))"
+      },
+      {
+        "label": "Python：从 pandas 生成 UpSet",
+        "lang": "python",
+        "code": "import pandas as pd\nfrom upsetplot import UpSet, from_contents\n\nsets = {\n    \"core\": core_list,\n    \"accessory\": accessory_list,\n    \"resistance\": res_list,\n    \"virulence\": vf_list,\n}\n\ncontents = from_contents(sets)          # 天然处理集合间的大小差异\nupset = UpSet(contents, subset_size=\"count\", show_counts=True,\n              sort_by=\"cardinality\", min_subset_size=5)\n\nimport matplotlib\nmatplotlib.use(\"Agg\")\nimport matplotlib.pyplot as plt\n\nfig = plt.figure(figsize=(8, 5))\nupset.plot(fig=fig)\nfig.suptitle(\"基因集合交集\")\nfig.tight_layout()\nfig.savefig(\"09_results/upset.pdf\", dpi=300)\n\n# 明细表\ncounts = contents.groupby(level=list(range(contents.index.nlevels))).size()\ncounts.sort_values(ascending=False).to_csv(\"09_results/upset_counts.csv\")\nprint(counts.head(10))"
+      }
+    ],
+    "recipes": {
+      "bash": "python -c \"import matplotlib; matplotlib.use('Agg'); import pandas as pd; from upsetplot import UpSet, from_contents; import matplotlib.pyplot as plt; sets={n:set(open(f'09_results/{n}.txt').read().split()) for n in ['core','accessory','resistance','virulence']}; c=from_contents(sets); u=UpSet(c, subset_size='count', show_counts=True, sort_by='cardinality'); fig=plt.figure(figsize=(8,5)); u.plot(fig=fig); fig.tight_layout(); fig.savefig('09_results/upset.pdf', dpi=300); print('交集组合数:', len(c)); \"",
+      "r": "library(ComplexUpset)\nlibrary(ggplot2)\n\nread_set <- function(path) unique(trimws(readLines(path, warn = FALSE)))\nset_files <- c(core = \"core.txt\", accessory = \"accessory.txt\",\n               resistance = \"resistance.txt\", virulence = \"virulence.txt\")\n\nsets <- lapply(file.path(\"09_results\", set_files), read_set)\nnames(sets) <- names(set_files)\n\ncat(\"各集合大小:\\n\")\nprint(vapply(sets, length, integer(1)))\n\nall_items <- unique(unlist(sets))\nmembership <- as.data.frame(lapply(sets, function(s) as.integer(all_items %in% s)))\nrownames(membership) <- all_items\n\n# 统计每种组合的元素数（图只给视觉，数字以表为准）\npattern <- apply(membership, 1, paste, collapse = \"\")\ncounts <- sort(table(pattern), decreasing = TRUE)\nwrite.table(as.data.frame(counts), \"09_results/upset_counts.tsv\",\n            sep = \"\\t\", row.names = FALSE, quote = FALSE)\n\ncat(\"\\n前几种组合（列顺序:\", paste(names(sets), collapse = \",\"), \"）:\\n\")\nprint(head(counts, 8))\n\np <- upset(membership, colnames(membership), name = \"集合\",\n           sort_intersections = \"descending\",\n           sort_intersections_by = \"cardinality\",\n           base_annotations = list(\"交集大小\" = intersection_size(text = list(vjust = -0.4, size = 3))))\nggsave(\"09_results/upset.pdf\", p, width = 8, height = 5.2)\n\ncat(\"\\n总元素数:\", length(all_items), \" 至少出现在 2 个集合中:\", sum(rowSums(membership) >= 2), \"\\n\")"
+    },
+    "params": [
+      {
+        "flag": "sort_intersections_by",
+        "default": "\"degree\"",
+        "note": "按交集大小排序（'cardinality'）比按集合数量排序更有信息量，能立刻看到最大的共享组"
+      },
+      {
+        "flag": "min_subset_size / min_size",
+        "default": "0",
+        "note": "过滤掉极小的交集（如只有 1 个元素）。不过滤时可能出现几十种几乎为空的组合，让图无法阅读"
+      },
+      {
+        "flag": "n_intersections",
+        "default": "全部",
+        "note": "只显示前 N 大的交集，其余汇总；集合多时必设，否则横轴会非常长"
+      },
+      {
+        "flag": "空交集是否显示",
+        "default": "显示",
+        "note": "没有元素的组合显示为空柱会浪费版面；应按 min_subset_size 过滤并在图注说明"
+      },
+      {
+        "flag": "membership 的行列顺序",
+        "default": "—",
+        "note": "集合的顺序决定矩阵中点的排列，也决定配色。固定在图注里声明的顺序，避免跨图不一致"
+      }
+    ],
+    "pitfalls": [
+      "**把 UpSet 的交集理解成「至少属于这些集合」**。它展示的是精确组合（恰好属于这些、不属于其它）。讨论核心基因组等「至少共享」概念时，必须改用累积统计或明确说明用的是交集定义。",
+      "集合超过 5~6 个仍用韦恩图。韦恩图在 4 个以上集合时几何形状无法表达所有交集区域，会产生误导。这是 UpSet 存在的直接原因。",
+      "不过滤极小交集，图上出现几十种只有 1~2 个元素的组合，读者抓不住重点。应设 `min_subset_size` 并说明过滤阈值。",
+      "只看图不导出数据表。图中柱高是视觉估计，精确数值必须来自表。交集明细表应作为补充材料。",
+      "不同集合的元素命名体系不一致（如一个用 locus_tag、一个用基因名），交集会人为地为空。做交集前必须统一标识符体系，并检查交集数量是否合理。",
+      "没有说明「全集」是什么。UpSet 画的是输入集合范围内的交集；如果输入本身已经过筛选（例如只含差异基因），结论不能推广到全部基因。这一点必须在图注里说清。",
+      "用 UpSet 展示「两三个集合」的简单交集。此时韦恩图或简单的柱状图更直观，UpSet 反而增加了理解成本。",
+      "配色与点的大小在集合数多时不够区分。超过约 8 个集合时应考虑拆分图，或按分组用不同色系。"
+    ],
+    "related": [
+      {
+        "id": "comp_gene_presence",
+        "note": "基因存在/缺失矩阵的构建；可直接转成集合"
+      },
+      {
+        "id": "pange_panaroo",
+        "note": "核心与附属基因的划分，常需要用集合交集表达"
+      },
+      {
+        "id": "viz_pub_style",
+        "note": "配色与字号规范"
+      },
+      {
+        "id": "viz_ggplot2",
+        "note": "ComplexUpset 返回 ggplot 对象，可继续叠加图层"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 7 章 比较基因组与泛基因组",
+        "path": "docs/guidebook/07-comparative-pangenome.md"
+      },
+      {
+        "label": "第 10 章 下游分析与可视化",
+        "path": "docs/guidebook/10-downstream-analysis-visualization.md"
+      }
+    ]
+  },
+  {
+    "id": "viz_sankey_flow",
+    "name": "丰度流向与桑基图 (Sankey)",
+    "category": "visualization",
+    "layer": "viz",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "metagenomics",
+      "transcriptomics"
+    ],
+    "tags": [
+      "桑基图",
+      "流向",
+      "Sankey",
+      "层级",
+      "归因"
+    ],
+    "summary": "用有宽度的连线展示数量在层级间的流向",
+    "what": [
+      "桑基图用连线的宽度表示数量，展示「从哪来、到哪去」。在生信里它适合三类问题：读长的归因（多少读长比对到宿主/细菌/未分类）、分类学层级间的贡献分解（属到种、或功能到通路）、以及多个基因组对某个功能类别的贡献比例。",
+      "它相比堆叠柱状图的价值在于**能表达跨层级或跨分组的来源关系**。堆叠柱状图只能展示每一层内部的构成；桑基图能展示「A 组的物种 X 贡献了 B 组功能 Y 的多少」，这是堆叠图无法表达的。",
+      "最容易出错的地方是「宽度守恒」。桑基图的视觉逻辑是节点总流入等于总流出，如果数据本身不满足这一点（例如各层是独立计算的比例），图会给出错误的守恒暗示。因此数据必须先整理成满足守恒的流向表（每一行的 source → target 带一个数值，且每个中间节点的进出一致）。"
+    ],
+    "inputs": [
+      {
+        "type": "abundance-table",
+        "name": "分层丰度表",
+        "required": true,
+        "note": "需要用至少两个层级或两个分组的对应关系"
+      },
+      {
+        "type": "tsv-table",
+        "name": "流向对应表",
+        "required": true,
+        "note": "三列：source、target、value；必须满足节点进出守恒"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "figure-vector",
+        "name": "桑基图",
+        "ext": ".pdf",
+        "note": "层级少、类别少时最清晰"
+      },
+      {
+        "type": "figure-png",
+        "name": "位图",
+        "ext": ".png",
+        "note": "类别较多或需要交互时的输出"
+      },
+      {
+        "type": "tsv-table",
+        "name": "流向表",
+        "ext": ".flow.tsv",
+        "note": "绘图所用数据，供核对与复现"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "ggalluvial",
+        "version": "0.12.x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "ggplot2 生态的冲积图/Sankey，按分组聚合时更合适"
+      },
+      {
+        "tool": "networkD3",
+        "version": "0.4.x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "交互式 Sankey，输出 HTML"
+      },
+      {
+        "tool": "plotly",
+        "version": "5.2x",
+        "access": "python-api",
+        "install": "pip",
+        "note": "Python 侧实现，可交互"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "viz_pub_style",
+        "viaType": "figure-vector",
+        "note": "配色与标签规范"
+      },
+      {
+        "target": "py_export_report",
+        "viaType": "figure-vector",
+        "note": "流向图嵌入报告"
+      },
+      {
+        "target": "r_export_table",
+        "viaType": "tsv-table",
+        "note": "流向表作为补充材料"
+      }
+    ],
+    "usage": [
+      {
+        "label": "R：ggalluvial 展示分类层级间的流向",
+        "lang": "r",
+        "code": "library(ggplot2)\nlibrary(ggalluvial)\n\n# 数据要求：每行是一条「样本-属-种」路径及其丰度\n# 长表形态：sample, genus, species, abundance\nplot_df <- abundant_taxa |>                       # 已按丰度筛选过\n  mutate(genus_lab   = ifelse(genus   %in% top_genera,   genus,   \"其它属\"),\n         species_lab = ifelse(species %in% top_species, species, \"其它种\"))\n\nggplot(plot_df,\n       aes(axis1 = genus_lab, axis2 = species_lab, y = abundance)) +\n  geom_alluvium(aes(fill = genus_lab), width = 1/3, alpha = 0.7, curve_type = \"cubic\") +\n  geom_stratum(width = 1/3, fill = \"grey92\", colour = \"grey45\") +\n  geom_text(stat = \"stratum\", aes(label = after_stat(stratum)), size = 2.8) +\n  scale_x_discrete(limits = c(\"属\", \"种\"), expand = c(0.12, 0.12)) +\n  scale_fill_viridis_d(option = \"turbo\", guide = \"none\") +\n  labs(x = NULL, y = \"相对丰度\",\n       subtitle = \"连线的宽度表示丰度；只看主要类群，其余合并\") +\n  theme_void(base_size = 11) +\n  theme(plot.subtitle = element_text(size = 9))\n\nggsave(\"09_results/sankey_taxonomy.pdf\", width = 9, height = 5.4)\n\ncat(\"节点数:\", length(unique(c(plot_df$genus_lab, plot_df$species_lab))), \"\\n\")\ncat(\"总丰度:\", round(sum(plot_df$abundance), 4), \"\\n\")"
+      },
+      {
+        "label": "读长归因流（多少读长去哪了）",
+        "lang": "r",
+        "code": "library(ggalluvial)\nlibrary(ggplot2)\n\n# 流向表：每个样本的读长归因（三列：source, target, value）\nflows <- data.frame(\n  sample = rep(c(\"S1\", \"S2\"), each = 4),\n  fate   = rep(c(\"比对到细菌\", \"比对到宿主\", \"低质量丢弃\", \"未分类\"), times = 2),\n  reads  = c(7.4e6, 1.2e6, 0.6e6, 0.8e6,   8.1e6, 0.4e6, 0.5e6, 1.0e6)\n)\n\n# 守恒检查：每个样本的总读长应等于该样本所有去向之和（这是数据本身的性质）\ntotals <- aggregate(reads ~ sample, flows, sum)\nprint(totals)\n\np <- ggplot(flows, aes(axis1 = sample, axis2 = fate, y = reads)) +\n  geom_alluvium(aes(fill = fate), width = 1/4, alpha = 0.75) +\n  geom_stratum(width = 1/4, fill = \"grey93\", colour = \"grey50\") +\n  geom_text(stat = \"stratum\", aes(label = after_stat(stratum)), size = 2.9) +\n  geom_label(stat = \"flow\", aes(label = round(after_stat(y), 0)),\n             size = 2.4, alpha = 0.75, colour = \"grey20\") +\n  scale_x_discrete(limits = c(\"样本\", \"读长去向\"), expand = c(0.14, 0.14)) +\n  scale_fill_brewer(palette = \"Set2\", guide = \"none\") +\n  labs(x = NULL, y = \"读长数\",\n       subtitle = \"宽度表示读长数；宿主与未分类的占比反映数据可用性\") +\n  theme_void(base_size = 11)\n\nggsave(\"09_results/sankey_reads.pdf\", p, width = 7.2, height = 5.2)\ncat(\"提示: 宿主与未分类占比过高时，应先回到上游质控而不是继续下游分析\\n\")"
+      },
+      {
+        "label": "Python：plotly 交互式 Sankey",
+        "lang": "python",
+        "code": "import matplotlib\nmatplotlib.use(\"Agg\")\n\nimport pandas as pd\nimport plotly.graph_objects as go\n\n# 流向表：source -> target -> value\nflows = pd.DataFrame({\n    \"source\": [\"样本 A\", \"样本 A\", \"样本 B\", \"样本 B\"],\n    \"target\": [\"通路 X\", \"通路 Y\", \"通路 X\", \"通路 Y\"],\n    \"value\":  [42.0, 18.0, 31.0, 27.0],\n})\n\nlabels = list(pd.unique(flows[[\"source\", \"target\"]].values.ravel(\"K\")))\nindex = {label: i for i, label in enumerate(labels)}\n\nfig = go.Figure(go.Sankey(\n    node={\"label\": labels, \"pad\": 18, \"thickness\": 18},\n    link={\n        \"source\": flows[\"source\"].map(index),\n        \"target\": flows[\"target\"].map(index),\n        \"value\": flows[\"value\"],\n        \"hovertemplate\": \"%{source.label} → %{target.label}<br>%{value}<extra></extra>\",\n    },\n))\nfig.update_layout(title=\"功能贡献流向\", template=\"plotly_white\",\n                  width=780, height=520, font={\"size\": 12})\nfig.write_html(\"09_results/sankey_flow.html\", include_plotlyjs=True)\nprint(f\"节点 {len(labels)} 个，连线 {len(flows)} 条\")"
+      }
+    ],
+    "recipes": {
+      "bash": "Rscript -e 'library(ggplot2); library(ggalluvial); d <- read.csv(\"09_results/flow.csv\"); t <- aggregate(value ~ source, d, sum); print(t); p <- ggplot(d, aes(axis1=source, axis2=target, y=value)) + geom_alluvium(aes(fill=target), alpha=.75) + geom_stratum(width=1/4, fill=\"grey93\") + geom_text(stat=\"stratum\", aes(label=after_stat(stratum)), size=2.9) + scale_x_discrete(limits=c(\"来源\",\"去向\"), expand=c(.14,.14)) + scale_fill_brewer(palette=\"Set2\", guide=\"none\") + labs(x=NULL, y=\"数量\") + theme_void(11); ggsave(\"09_results/sankey.pdf\", p, width=8, height=5); cat(\"已导出 sankey.pdf\\n\")'",
+      "r": "library(ggplot2)\nlibrary(ggalluvial)\n\nflows <- read.csv(\"09_results/flow.csv\", stringsAsFactors = FALSE)\nstopifnot(all(c(\"source\", \"target\", \"value\") %in% names(flows)))\n\n# 守恒检查：若中间节点存在，其流入与流出必须一致，\n# 否则桑基图的宽度会给出错误的守恒暗示。\ninflow  <- tapply(flows$value, flows$target, sum)\noutflow <- tapply(flows$value, flows$source, sum)\nshared <- intersect(names(inflow), names(outflow))\nif (length(shared)) {\n  diff <- inflow[shared] - outflow[shared]\n  bad <- shared[abs(diff) > 1e-6]\n  if (length(bad)) {\n    warning(\"以下节点进出不守恒（桑基图会产生误导）: \", paste(bad, collapse = \", \"))\n  }\n}\n\ncat(\"连线数:\", nrow(flows), \" 总流量:\", round(sum(flows$value), 3), \"\\n\")\ncat(\"来源节点:\", length(unique(flows$source)), \" 去向节点:\", length(unique(flows$target)), \"\\n\")\n\np <- ggplot(flows, aes(axis1 = source, axis2 = target, y = value)) +\n  geom_alluvium(aes(fill = target), width = 1/4, alpha = 0.75, curve_type = \"cubic\") +\n  geom_stratum(width = 1/4, fill = \"grey93\", colour = \"grey50\") +\n  geom_text(stat = \"stratum\", aes(label = after_stat(stratum)), size = 2.9) +\n  scale_x_discrete(limits = c(\"来源\", \"去向\"), expand = c(0.14, 0.14)) +\n  scale_fill_brewer(palette = \"Set2\", guide = \"none\") +\n  labs(x = NULL, y = \"数量\",\n       subtitle = \"连线宽度表示数量；节点进出应守恒\") +\n  theme_void(base_size = 11)\n\nggsave(\"09_results/sankey.pdf\", p, width = 8, height = 5)\nggsave(\"09_results/sankey.png\", p, width = 8, height = 5, dpi = 300)\nwrite.table(flows, \"09_results/flow.tsv\", sep = \"\\t\", row.names = FALSE, quote = FALSE)\ncat(\"已导出 sankey.pdf / .png 与 flow.tsv\\n\")"
+    },
+    "params": [
+      {
+        "flag": "节点进出守恒",
+        "default": "—",
+        "note": "桑基图的视觉逻辑要求中间节点的流入等于流出。数据不满足时必须先调整，否则图会暗示错误的守恒关系"
+      },
+      {
+        "flag": "类别数上限",
+        "default": "—",
+        "note": "经验上限是每层 5~10 个节点；超过后连线交叉严重，读者无法追踪任何一条路径"
+      },
+      {
+        "flag": "curve_type",
+        "default": "\"linear\"",
+        "note": "cubic 更平滑好看；但过度弯曲会让读者难以判断连线起点，节点多时应保持 linear"
+      },
+      {
+        "flag": "alpha",
+        "default": "1",
+        "note": "必须设透明度（0.6~0.8），否则交叉处的连线变成实心色块，看不出流向"
+      },
+      {
+        "flag": "geom_label(stat = \"flow\")",
+        "default": "无",
+        "note": "给每条连线标数值；连线多时会重叠，只标主要连线更实用"
+      }
+    ],
+    "pitfalls": [
+      "**数据不满足节点守恒就画桑基图**。例如各层是独立计算的比例，画成桑基后读者会以为「流过去的量等于流出来的量」。如果数据本身不守恒，应改用堆叠柱状图或分组条形图。",
+      "类别太多（每层几十个节点），连线交叉成一团，无法追踪任何路径。先按丰度筛选 Top N 并合并其余为「其它」，且在图注说明。",
+      "不设透明度。连线交叉处变成不透明色块，读者看不出哪些连在一起。透明度是桑基图可读性的关键。",
+      "用桑基图展示本来应该用堆叠柱状图的内容（例如只有一层构成）。桑基图的价值在跨层流向，单层数据用它反而更难读。",
+      "从连线宽度直接读数值。宽度是比例的视觉映射，精确数值必须来自表（可考虑给主要连线标数值）。",
+      "忽略「其它」节点的存在。合并后的 Others 往往占很大比例，不标出来会让读者以为图中已覆盖全部数据。",
+      "在两个不同总和的层级之间画桑基（如上层总和 100、下层总和 80），图形会显得「有 20 消失了」。必须先对齐总和或明确标注差异原因。",
+      "配色只按美学选择而不承载语义。桑基图的颜色通常沿连线传播，配色应保证同一来源的连线颜色一致，否则无法追踪。"
+    ],
+    "related": [
+      {
+        "id": "viz_composition_bar",
+        "note": "单层构成用堆叠柱状图更合适；两者是互补的"
+      },
+      {
+        "id": "viz_plotly",
+        "note": "交互式桑基图的实现"
+      },
+      {
+        "id": "meta_humann",
+        "note": "功能通路贡献分解的典型数据来源"
+      },
+      {
+        "id": "viz_pub_style",
+        "note": "配色与标签规范"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 8 章 宏基因组与微生物组",
+        "path": "docs/guidebook/08-metagenome-microbiome.md"
+      },
+      {
+        "label": "第 10 章 下游分析与可视化",
+        "path": "docs/guidebook/10-downstream-analysis-visualization.md"
+      }
+    ]
+  },
+  {
+    "id": "viz_tree_plot",
+    "name": "进化树可视化与注释 (ggtree / iTOL)",
+    "category": "visualization",
+    "layer": "viz",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "phylogenetics",
+      "genomics"
+    ],
+    "tags": [
+      "ggtree",
+      "iTOL",
+      "进化树",
+      "注释",
+      "可视化"
+    ],
+    "summary": "把进化树与元数据一起画成可解读的图",
+    "what": [
+      "系统发育树的原始形式（Newick 文本）无法解读，必须画出来。裸树只能看出拓扑，而研究问题通常还需要把元数据贴在树上：菌株来源、耐药基因、分离年份、ANI 分组等。ggtree 的价值就在于它把树当作一种特殊的数据框来操作，可以用 ggplot2 的图层语法把注释数据贴上去。",
+      "布局的选择影响可读性：矩形（rectangular）适合展示拓扑与分支支持度；圆形（circular）适合叶节点很多（几百上千）时节省版面；无根（unrooted）适合展示整体关系而不强调祖先方向。叶节点超过约 100 个时矩形布局会变成细长条，应改用圆形或只画部分子树。",
+      "使用树图时有两条纪律必须遵守：**支持度要标在分支上**（不标支持度的树只能作为探索结果），以及**不要在没有定根的情况下讨论「谁更古老」**。这两点决定了树图是证据还是装饰。"
+    ],
+    "inputs": [
+      {
+        "type": "tree",
+        "name": "系统发育树",
+        "required": true,
+        "note": "Newick 格式；应含分支支持度（bootstrap 或 aLRT）"
+      },
+      {
+        "type": "tsv-table",
+        "name": "叶节点元数据表",
+        "required": false,
+        "note": "菌株来源、分组、表型等，用于热图或颜色注释"
+      },
+      {
+        "type": "cluster-dist",
+        "name": "分组与聚类结果",
+        "required": false,
+        "note": "ANI 分组、克隆群等，用于在树上标色块"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "figure-vector",
+        "name": "带注释的树图",
+        "ext": ".pdf",
+        "note": "投稿用；标签与色块对齐是重点"
+      },
+      {
+        "type": "figure-png",
+        "name": "位图",
+        "ext": ".png",
+        "note": "叶节点很多时更实际"
+      },
+      {
+        "type": "report",
+        "name": "交互式树（iTOL / Microreact）",
+        "ext": ".html / 数据集",
+        "note": "上传到交互平台供合作方逐节点查看"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "ggtree",
+        "version": "3.1x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "ggplot2 生态的树可视化；可叠加任意图层"
+      },
+      {
+        "tool": "treeio",
+        "version": "1.2x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "读树并保留注释信息（支持多格式）"
+      },
+      {
+        "tool": "iTOL",
+        "version": "web/v6",
+        "access": "bundled",
+        "install": "container",
+        "note": "在线交互式树注释平台；适合探索与分享，不适合批量化"
+      },
+      {
+        "tool": "ape",
+        "version": "5.8",
+        "access": "r-api",
+        "install": "cran",
+        "note": "树的读写与基本绘制"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "py_export_report",
+        "viaType": "figure-vector",
+        "note": "带注释的树图进报告"
+      },
+      {
+        "target": "r_export_table",
+        "viaType": "report",
+        "note": "交互式树（iTOL 数据集）也可作为交付物"
+      }
+    ],
+    "usage": [
+      {
+        "label": "ggtree：带支持度与元数据热图的标准树图",
+        "lang": "r",
+        "code": "library(ggtree)\nlibrary(ggplot2)\nlibrary(treeio)\n\ntree <- read.tree(\"09_results/core_genome.treefile\")\n\n# 把叶节点元数据准备好，行名必须是叶标签\nrownames(meta) <- meta$strain\n\np <- ggtree(tree, layout = \"rectangular\", size = 0.4) %<+% meta\n\n# 1. 分支支持度：只标在支持度较低的节点上，否则图会被数字填满\np <- p +\n  geom_text2(aes(subset = !isTip & as.numeric(label) >= 70,\n                 label = round(as.numeric(label))),\n             size = 2.4, vjust = -0.35, colour = \"grey25\") +\n  geom_tiplab(aes(colour = source), size = 2.6, offset = 0.015)\n\n# 2. 用色块标出分组（例如克隆群）\np <- p +\n  geom_tippoint(aes(colour = source), size = 1.6)\n\n# 3. 贴一个数值热图（如耐药基因数）\np <- gheatmap(p, matrix_of_traits, offset = 0.28, width = 0.25,\n              colnames_angle = 90, colnames_offset_y = 1,\n              hjust = 0, font.size = 2.4) +\n  scale_fill_viridis_c(option = \"D\", name = \"基因数\")\n\np <- p +\n  scale_colour_brewer(palette = \"Set2\", name = \"来源\") +\n  theme(legend.position = c(0.12, 0.82),\n        legend.background = element_blank(),\n        legend.key.size = unit(0.4, \"cm\")) +\n  labs(subtitle = \"分支数字为 >=70 的支持度\")\n\nggsave(\"09_results/tree_annotated.pdf\", p, width = 16, height = 22, units = \"cm\", device = cairo_pdf)\ncat(\"叶节点数:\", length(tree$tip.label), \"\\n\")\ncat(\"含支持度的内部节点数:\", sum(!is.na(as.numeric(tree$node.label))), \"\\n\")"
+      },
+      {
+        "label": "圆形布局（叶节点很多时）",
+        "lang": "r",
+        "code": "library(ggtree)\nlibrary(ggplot2)\n\n# 叶节点超过约 100 个时，矩形布局会变成细长条，圆形更省版面\np <- ggtree(tree, layout = \"circular\", size = 0.3, open.angle = 10) %<+% meta +\n  geom_tiplab(aes(colour = source), size = 1.9, offset = 0.6, align = TRUE) +\n  geom_tippoint(aes(colour = source), size = 1.3) +\n  scale_colour_brewer(palette = \"Set2\", name = \"来源\") +\n  theme(legend.position = \"right\") +\n  labs(subtitle = sprintf(\"圆形布局，%d 个叶节点，open.angle 留出标签空间\", \n                          length(tree$tip.label)))\n\nggsave(\"09_results/tree_circular.pdf\", p, width = 20, height = 20, units = \"cm\", device = cairo_pdf)\ncat(\"提示: 叶节点过多时标签会重叠，建议只标注关键菌株或按分组着色不加标签\\n\")"
+      },
+      {
+        "label": "导出给 iTOL 的注释文件（交互探索用）",
+        "lang": "r",
+        "code": "library(ape)\n\n# 树本体\nwrite.tree(tree, \"09_results/itree.nwk\")\n\n# iTOL 的 dataset 文件：两列（叶标签 + 数值/颜色），制表符分隔\n# 第一行是固定表头\nwriteLines(c(\n  \"DATASET_HEATMAP\",\n  \"SEPARATOR TAB\",\n  \"DATASET_LABEL\\tResistanceGenes\",\n  \"COLOR\\t#4C72B0\",\n  \"DATA\"\n), \"09_results/itree_resistance.txt\")\n\ncon <- file(\"09_results/itree_resistance.txt\", \"a\")\nwriteLines(paste(meta$strain, meta$resistance_gene_count, sep = \"\\t\"), con)\nclose(con)\n\n# 分组色条\nwriteLines(c(\n  \"DATASET_COLORSTRIP\",\n  \"SEPARATOR TAB\",\n  \"DATASET_LABEL\\tSource\",\n  \"COLOR\\t#C44E52\",\n  \"DATA\"\n), \"09_results/itree_source.txt\")\n\ncon <- file(\"09_results/itree_source.txt\", \"a\")\nwriteLines(paste(meta$strain, meta$source, sep = \"\\t\"), con)\nclose(con)\n\ncat(\"已导出 itree.nwk 与两个 dataset 文件，可在 iTOL 中拖拽加载\\n\")\ncat(\"注意: iTOL 是交互式探索工具，投稿图仍应用 ggtree 等可复现的方式生成\\n\")"
+      }
+    ],
+    "recipes": {
+      "bash": "Rscript -e 'library(ggtree); library(ggplot2); t <- read.tree(\"09_results/tree.nwk\"); p <- ggtree(t, size=0.4) + geom_tiplab(size=2.4) + geom_text2(aes(subset=!isTip & as.numeric(label)>=70, label=round(as.numeric(label))), size=2.2, vjust=-0.3) + labs(subtitle=\"分支数字为 >=70 的支持度\"); ggsave(\"09_results/tree.pdf\", p, width=14, height=max(14, length(t$tip.label)*0.22), units=\"cm\", device=cairo_pdf, limitsize=FALSE); cat(\"叶节点:\", length(t$tip.label), \" 已导出 tree.pdf\\n\")'",
+      "r": "library(ggtree)\nlibrary(ggplot2)\nlibrary(treeio)\n\ntree <- read.tree(\"09_results/tree.nwk\")\nn_tips <- length(tree$tip.label)\n\n# 检查树的基本状态——很多问题是数据本身造成的，画图前先确认\nsupport <- suppressWarnings(as.numeric(tree$node.label))\nlines <- c(paste(\"叶节点数:\", n_tips),\n           paste(\"内部节点数:\", tree$Nnode),\n           paste(\"含支持度的内部节点:\", sum(!is.na(support))))\n\nif (all(is.na(support))) {\n  lines <- c(lines, \"警告: 树上没有分支支持度。未标注支持度的拓扑只能作为探索结果。\")\n}\nif (!is.rooted(tree)) {\n  lines <- c(lines, \"警告: 树未定根。未定根时不能讨论类群的相对古老程度。\")\n}\n\n# 叶节点多时自动选布局\nlayout <- if (n_tips > 100) \"circular\" else \"rectangular\"\nlines <- c(lines, paste(\"使用布局:\", layout))\n\np <- ggtree(tree, layout = layout, size = 0.35)\nif (layout == \"rectangular\") {\n  p <- p + geom_tiplab(size = 2.2, offset = 0.01)\n}\nif (!all(is.na(support))) {\n  p <- p + geom_text2(aes(subset = !isTip & support >= 70, label = round(support)),\n                      size = 2.1, vjust = -0.35, colour = \"grey25\")\n}\n\nheight_cm <- if (layout == \"circular\") 20 else max(12, n_tips * 0.22)\nggsave(\"09_results/tree.pdf\", p, width = if (layout == \"circular\") 20 else 15,\n       height = height_cm, units = \"cm\", device = cairo_pdf, limitsize = FALSE)\n\ncat(paste(lines, collapse = \"\\n\"), \"\\n\")"
+    },
+    "params": [
+      {
+        "flag": "layout",
+        "default": "\"rectangular\"",
+        "note": "叶节点超过约 100 个时矩形布局会变成细长条；改用 \"circular\"。\"unrooted\" 适合展示整体关系"
+      },
+      {
+        "flag": "geom_text2(subset = label >= 70)",
+        "default": "全部标注",
+        "note": "只标低支持度或高支持度的关键节点。全部标注会让数字填满整张图，反而看不清拓扑"
+      },
+      {
+        "flag": "geom_tiplab(align)",
+        "default": "FALSE",
+        "note": "align=TRUE 把所有叶标签右对齐到同一 x 位置，圆形布局下尤其需要"
+      },
+      {
+        "flag": "gheatmap(offset, width)",
+        "default": "0, 1",
+        "note": "热图的水平偏移与宽度。offset 太小会与树重叠，太大则留白过多"
+      },
+      {
+        "flag": "open.angle（圆形）",
+        "default": "0",
+        "note": "在圆环上留出缺口，给叶标签腾出空间；不设时标签会挤在一起或跑到圆外"
+      },
+      {
+        "flag": "device = cairo_pdf",
+        "default": "\"pdf\"",
+        "note": "含中文标签时必须用 cairo_pdf 并嵌入字体，否则换机器打开会出现方框"
+      }
+    ],
+    "pitfalls": [
+      "**不标分支支持度**。没有支持度的树只能说明「算法算出了这个拓扑」，不能说明这个拓扑有数据支持。低支持度的分支不应被当作结论讨论。",
+      "**在未定根的树上讨论祖先关系或相对古老程度**。未定根时树的「根部」是任意的，颠倒根的方向后所有祖先关系都会反转。必须先定根（外群或 midpoint）。",
+      "把所有内部节点的支持度都标出来，图被数字填满，读者反而看不出拓扑结构。只标关键节点（例如低于 70 的，或高于 95 的）并说明标准。",
+      "叶节点超过 100 个仍用矩形布局，图变成细长条且标签重叠。应改圆形布局，或只画感兴趣的分支（用 `groupClade` + `collapse`）。",
+      "标签字号按屏幕观感设定，缩到期刊单栏宽后不可读。必须按最终物理尺寸输出后检查（见 viz_pub_style）。",
+      "热图或色块与树的叶顺序没有对齐。ggtree 自动对齐的前提是注释矩阵的行名与树标签一致，错配不会报错但会把数据贴到错误的叶子上。必须显式校验 `all(rownames(mat) %in% tree$tip.label)`。",
+      "用 iTOL 在线平台做投稿图，结果无法由代码复现。iTOL 适合交互探索与分享，正式图应由 ggtree 等可脚本化的方式生成。",
+      "树的叶标签与元数据表的 ID 写法不一致（如 `GCF_000001` vs `GCF_000001.1`），导致元数据全部匹配失败而不报错。合并前先做集合比较。",
+      "把无支持度的探索树与有支持度的最终树混在同一篇文章里且不说明。读者无法区分哪些结论可靠。"
+    ],
+    "related": [
+      {
+        "id": "phy_iqtree",
+        "note": "生成带支持度的树；本模块负责呈现"
+      },
+      {
+        "id": "phy_root_calibrate",
+        "note": "定根是解读树的前提"
+      },
+      {
+        "id": "phy_support_test",
+        "note": "支持度检验的方法与阈值讨论"
+      },
+      {
+        "id": "viz_pub_style",
+        "note": "字号与配色的出版规范"
+      },
+      {
+        "id": "viz_circos",
+        "note": "另一种含树或共线性的环形可视化"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 7 章 比较基因组与泛基因组",
+        "path": "docs/guidebook/07-comparative-pangenome.md"
+      },
+      {
+        "label": "第 10 章 下游分析与可视化",
+        "path": "docs/guidebook/10-downstream-analysis-visualization.md"
+      }
+    ]
+  },
+  {
+    "id": "viz_circos",
+    "name": "基因组环形图 (Circos / pyCirclize)",
+    "category": "visualization",
+    "layer": "viz",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics"
+    ],
+    "tags": [
+      "环形图",
+      "Circos",
+      "基因组",
+      "pyCirclize",
+      "共线性"
+    ],
+    "summary": "把基因组注释与比较关系画成环形图",
+    "what": [
+      "环形图把基因组坐标弯成一个或几个同心圆环，在环上叠加 GC 含量、覆盖度、基因密度、可移动元件、SNP 密度等轨道，并用连线表示基因组之间的同源或共线性关系。它的优势是**在一个画面里容纳多组数据**，非常适合展示「一个基因组的整体特征」或「多个基因组的比较」。",
+      "传统 Circos 是 Perl 程序加一组配置文件，表达能力强但学习成本高、难以自动化。现代替代方案更实用：pyCirclize（Python，基于 matplotlib）可以用代码直接构建环与轨道，便于纳入流程；R 侧则有 circlize 包。",
+      "使用环形图最需要克制的是信息密度。每个轨道都值得看，但十层轨道叠在一起会让读者无法提取任何信息。**轨道数控制在 3~5 层**，并用颜色深浅而非色相区分层次，通常比堆更多轨道更有效。"
+    ],
+    "inputs": [
+      {
+        "type": "genome-fasta",
+        "name": "基因组序列",
+        "required": true,
+        "note": "用于计算 GC 含量与坐标范围"
+      },
+      {
+        "type": "gff",
+        "name": "基因注释",
+        "required": true,
+        "note": "基因/元件位置，作为环上轨道或特征标记"
+      },
+      {
+        "type": "bam",
+        "name": "覆盖度数据",
+        "required": false,
+        "note": "测序覆盖度轨道"
+      },
+      {
+        "type": "vcf",
+        "name": "变异位点",
+        "required": false,
+        "note": "SNP 密度轨道"
+      },
+      {
+        "type": "tsv-table",
+        "name": "共线性/同源关系表",
+        "required": false,
+        "note": "基因组之间的对应区间，用于画连线"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "figure-vector",
+        "name": "环形图",
+        "ext": ".pdf",
+        "note": "矢量输出；标签多时仍需较高分辨率"
+      },
+      {
+        "type": "figure-png",
+        "name": "位图",
+        "ext": ".png",
+        "note": "汇报与网页用"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "pyCirclize",
+        "version": "1.x",
+        "access": "python-api",
+        "install": "pip",
+        "note": "Python 实现，基于 matplotlib；代码化程度高，易纳入流程"
+      },
+      {
+        "tool": "circlize",
+        "version": "0.4.x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "R 实现的环形布局与轨道"
+      },
+      {
+        "tool": "Circos",
+        "version": "0.69",
+        "access": "cli",
+        "install": "conda",
+        "note": "经典实现；配置驱动，复杂图表达力最强但自动化成本高"
+      },
+      {
+        "tool": "Proksee",
+        "version": "web",
+        "access": "bundled",
+        "install": "container",
+        "note": "在线/可自建的基因组可视化平台；适合交互式探索而非批量化"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "py_export_report",
+        "viaType": "figure-vector",
+        "note": "环形图进报告"
+      },
+      {
+        "target": "viz_pub_style",
+        "viaType": "figure-vector",
+        "note": "轨道配色与标签规范"
+      }
+    ],
+    "usage": [
+      {
+        "label": "pyCirclize：基因组大小 + GC 轨道",
+        "lang": "python",
+        "code": "import matplotlib\nmatplotlib.use(\"Agg\")\n\nfrom pycirclize import Circos\nfrom pycirclize.parser import Genbank\n\n# 从 GenBank 取序列与注释（也可以自己传长度与坐标）\ngbk = Genbank(\"genome.gbk\")\ncircos = Circos(sectors={\"genome\": gbk.range_size}, space=3)\n\nsector = circos.sectors[0]\n# 轨道 1：GC 含量（窗口 GC% - 全局 GC%），正负显示 GC 偏斜\ngc_track = sector.add_track((92, 98))\ngc_track.axis(fc=\"lightgrey\")\ngc_track.line(gbk.calc_gc_content(), color=\"#4C72B0\", lw=0.6)\n\n# 轨道 2：正链与负链基因，用两种颜色区分方向\ncds_track = sector.add_track((84, 90))\ncds_track.genome(gbk.range_size, fc=\"grey90\")\nplus, minus = gbk.extract_features(\"CDS\", target_strand=1), gbk.extract_features(\"CDS\", target_strand=-1)\ncds_track.features(plus, fc=\"#C44E52\", lw=0.2)\ncds_track.features(minus, fc=\"#4C72B0\", lw=0.2)\n\ncircos.savefig(\"09_results/genome_circos.pdf\", dpi=300)\nprint(\"已导出 genome_circos.pdf\")"
+      },
+      {
+        "label": "多基因组比较：环形共线性连线",
+        "lang": "python",
+        "code": "import matplotlib\nmatplotlib.use(\"Agg\")\n\nimport pandas as pd\nfrom pyCirclize import Circos\n\n# sectors 给出每个基因组的长度；link 表给出两两对应的区间\nsectors = {\"ref\": 4_600_000, \"query\": 4_800_000}\ncircos = Circos(sectors, space=8)\n\nlinks = pd.read_csv(\"09_results/synteny_links.tsv\", sep=\"\\t\")\n# 列约定：ref_start, ref_end, query_start, query_end\nfor _, row in links.iterrows():\n    circos.link(\n        (\"ref\", int(row.ref_start), int(row.ref_end)),\n        (\"query\", int(row.query_start), int(row.query_end)),\n        color=\"#4C72B0\", alpha=0.35,\n    )\n\ncircos.savefig(\"09_results/synteny_circos.png\", dpi=300)\nprint(f\"连线数: {len(links)}\")"
+      },
+      {
+        "label": "R 侧 circlize：手动构建环与轨道",
+        "lang": "r",
+        "code": "library(circlize)\n\n# 初始化：定义几条染色体及其长度\ncircos.initialize(factors = chrom$name, xlim = cbind(0, chrom$length))\n\n# 轨道 1：GC 含量折线\ncircos.track(ylim = c(0, 1), panel.fun = function(x, y) {\n  name <- CELL_META$sector.index\n  df <- gc_data[gc_data$chrom == name, ]\n  circos.lines(df$pos, df$gc, col = \"#4C72B0\", lwd = 0.6)\n})\n\n# 轨道 2：基因位置（按链方向着色）\ncircos.track(ylim = c(0, 1), bg.border = NA, panel.fun = function(x, y) {\n  name <- CELL_META$sector.index\n  genes <- gff[gff$seqid == name, ]\n  circos.rect(genes$start, 0.2, genes$end, 0.8,\n              col = ifelse(genes$strand == \"+\", \"#C44E52\", \"#4C72B0\"),\n              border = NA)\n})\n\ncircos.clear()"
+      }
+    ],
+    "recipes": {
+      "bash": "python -c \"import matplotlib; matplotlib.use('Agg'); import pandas as pd; from pyCirclize import Circos; lens=pd.read_csv('09_results/genome_lengths.tsv', sep='\\t'); sectors={r['name']: int(r['length']) for _, r in lens.iterrows()}; c=Circos(sectors, space=6); [s.add_track((88, 96)).axis(fc='lightgrey') for s in c.sectors]; c.savefig('09_results/circos.pdf', dpi=300); print('已导出 circos.pdf，扇区数:', len(sectors))\"",
+      "python": "import matplotlib\nmatplotlib.use(\"Agg\")\n\nimport pandas as pd\nfrom pyCirclize import Circos\n\nlengths = pd.read_csv(\"09_results/genome_lengths.tsv\", sep=\"\\t\")\nsectors = {str(row[\"name\"]): int(row[\"length\"]) for _, row in lengths.iterrows()}\n\ncircos = Circos(sectors, space=6, start=0, end=360)\n\nfor sector in circos.sectors:\n    # 只叠加必要的轨道：轨道越多，可读性下降越快\n    track = sector.add_track((86, 96))\n    track.axis(fc=\"lightgrey\")\n    sector.text(f\"{sector.name}\\n{sector.size / 1e6:.1f} Mb\", r=104, size=9)\n\n# 若有共线性关系，在这里依次 circos.link(...)\ncircos.savefig(\"09_results/circos.pdf\", dpi=300)\ncircos.savefig(\"09_results/circos.png\", dpi=300)\nprint(f\"扇区数 {len(sectors)}，总长度 {sum(sectors.values()) / 1e6:.1f} Mb\")\nprint(\"提示：轨道建议控制在 3~5 层，避免信息过载\")"
+    },
+    "params": [
+      {
+        "flag": "sectors（长度单位）",
+        "default": "—",
+        "note": "所有扇区的长度单位必须一致（都是 bp 或都是 Mb）。混用会让环的比例完全失真"
+      },
+      {
+        "flag": "space / start / end",
+        "default": "0 / 0 / 360",
+        "note": "space 是扇区之间的空隙（度）；不设空隙时多个基因组会连成一圈难以区分"
+      },
+      {
+        "flag": "track 范围（如 (86, 96)）",
+        "default": "—",
+        "note": "轨道位置用半径百分比指定；多层轨道要预留足够间距，否则标签会互相覆盖"
+      },
+      {
+        "flag": "link(alpha)",
+        "default": "1.0",
+        "note": "共线性连线必须设较低透明度（0.3~0.4），否则重叠处变成实心色块，看不出连接模式"
+      },
+      {
+        "flag": "savefig(dpi)",
+        "default": "100",
+        "note": "环图标签细致，位图应 ≥ 300 dpi；矢量格式优先"
+      }
+    ],
+    "pitfalls": [
+      "**轨道堆太多**。每个轨道都有信息，但 8 层以上时读者无法定位任何一条。3~5 层并保持一致的配色语义（同一颜色始终表示同一类信息）比堆更多轨道有效得多。",
+      "扇区长度单位不一致（一个基因组用 bp，另一个用 kb），环的弧长比例与真实基因组大小不符，读者会得出错误的大小关系。",
+      "共线性连线不设透明度，重叠区变成实心色块。连线密度高时应降低 alpha 或先按相似度筛选后只画主要关系。",
+      "不做基因组重排就直接画共线性连线。如果两个基因组的起始点不同，连线会呈现看似「大量重排」的假象。应先做坐标线性化（例如以 dnaA 基因或复制起点对齐）。",
+      "把环形图当作定量比较工具。环的弧长虽然与长度成比例，但读者几乎不可能从弧长精确读出数值。定量信息应放在表或条形图里。",
+      "标签字号太小或太大。环图经常在缩放后才发现标签糊了；出图时应按最终物理尺寸设置字号并直接输出目标尺寸。",
+      "用 Circos 的配置文件方式做批量出图。配置驱动的表达力强但极难自动化；需要批量时应选代码化方案（pyCirclize / circlize）。",
+      "颜色只按美学选择而不承载语义。环图上颜色是主要的区分手段，同一颜色在不同轨道表示不同含义会让图无法解读。"
+    ],
+    "related": [
+      {
+        "id": "comp_syri",
+        "note": "共线性区间的来源；环图是其呈现方式之一"
+      },
+      {
+        "id": "comp_proksee",
+        "note": "更偏交互式探索的基因组可视化方案"
+      },
+      {
+        "id": "viz_pub_style",
+        "note": "轨道配色与标签规范"
+      },
+      {
+        "id": "viz_ggplot2",
+        "note": "线性基因组图（非环形）可用 ggplot2 实现"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 7 章 比较基因组与泛基因组",
+        "path": "docs/guidebook/07-comparative-pangenome.md"
+      },
+      {
+        "label": "第 10 章 下游分析与可视化",
+        "path": "docs/guidebook/10-downstream-analysis-visualization.md"
+      }
+    ]
+  },
+  {
+    "id": "viz_pub_style",
+    "name": "出版级图规范与配色",
+    "category": "visualization",
+    "layer": "viz",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics",
+      "phylogenetics"
+    ],
+    "tags": [
+      "出版级",
+      "配色",
+      "可访问性",
+      "图规范",
+      "投稿"
+    ],
+    "summary": "统一字号、配色与格式，让图可直接投稿",
+    "what": [
+      "一张「能看」的图与一张「能发表」的图差别在细节：字号是否在最终缩放尺寸下可读、配色在灰度打印与色盲读者眼里是否还能区分、坐标轴标注是否带单位、误差线是否说明了含义、图注是否写清了统计方法。这些细节单独看都不重要，合在一起决定了审稿人能否理解你的结果。",
+      "本模块不是一个工具，而是一套**可执行的规范**：把主题、配色板、输出尺寸与 dpi 固化成可复用的代码片段，让一个项目的所有图自动保持一致。实践中最有效的做法是写一个 `theme_project()` 或 `set_style()` 函数，所有图都调用它，而不是每张图手调主题。",
+      "配色是这里最值得投入的部分。三类问题最常见：用彩虹色盘表示连续量（感知不等距，会造出虚假分界）、用红绿对比区分分组（约 8% 男性读者无法区分）、以及分组超过 6 个仍只用颜色区分（无法分辨）。解决方案分别是改用 viridis/单色渐变、改用蓝橙或 viridis、以及增加形状或分面作为第二维度。"
+    ],
+    "inputs": [
+      {
+        "type": "figure-png",
+        "name": "待规范化的原始图",
+        "required": true,
+        "note": "各分析步骤产出的图，通常主题与字号不统一"
+      },
+      {
+        "type": "figure-vector",
+        "name": "矢量原始图",
+        "required": false,
+        "note": "R/Python 直接输出的 PDF/SVG，最适合重新应用样式"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "figure-vector",
+        "name": "投稿用矢量图",
+        "ext": ".pdf",
+        "note": "按目标期刊尺寸输出，字体已嵌入"
+      },
+      {
+        "type": "figure-png",
+        "name": "高分辨率位图",
+        "ext": ".png",
+        "note": "dpi ≥ 300；部分期刊要求 600 dpi 的线条图"
+      },
+      {
+        "type": "script",
+        "name": "统一样式脚本",
+        "ext": "style.R",
+        "note": "可复用主题与配色定义，供项目内所有图调用"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "ggplot2",
+        "version": "3.5.x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "theme() 系统用于固化统一样式"
+      },
+      {
+        "tool": "RColorBrewer",
+        "version": "1.1.x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "色盲友好调色板"
+      },
+      {
+        "tool": "viridis",
+        "version": "0.6.x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "感知均匀的连续色盘"
+      },
+      {
+        "tool": "matplotlib",
+        "version": "3.9.x",
+        "access": "python-api",
+        "install": "pip",
+        "note": "rcParams 用于固化统一样式"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "wf_reproducibility",
+        "viaType": "script",
+        "note": "样式脚本应作为项目文件纳入版本管理"
+      },
+      {
+        "target": "py_export_report",
+        "viaType": "figure-vector",
+        "note": "规范化后的图进入交付报告"
+      },
+      {
+        "target": "py_export_report",
+        "viaType": "figure-vector",
+        "note": "图与表使用统一的字体与配色"
+      }
+    ],
+    "usage": [
+      {
+        "label": "R：定义项目统一样式与色盲友好配色",
+        "lang": "r",
+        "code": "library(ggplot2)\n\n# 一次定义，全项目复用\nPAL_GROUP  <- c(control = \"#4C72B0\", low = \"#DD8452\", high = \"#55A868\")\nPAL_UP     <- \"#C44E52\"\nPAL_DOWN   <- \"#4C72B0\"\nPAL_SEQ    <- scale_fill_viridis_c(option = \"D\")   # 感知均匀，灰度也不失真\n\nproject_theme <- function(base_size = 9) {\n  theme_classic(base_size = base_size) +\n    theme(\n      text             = element_text(colour = \"grey15\"),\n      axis.text        = element_text(colour = \"grey15\"),\n      axis.line        = element_line(linewidth = 0.4, colour = \"grey15\"),\n      axis.ticks       = element_line(linewidth = 0.4, colour = \"grey15\"),\n      legend.key.size  = unit(0.42, \"cm\"),\n      legend.background = element_blank(),\n      plot.title       = element_text(size = base_size + 1, face = \"plain\"),\n      strip.background = element_blank(),\n      panel.grid       = element_blank()\n    )\n}\n\n# 单栏宽约 8.3 cm，双栏约 17.1 cm（多数期刊的常见尺寸）\nSINGLE_COL_CM <- 8.3\nDOUBLE_COL_CM <- 17.1\n\n# 使用：所有图都套同一个主题\np <- ggplot(long, aes(group, shannon, fill = group)) +\n  geom_boxplot(alpha = 0.7, outlier.shape = NA) +\n  scale_fill_manual(values = PAL_GROUP) +\n  project_theme()\n\nggsave(\"09_results/fig_alpha.pdf\", p,\n       width = SINGLE_COL_CM, height = 6.0, units = \"cm\", device = cairo_pdf)"
+      },
+      {
+        "label": "输出前逐条自检（这一步比调样式更重要）",
+        "lang": "r",
+        "code": "check_figure <- function(path, min_pt_size = 6) {\n  cat(\"检查:\", path, \"\\n\")\n  sink_temp <- tempfile()\n  grDevices::pdf(sink_temp)\n  on.exit({ grDevices::dev.off(); unlink(sink_temp) }, add = TRUE)\n\n  cat(\"  1. 最终尺寸下字号是否 >= 6 pt（缩放到单栏宽后）\\n\")\n  cat(\"  2. 配色在灰度下是否仍可区分（用 viridis 或明度差异）\\n\")\n  cat(\"  3. 是否有红绿对比（约 8% 男性读者无法区分）\\n\")\n  cat(\"  4. 分组数 > 6 时是否有第二维度（形状/分面）\\n\")\n  cat(\"  5. 坐标轴是否带单位，误差线是否说明含义（SD/SEM/CI）\\n\")\n  cat(\"  6. 图注是否写了检验方法与阈值\\n\")\n  cat(\"  7. 字体是否已嵌入（PDF 输出用 cairo_pdf 或 embedFonts）\\n\")\n  cat(\"  8. 是否同时输出矢量与位图两种格式\\n\")\n}\n\ncheck_figure(\"09_results/fig_alpha.pdf\")"
+      },
+      {
+        "label": "选题校验：先把图缩到单栏宽，看还能不能读",
+        "lang": "r",
+        "code": "# 最实用的一个检查：把图按单栏宽输出，数字字号会暴露问题\nfor (sz in c(7, 8, 9, 10)) {\n  p_sized <- p + theme_classic(base_size = sz)\n  ggsave(sprintf(\"09_results/tmp_pt%d.pdf\", sz), p_sized,\n         width = 8.3, height = 6, units = \"cm\")\n}\n\ncat(\"对比 tmp_pt7 到 tmp_pt10：在真实尺寸下能读清的最小字号就是该用的字号\\n\")\ncat(\"常见结论：多数期刊单栏图需要 base_size 7~9，而不是屏幕上好看的 12~14\\n\")"
+      }
+    ],
+    "recipes": {
+      "bash": "Rscript -e 'library(ggplot2); p <- ggplot(mtcars, aes(wt, mpg)) + geom_point(); ggsave(\"09_results/tmp_style.pdf\", p, width=8.3, height=6, units=\"cm\", device=cairo_pdf); cat(\"单栏宽 8.3 cm 输出成功，字号需在此尺寸下验证\\n\")'",
+      "r": "# style.R —— 放入项目的 R/ 目录，所有绘图脚本 source() 它\nlibrary(ggplot2)\nlibrary(viridis)\n\nPAL_GROUP <- c(control = \"#4C72B0\", low = \"#DD8452\", high = \"#55A868\")\nSINGLE_COL_CM <- 8.3\nDOUBLE_COL_CM <- 17.1\nDPI_PRINT <- 300\n\nproject_theme <- function(base_size = 8) {\n  theme_classic(base_size = base_size) +\n    theme(\n      text            = element_text(colour = \"grey15\"),\n      axis.line       = element_line(linewidth = 0.4, colour = \"grey15\"),\n      axis.ticks      = element_line(linewidth = 0.4, colour = \"grey15\"),\n      legend.key.size = unit(0.4, \"cm\"),\n      legend.background = element_blank(),\n      strip.background = element_blank(),\n      panel.grid      = element_blank()\n    )\n}\n\nsave_fig <- function(plot, name, width_cm = SINGLE_COL_CM, height_cm = 6) {\n  dir.create(\"09_results\", showWarnings = FALSE)\n  ggsave(file.path(\"09_results\", paste0(name, \".pdf\")), plot,\n         width = width_cm, height = height_cm, units = \"cm\", device = cairo_pdf)\n  ggsave(file.path(\"09_results\", paste0(name, \".png\")), plot,\n         width = width_cm, height = height_cm, units = \"cm\", dpi = DPI_PRINT)\n  cat(\"已输出\", name, \".pdf/.png（\", width_cm, \"x\", height_cm, \"cm）\\n\")\n}\n\ncat(\"style.R 已加载：project_theme() / save_fig() / PAL_GROUP\\n\")\ncat(\"提醒：所有图务必用 save_fig() 输出，避免尺寸与字号不一致\\n\")"
+    },
+    "params": [
+      {
+        "flag": "base_size",
+        "default": "11（ggplot2 默认）",
+        "note": "屏幕默认值对投稿图太大。单栏图通常 7~9 pt，必须按最终物理尺寸实测"
+      },
+      {
+        "flag": "width/height/units",
+        "default": "英寸",
+        "note": "期刊按厘米给尺寸。显式写 units=\"cm\" 可避免英寸/厘米换算错误导致的字号偏移"
+      },
+      {
+        "flag": "device = cairo_pdf",
+        "default": "\"pdf\"",
+        "note": "cairo_pdf 能正确处理中文字体并嵌入，避免投稿时字体缺失或中文变方框"
+      },
+      {
+        "flag": "dpi",
+        "default": "300",
+        "note": "线条图部分期刊要求 600 dpi；照片类 300 dpi。位图必须达到要求"
+      },
+      {
+        "flag": "scale_fill_viridis_c(option)",
+        "default": "\"D\"",
+        "note": "option D 是 viridis 的变体，明度变化更明显，灰度打印下仍可区分"
+      },
+      {
+        "flag": "coord_fixed / aspect.ratio",
+        "default": "无",
+        "note": "需要保持形状比例的图（热图、环图、PCA 双轴量纲相同时）必须固定比例，否则几何关系被扭曲"
+      }
+    ],
+    "pitfalls": [
+      "**按屏幕观感定字号**。屏幕上 12~14 pt 看着舒服，缩到 8.3 cm 宽后不可读。正确做法是按最终尺寸输出再检查，这是最常见的退稿原因之一。",
+      "用彩虹色盘（rainbow / jet）表示连续量。它在感知上不等距，会在数据中造出并不存在的分界与极值。改用 viridis 或单色渐变。",
+      "用红绿区分分组。约 8% 的男性读者无法区分这两种颜色。改用蓝橙对比，或同时用形状作为第二维度。",
+      "分组超过 6~7 个仍只用颜色区分。人眼无法可靠分辨这么多颜色；应改用分面、形状，或只突出关键分组、其余置灰。",
+      "PDF 里的中文字体没有嵌入（常见于直接 ggsave 到 pdf）。换一台机器打开变成方框。用 cairo_pdf 或显式 embedFonts。",
+      "误差线不说明含义。SD、SEM、95% CI 三者宽度差别很大，图注必须写明是哪一个，以及 n 是多少。",
+      "坐标轴不带单位或不给变换说明。取了对数轴的图必须标注（如 log10），否则读者会误读量级差异。",
+      "同一篇文章里不同图的配色与字号不一致。这不是审美问题，而是让读者怀疑图的来源与处理是否一致。用统一的样式脚本可以从机制上避免。",
+      "把统计分析只写在正文而不写进图注。图应该能独立读懂：读者只看图与图注就应知道用了什么检验、阈值是多少、n 是多少。",
+      "过度依赖后处理（Illustrator）拼图与加字。手工后处理的结果无法由代码复现，也无法随数据变化自动更新。能代码化的（拼版、标注、图例合并）都应先代码化。"
+    ],
+    "related": [
+      {
+        "id": "viz_ggplot2",
+        "note": "R 侧绘图；样式通过 theme() 固化"
+      },
+      {
+        "id": "viz_seaborn",
+        "note": "Python 侧绘图；通过 rcParams 固化样式"
+      },
+      {
+        "id": "viz_heatmap",
+        "note": "热图的色标规范尤其重要（必须对称、固定范围）"
+      },
+      {
+        "id": "wf_reproducibility",
+        "note": "样式脚本与图一起纳入版本管理与溯源"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 10 章 下游分析与可视化",
+        "path": "docs/guidebook/10-downstream-analysis-visualization.md"
+      }
+    ]
+  }
+]

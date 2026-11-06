@@ -1,0 +1,66 @@
+name: Module or workflow request / 模块与流程建议
+description: Propose a new analysis module, data type or end-to-end workflow.
+title: "[request] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        New entries should fill a real gap between existing modules. Please check the
+        [tool index](https://github.com/Indigo-Rain/bioinfo-guidebook/blob/main/docs/reference/tool-index.md)
+        and the [module schema](https://github.com/Indigo-Rain/bioinfo-guidebook/blob/main/docs/reference/module-schema.md) first.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What are you proposing? / 建议类型
+      options:
+        - New analysis module
+        - New end-to-end workflow
+        - New data type
+        - New category
+        - Improvement to an existing module
+    validations:
+      required: true
+  - type: input
+    id: name
+    attributes:
+      label: Tool or workflow name / 工具或流程名称
+      description: Use the official spelling and capitalisation.
+      placeholder: "e.g. Bakta, GTDB-Tk, fastANI"
+    validations:
+      required: true
+  - type: textarea
+    id: gap
+    attributes:
+      label: What gap does it fill? / 填补什么空白
+      description: Which existing module is insufficient, and why? What decision does it help the user make?
+    validations:
+      required: true
+  - type: textarea
+    id: io
+    attributes:
+      label: Inputs, outputs and neighbours / 输入输出与上下游
+      description: Data types in and out, plus the likely upstream and downstream modules.
+      placeholder: |
+        Input: clean-reads
+        Output: assembly-fasta, assembly-graph
+        Upstream: qc_fastp
+        Downstream: asmqc_quast
+    validations:
+      required: true
+  - type: input
+    id: docs
+    attributes:
+      label: Official documentation / 官方文档
+      description: A link we can use to write and verify the entry.
+      placeholder: "https://..."
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Pitfalls and parameter trade-offs / 常见坑与参数取舍
+      description: Anything specific and verifiable that should go into `pitfalls` or `params`.
+    validations:
+      required: false

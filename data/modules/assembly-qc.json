@@ -1,0 +1,397 @@
+[
+  {
+    "id": "asmqc_quast",
+    "name": "组装统计评估 (QUAST)",
+    "category": "assembly-qc",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics", "metagenomics"],
+    "tags": ["组装评估", "n50", "quast", "统计", "报告"],
+    "summary": "组装统计与（有参考时）错误检验的标准报告",
+    "what": [
+      "QUAST 把一份或多份组装放在同一张表里比较：contig 数与总长度、最长 contig、N50/L50、GC、每 100 kbp 的 N 数；如果提供参考基因组，还会给出 genome fraction、misassembly 数、indel 数等与参考一致性相关的指标，并生成 HTML 报告与 Icarus 可视化。",
+      "它的价值在于「可比较」：同一次运行中的多个组装共用同一套阈值与参考，差异因此可以解释。代价是这些数字高度依赖参数与参考——换最小 contig 长度阈值、换参考基因组版本，N50 与 misassembly 就不再可比。跨项目引用这些指标前，必须确认双方用的是同一套设置。",
+      "没有参考基因组时，QUAST 只是统计工具（misassembly 与 genome fraction 缺失）。想在没有近缘参考的情况下估计基因组完整度，应结合 BUSCO/CheckM2 与参考大小估算，而不是把「组装总长度」当作基因组大小。宏基因组组装要用配套的 MetaQUAST，参考相关指标的含义与单基因组不同。"
+    ],
+    "inputs": [
+      { "type": "contigs", "name": "待评估的组装", "required": true, "note": "可一次给多个文件并排比较；contig 级序列比含 N 的 scaffold 更能反映真实连续性" },
+      { "type": "scaffolds", "name": "含 gap 的 scaffold", "required": false, "note": "评估挂载结果时使用；注意 N 会让 N50 变好" },
+      { "type": "reference-genome", "name": "参考基因组", "required": false, "note": "提供后才有 genome fraction 与 misassembly；参考必须是同物种并记录 accession 与版本" },
+      { "type": "gff", "name": "参考注释", "required": false, "note": "提供后可统计基因区覆盖；也可让 QUAST 自行预测基因" }
+    ],
+    "outputs": [
+      { "type": "report", "name": "HTML 评估报告", "ext": ".quast.report.html", "note": "含表格与 Icarus 视图；适合人工查看" },
+      { "type": "tsv-table", "name": "汇总指标表", "ext": ".quast.transposed_report.tsv", "note": "一行一个组装，机器可读；批量项目应把这张表汇总起来" },
+      { "type": "log-report", "name": "运行日志", "ext": ".quast.log", "note": "记录所用参数与版本，是复现指标的前提" }
+    ],
+    "provides": [
+      { "tool": "QUAST", "version": "5.2.x", "access": "cli", "install": "conda", "note": "同时提供 metaquast.py 用于宏基因组组装" }
+    ],
+    "feeds": [
+      { "target": "qc_multi_qc", "viaType": "log-report", "note": "把组装指标并入项目级质控总览" },
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "把多个组装的指标表汇总成一张比较表" },
+      { "target": "viz_pub_style", "viaType": "report", "note": "关键指标重绘成投稿用图，而不是直接放 HTML 报告截图" }
+    ],
+    "usage": [
+      {
+        "label": "单份组装的基本评估",
+        "lang": "bash",
+        "code": "quast.py 02_assembly/sample.contigs.fasta -o 04_qc/quast_sample \\\n  -t 16 --min-contig 500"
+      },
+      {
+        "label": "多份组装并排比较 + 参考",
+        "lang": "bash",
+        "code": "quast.py 02_assembly/spades/contigs.fasta 02_assembly/skesa/contigs.fasta \\\n  -r reference.fna -g reference.gff -o 04_qc/quast_cmp -t 16"
+      },
+      {
+        "label": "宏基因组组装",
+        "lang": "bash",
+        "code": "metaquast.py 02_assembly/megahit/final.contigs.fa -o 04_qc/metaquast -t 16\n# 会自动挑选参考；参考相关指标的含义与单基因组评估不同（以官方文档为准）"
+      }
+    ],
+    "recipes": {
+      "bash": "quast.py 02_assembly/${SAMPLE}.filtered.fasta -o 04_qc/quast_${SAMPLE} \\\n  -t ${THREADS} --min-contig ${MIN_CONTIG:-500} \\\n  > 10_logs/${SAMPLE}.quast.log 2>&1",
+      "python": "run([\n    \"quast.py\",\n    str(ASM_DIR / f\"{sample}.filtered.fasta\"),\n    \"-o\", str(QC_DIR / f\"quast_{sample}\"),\n    \"-t\", str(THREADS),\n    \"--min-contig\", os.environ.get(\"MIN_CONTIG\", \"500\"),\n])"
+    },
+    "params": [
+      { "flag": "--min-contig", "default": "500", "note": "所有统计量的基础阈值；改成 0、200 或 1000 会明显改变 contig 数与 N50。跨项目比较 N50 前必须先统一这个值" },
+      { "flag": "-r / --reference", "default": "无", "note": "提供后才有 genome fraction 与 misassembly 统计；参考必须同物种且版本可追溯" },
+      { "flag": "-g / --features", "default": "无", "note": "提供参考注释（GFF）才能统计基因区覆盖与部分错误类型" },
+      { "flag": "--est-ref-size", "default": "无", "note": "无参考时用估计的基因组大小计算 genome fraction，只作粗略参考，不能当作结论" },
+      { "flag": "-t", "default": "以版本为准", "note": "线程数；Icarus 与 HTML 生成在单线程下会明显拖慢" },
+      { "flag": "--fragmented / --large", "default": "关闭", "note": "针对高度碎片化或大型基因组的处理模式；含义与限制以官方文档为准" },
+      { "flag": "--space-efficient", "default": "关闭", "note": "以更省内存的方式运行，但部分可视化所需信息会受限（以官方文档为准）" }
+    ],
+    "pitfalls": [
+      "N50 依赖 contig 长度阈值：QUAST 默认只统计不短于 500 bp 的 contig，把它改成 0 或 1000 会得到明显不同的 N50 与 contig 数。跨工具、跨论文比较 N50 前，先确认阈值、用的是 contig 还是 scaffold、以及是否做过长度过滤。",
+      "misassembly 与 genome fraction 只在提供参考时才有意义，而且参考越远这些数字越差——用一个近缘但不同种的参考，会产出大量其实是真实种间差异的「misassembly」。没有同种参考时应明确说明这些指标缺失。",
+      "总长度大于预期基因组大小不等于组装得好：可能是污染、重复区被分别组装多次，或杂合区域被拆开。要结合 duplication ratio、CheckM2/BUSCO 与分类结果一起判断。",
+      "scaffolds.fasta 里的 N 会让 N50 变好、最长序列变长，但不代表信息更多。用 scaffolds 报统计、用 contigs 做注释，再把两者混着引用，是最常见的自相矛盾。",
+      "Icarus 视图依赖参考坐标；没有参考时它只能展示统计。不要在没有参考的情况下声称做过「组装错误可视化」。",
+      "把 QUAST 的数字当验收标准前要写清阈值来源（例如「contig N50 > 100 kb 且 BUSCO 完整度 > 98%」），否则不同人看同一张表会得出不同结论。"
+    ],
+    "related": [
+      { "id": "asmqc_busco", "note": "基因内容完整度；与统计量互补，回答「内容全不全」" },
+      { "id": "asmqc_checkm2", "note": "完整度与污染度；比 QUAST 更能反映污染" },
+      { "id": "asm_filter_contigs", "note": "过滤后必须重跑 QUAST，否则指标与序列版本不一致" },
+      { "id": "qc_multi_qc", "note": "把多个样本的组装指标汇总成一张热图" },
+      { "id": "meta_assembly_qc", "note": "宏基因组组装的质量评估与去冗余流程" }
+    ],
+    "docs": [
+      { "label": "第 4 章 组装质量与污染评估", "path": "docs/guidebook/04-assembly-qc.md" }
+    ]
+  },
+  {
+    "id": "asmqc_busco",
+    "name": "单拷贝基因完整性评估 (BUSCO)",
+    "category": "assembly-qc",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "active",
+    "domains": ["genomics", "metagenomics"],
+    "tags": ["完整度", "单拷贝基因", "busco", "odb", "评估"],
+    "summary": "用单拷贝直系同源基因评估组装完整度",
+    "what": [
+      "BUSCO 用一组「在近缘类群中几乎都是单拷贝」的基因（如 bacteria_odb10 的标记基因集）去搜索组装，输出完整（含单拷贝/重复）、碎片化与缺失的比例，以及每个基因的坐标表。它衡量的是基因内容是否齐全，与 contig 的连续性无关。",
+      "解读的核心是三类信号：完整度低而碎片化/缺失高，说明组装缺内容或谱系选错；duplicated 明显升高（细菌通常只有很低比例）提示污染或重复区被拆开；完整度很高但 contig 数很多，说明基因内容齐全而结构碎片化——这是完全正常的草图状态，不是失败。",
+      "它不能替代污染评估，也不能替代组装统计：完整度高不代表没有污染（污染序列可能恰好补上缺失基因），重复率低也不代表没有同一物种的额外片段。与 CheckM2/GUNC、QUAST 一起看才能形成结论。"
+    ],
+    "inputs": [
+      { "type": "genome-fasta", "name": "核酸组装序列", "required": true, "note": "核酸模式会调用内置基因预测，结果对预测步骤敏感" },
+      { "type": "protein-faa", "name": "蛋白序列", "required": false, "note": "已有注释时优先给蛋白（更快、更稳定），但结果与核酸模式不完全等价" }
+    ],
+    "outputs": [
+      { "type": "log-report", "name": "完整度摘要", "ext": ".busco.short_summary.json", "note": "同时会写出 short_summary.txt；批量汇总读这个" },
+      { "type": "tsv-table", "name": "逐基因结果表", "ext": ".busco.full_table.tsv", "note": "含每个标记基因的状态与坐标；排查缺失原因必看" }
+    ],
+    "provides": [
+      { "tool": "BUSCO", "version": "5.6.x", "access": "cli", "install": "conda", "note": "需要 lineage 数据集；离线运行要预先下载 odb 数据。核酸模式的基因预测器随 BUSCO 版本管理" }
+    ],
+    "feeds": [
+      { "target": "qc_multi_qc", "viaType": "log-report", "note": "MultiQC 可直接读取 BUSCO 的 short summary" },
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "把多份组装的完整度与缺失基因列表汇总比较" }
+    ],
+    "usage": [
+      {
+        "label": "核酸组装 + 指定谱系数据集",
+        "lang": "bash",
+        "code": "busco -i 02_assembly/sample.filtered.fasta -m genome \\\n  -l bacteria_odb10 -c 16 -o 04_qc/busco_sample --offline"
+      },
+      {
+        "label": "已有蛋白序列时（更快、更稳定）",
+        "lang": "bash",
+        "code": "busco -i sample.faa -m proteins -l bacteria_odb10 \\\n  -c 16 -o 04_qc/busco_prot --offline"
+      },
+      {
+        "label": "不知道谱系时自动选择（耗时明显增加）",
+        "lang": "bash",
+        "code": "busco -i 02_assembly/sample.filtered.fasta -m genome \\\n  --auto-lineage-prok -c 16 -o 04_qc/busco_auto --offline"
+      }
+    ],
+    "recipes": {
+      "bash": "busco -i 02_assembly/${SAMPLE}.filtered.fasta -m genome \\\n  -l ${BUSCO_LINEAGE:-bacteria_odb10} -c ${THREADS} \\\n  -o 04_qc/busco_${SAMPLE} --offline -f \\\n  > 10_logs/${SAMPLE}.busco.log 2>&1",
+      "python": "run([\n    \"busco\",\n    \"-i\", str(ASM_DIR / f\"{sample}.filtered.fasta\"),\n    \"-m\", \"genome\",\n    \"-l\", os.environ.get(\"BUSCO_LINEAGE\", \"bacteria_odb10\"),\n    \"-c\", str(THREADS),\n    \"-o\", str(QC_DIR / f\"busco_{sample}\"),\n    \"--offline\",\n])"
+    },
+    "params": [
+      { "flag": "-m", "default": "以版本为准", "note": "genome / proteins / transcriptome 三种模式；核酸模式要跑基因预测，结果对预测器版本敏感。有注释时优先用 proteins" },
+      { "flag": "-l", "default": "以版本为准", "note": "谱系数据集；越专一灵敏度越高（如 enterobacterales_odb10 比 bacteria_odb10 更贴合），但只能用于对应类群。换数据集后分数不可直接比较" },
+      { "flag": "--auto-lineage-prok", "default": "关闭", "note": "自动为细菌/古菌挑选谱系；需要本地已有 odb 数据，且运行时间显著增加" },
+      { "flag": "-c", "default": "以版本为准", "note": "CPU 数；同时影响基因预测与同源搜索阶段" },
+      { "flag": "--offline", "default": "关闭", "note": "禁止联网下载数据；生产环境建议开启，避免不同时间跑到不同版本的数据集" },
+      { "flag": "-f", "default": "关闭", "note": "覆盖已有输出目录；重复运行不加它会直接报错" }
+    ],
+    "pitfalls": [
+      "BUSCO 分数不能跨谱系数据集或 BUSCO 大版本比较（例如 bacteria_odb10 换到更早的 odb9，或换到 enterobacterales_odb10）。报告里必须写明数据集与版本，否则数字没有意义。",
+      "碎片化的草图会把完整基因拆到两个 contig 上，BUSCO 把它记为 fragmented 或 missing——这并不代表基因组缺这些基因。用它比较碎片化程度不同的组装时，要同时看 contig 数与 N50。",
+      "duplicated 升高有完全不同的两种原因：污染，或同一基因的真实多拷贝（组装把两个等位基因分别拼出）。要结合 GC、覆盖度与分类证据区分，不要直接当成污染。",
+      "BUSCO 不做污染检验，也不保证基因正确性：污染的序列可能提供同源基因把分数「补」上去。评估可疑样本或 MAG 时应与 CheckM2/GUNC 一起看。",
+      "核酸模式（-m genome）依赖基因预测，因此不同 BUSCO 版本的预测器变化会带来分数波动。跨版本比较同一份数据前，应先用同一版本重跑校准。",
+      "缺失基因列表比总分数更有信息量：若大量缺失基因集中在同一区域或同一功能类别，往往指向真实的缺失区或组装断裂，而不是随机噪声。"
+    ],
+    "related": [
+      { "id": "asmqc_checkm2", "note": "完整度/污染度的机器学习估计；与 BUSCO 的完整度定义不同，不可互换" },
+      { "id": "asmqc_quast", "note": "结构统计量；与基因内容完整度互补" },
+      { "id": "asmqc_gunc", "note": "跨类群污染检验，补上 BUSCO 的盲区" },
+      { "id": "qc_multi_qc", "note": "批量汇总各样本的 BUSCO 分数" }
+    ],
+    "docs": [
+      { "label": "第 4 章 组装质量与污染评估", "path": "docs/guidebook/04-assembly-qc.md" }
+    ]
+  },
+  {
+    "id": "asmqc_checkm2",
+    "name": "基因组完整度与污染度 (CheckM2)",
+    "category": "assembly-qc",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "active",
+    "domains": ["genomics", "metagenomics"],
+    "tags": ["完整度", "污染度", "checkm2", "mag", "质量筛选"],
+    "summary": "机器学习式的细菌基因组完整度与污染度评估",
+    "what": [
+      "CheckM2 用机器学习模型（结合基因组编码特征与标记基因信息）给出细菌/古菌基因组的完整度与污染度估计，输出一张 quality_report.tsv。相比 CheckM1，它依赖更轻（用 DIAMOND 库）、速度更快，并且污染度以连续值给出。",
+      "它的主要用途是 MAG 的质量筛选（常见的 >90% 完整度、<5% 污染度门槛），也用于单菌草图的自查。它衡量的是「必需基因内容是否完整、是否混入了不属于本基因组的标记」，因此与结构连续性和局部序列错误都无关。",
+      "必须把它与 CheckM1 的数值严格区分：两者模型与训练集不同，同一份基因组的数值会有系统性偏差，用 CheckM1 时代定下的经验阈值去卡 CheckM2 结果会得到不同的通过率。报告里要写明工具、版本与数据库版本。"
+    ],
+    "inputs": [
+      { "type": "protein-faa", "name": "蛋白序列", "required": false, "note": "推荐输入；同一批样本应固定使用同一套基因预测流程" },
+      { "type": "genome-fasta", "name": "核酸组装序列", "required": false, "note": "给核酸时 CheckM2 会自行预测基因，结果会随预测步骤略有变化" },
+      { "type": "any", "name": "MAG bin 集合", "required": false, "note": "可直接接入宏基因组分箱的输出（bins）。但 CheckM2 要的是「每个 bin 一个 FASTA 文件」，所以分箱产物必须先按 bin 拆成独立文件（分箱工具自带 --write-bins，或用 seqkit split）并组织成目录。这是隐式的目录组织要求、不是自动的格式转换 —— 接入后务必确认目录结构，否则 CheckM2 会把所有 bin 当成一个基因组" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "质量报告", "ext": ".checkm2.quality_report.tsv", "note": "含每个基因组的完整度、污染度与编码序列统计；下游筛选就靠它" },
+      { "type": "log-report", "name": "运行日志", "ext": ".checkm2.log", "note": "记录数据库版本与参数，是结果可比的前提" }
+    ],
+    "provides": [
+      { "tool": "CheckM2", "version": "1.1.x", "access": "cli", "install": "conda", "note": "需要单独下载 DIAMOND 格式的参考数据库；仅支持细菌与古菌" }
+    ],
+    "feeds": [
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "读入质量报告做阈值筛选与汇总表" },
+      { "target": "viz_ggplot2", "viaType": "tsv-table", "note": "画完整度-污染度散点图，直观看出离群基因组" },
+      { "target": "meta_bin_refine", "viaType": "tsv-table", "note": "MAG 场景下作为分箱优化与去冗余的质量依据" }
+    ],
+    "usage": [
+      {
+        "label": "批量评估一个目录下的组装",
+        "lang": "bash",
+        "code": "checkm2 predict --input 02_assembly/filtered/ \\\n  --output-directory 04_qc/checkm2 --extension fna --threads 16"
+      },
+      {
+        "label": "蛋白输入（推荐，结果更稳定）",
+        "lang": "bash",
+        "code": "checkm2 predict --input proteins/ --output-directory 04_qc/checkm2 \\\n  --threads 16"
+      },
+      {
+        "label": "按质量门槛筛选（列名以报告表头为准）",
+        "lang": "bash",
+        "code": "# 常见 MAG 门槛：完整度 > 90 且污染度 < 5\nhead -1 04_qc/checkm2/quality_report.tsv\nawk -F'\\t' 'NR==1 || ($2>90 && $3<5)' \\\n  04_qc/checkm2/quality_report.tsv > 04_qc/checkm2/hq_genomes.tsv"
+      }
+    ],
+    "recipes": {
+      "bash": "checkm2 predict --input 02_assembly/${SAMPLE}.filtered.fasta \\\n  --output-directory 04_qc/checkm2_${SAMPLE} --threads ${THREADS} \\\n  > 10_logs/${SAMPLE}.checkm2.log 2>&1",
+      "python": "run([\n    \"checkm2\", \"predict\",\n    \"--input\", str(ASM_DIR / f\"{sample}.filtered.fasta\"),\n    \"--output-directory\", str(QC_DIR / f\"checkm2_{sample}\"),\n    \"--threads\", str(THREADS),\n])"
+    },
+    "params": [
+      { "flag": "--input", "default": "必填", "note": "可以是单个文件或整个目录；批量时只处理匹配 --extension 的文件" },
+      { "flag": "--extension", "default": "以官方文档为准", "note": "批量目录时的后缀过滤；.fa/.fasta/.fna 混放时容易漏文件，建议统一后缀" },
+      { "flag": "--database_path", "default": "自动查找", "note": "指向预下载的数据库；离线环境必须显式给出，否则运行时会尝试下载" },
+      { "flag": "--threads", "default": "以版本为准", "note": "线程数；DIAMOND 搜索阶段是主要耗时" },
+      { "flag": "质量门槛（非工具参数）", "default": "完整度 > 90 且污染度 < 5", "note": "这是 MAG 场景的常见经验值，具体项目应结合下游用途设定并写明依据" }
+    ],
+    "pitfalls": [
+      "CheckM2 的数值与 CheckM1 不可互换。文献里流传的 90%/5% 门槛出自 CheckM1 时代，同一份数据用两个工具可能一个通过一个不通过；方法学里必须给出工具与版本，跨研究比较前先确认用的是哪一个。",
+      "污染度接近 0 不等于没有污染。CheckM2 对近缘污染（同种不同株、同属的第二个菌株）几乎不敏感，因为它们的标记基因看起来就是「同一套」。这类污染要靠覆盖度异常、SNP 杂合位点或 GUNC/ANI 层面的分析发现。",
+      "完整度低不等于组装差：缺失内容可能是真实的（基因组缩减、缺失区），也可能因为该谱系在参考模型里覆盖不足。结合 BUSCO 缺失列表与分类注释判断，而不是一味重新组装。",
+      "污染度高也不总是污染：某些谱系（含大量水平转移、重复基因家族或质粒的基因组）会被高估。看到异常值应先确认是哪些标记基因贡献的，再决定是否剔除 contig。",
+      "输入蛋白序列的来源会轻微改变结果：Prokka、Prodigal、Bakta 得到的基因集合不同，同一基因组用不同注释结果跑 CheckM2 会有小数点级别的差异。批次比较必须固定注释流程。",
+      "CheckM2 只支持细菌与古菌。真菌、病毒、真核样本用它没有意义；病毒与质粒序列要用专门的工具评估。"
+    ],
+    "related": [
+      { "id": "asmqc_gunc", "note": "跨类群污染与嵌合检测；与 CheckM2 互补，一起看才完整" },
+      { "id": "asmqc_busco", "note": "另一套完整度指标（单拷贝基因），数值与 CheckM2 不可互换" },
+      { "id": "asmqc_quast", "note": "结构与连续性指标，与基因内容评估互补" },
+      { "id": "meta_bin_refine", "note": "MAG 场景下用 CheckM2 的报告做分箱筛选与去冗余" },
+      { "id": "meta_assembly_qc", "note": "宏基因组组装质量的完整流程" }
+    ],
+    "docs": [
+      { "label": "第 4 章 组装质量与污染评估", "path": "docs/guidebook/04-assembly-qc.md" }
+    ]
+  },
+  {
+    "id": "asmqc_gunc",
+    "name": "污染与近缘物种检验 (GUNC)",
+    "category": "assembly-qc",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "active",
+    "domains": ["genomics", "metagenomics"],
+    "tags": ["污染", "嵌合", "gunc", "mag", "分类一致性"],
+    "summary": "检测跨类群的嵌合与污染，补充 CheckM2 的盲区",
+    "what": [
+      "GUNC 把基因组里的基因分配到参考数据库的分类层级上，再判断它们是否来自同一个谱系：如果一份基因组同时包含两个相距很远的类群的基因，它就是可疑的嵌合体。输出的核心是 CSS（clade separation score）与污染比例，外加一个直接的通过/不通过判定。",
+      "它与 CheckM2 互补：CheckM2 判断「必需基因是否齐全、标记基因是否重复」，GUNC 判断「基因是否来自同一个谱系」。因此对 MAG 去污染、对可疑单菌组装的自查，两者一起看比单独看任何一个都可靠。",
+      "它要求输入蛋白序列，并需要单独下载参考数据库；基因组太小（基因数不足）或属于参考库覆盖很差的谱系时，GUNC 可能给不出可靠判定。这种情况下的「无结论」既不等于「通过」，也不等于「污染」。"
+    ],
+    "inputs": [
+      { "type": "protein-faa", "name": "蛋白序列", "required": true, "note": "GUNC 只接受蛋白输入；核酸需要先做基因预测" },
+      { "type": "genome-fasta", "name": "对应的核酸序列", "required": false, "note": "用于在判定可疑后定位贡献污染的 contig" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "污染判定表", "ext": ".gunc.maxCSS_level.tsv", "note": "含 CSS、污染比例与通过/不通过判定；确切列名以官方文档为准" },
+      { "type": "log-report", "name": "运行日志", "ext": ".gunc.log", "note": "记录数据库版本与阈值，必须与结果一起保存" }
+    ],
+    "provides": [
+      { "tool": "GUNC", "version": "1.0.x", "access": "cli", "install": "conda", "note": "需要单独下载参考数据库；输入必须是蛋白序列" },
+      { "tool": "DIAMOND", "version": "2.1.x", "access": "cli", "install": "conda", "note": "GUNC 内部用它搜索参考库，是主要耗时步骤" }
+    ],
+    "feeds": [
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "汇总多个基因组的 CSS 与判定结果" },
+      { "target": "viz_ggplot2", "viaType": "tsv-table", "note": "用 CSS 分布图区分「确实污染」与「参考库覆盖不足」" },
+      { "target": "meta_bin_refine", "viaType": "tsv-table", "note": "MAG 去污染与分箱优化时的污染判据之一" }
+    ],
+    "usage": [
+      {
+        "label": "单基因组评估",
+        "lang": "bash",
+        "code": "gunc run -d $GUNC_DB -i sample.faa -o 04_qc/gunc_sample -t 16"
+      },
+      {
+        "label": "批量评估一个蛋白目录",
+        "lang": "bash",
+        "code": "gunc run -d $GUNC_DB --input_dir proteins/ --file_suffix .faa \\\n  -o 04_qc/gunc_batch -t 16"
+      },
+      {
+        "label": "数据库准备",
+        "lang": "bash",
+        "code": "# 参考数据库需单独下载（数 GB 量级）；下载与解压方式以官方文档为准\n# 数据库版本必须与结果一起记录"
+      }
+    ],
+    "recipes": {
+      "bash": "gunc run -d ${GUNC_DB} -i 03_annotation/${SAMPLE}/${SAMPLE}.faa \\\n  -o 04_qc/gunc_${SAMPLE} -t ${THREADS} \\\n  > 10_logs/${SAMPLE}.gunc.log 2>&1",
+      "python": "run([\n    \"gunc\", \"run\",\n    \"-d\", gunc_db,\n    \"-i\", str(ANNO_DIR / sample / f\"{sample}.faa\"),\n    \"-o\", str(QC_DIR / f\"gunc_{sample}\"),\n    \"-t\", str(THREADS),\n])"
+    },
+    "params": [
+      { "flag": "-d / --db", "default": "必填", "note": "预下载的参考数据库路径；数据库版本决定判定结果，必须记录" },
+      { "flag": "-i / --input_dir", "default": "二选一", "note": "单个蛋白文件或整个目录；批量时配合 --file_suffix 使用" },
+      { "flag": "--file_suffix", "default": "以官方文档为准", "note": "批量模式下的文件后缀匹配；后缀不一致会静默漏样本" },
+      { "flag": "-t", "default": "以版本为准", "note": "线程数；DIAMOND 搜索是瓶颈" },
+      { "flag": "判定阈值", "default": "以官方文档为准", "note": "不同阈值会明显改变通过率；跨项目比较必须统一，并写明所用阈值" }
+    ],
+    "pitfalls": [
+      "「GUNC 判定污染」不等于真污染：参考库未覆盖的新谱系、以及含大量水平转移、噬菌体或质粒序列的基因组，CSS 都会偏高。看到不通过应先确认哪些 contig 贡献了跨类群信号，再决定剔除范围。",
+      "它对近缘污染无能为力：同种不同株、或同一属内高度相似的第二个基因组混进来时，所有基因都属于同一个近缘谱系，CSS 不会报警。近缘污染要靠覆盖度异常与 SNP 杂合度识别。",
+      "输入必须是蛋白序列。直接给核酸不会得到有意义的结果；核酸输入需要先做基因预测，而预测工具的选择会影响基因集合与最终得分。",
+      "小基因组（病毒、质粒、极小的缩减基因组）或基因数很少的输入经常得不到判定。这种「无结论」不能当成「通过」。",
+      "GUNC 的判定主要基于较高的分类层级，它检验的是「是否来自同一个大类群」，因此不能用来确认一份基因组是否纯粹属于某个种。种级纯度需要 ANI 或 SNP 层面的证据。",
+      "数据库更新会改变判定结果。与 CheckM 一样，GUNC 的数据库版本必须写进方法与结果记录，否则不同时间跑出的通过/不通过无法追溯。"
+    ],
+    "related": [
+      { "id": "asmqc_checkm2", "note": "完整度与污染度；与 GUNC 组合使用才能覆盖近缘与远缘两类污染" },
+      { "id": "asmqc_busco", "note": "基因内容完整度；不检测污染，需要 GUNC 补位" },
+      { "id": "qc_contamination_screen", "note": "在读长层面做的污染筛查，比组装层面更早发现问题" },
+      { "id": "asm_filter_contigs", "note": "判定污染后用来剔除对应 contig" },
+      { "id": "meta_bin_refine", "note": "MAG 去冗余与优化时使用 GUNC 结果" }
+    ],
+    "docs": [
+      { "label": "第 4 章 组装质量与污染评估", "path": "docs/guidebook/04-assembly-qc.md" }
+    ]
+  },
+  {
+    "id": "asmqc_ideel",
+    "name": "组装错误与嵌合检验 (IDEEL / Assembly-scan)",
+    "category": "assembly-qc",
+    "layer": "core",
+    "kind": "template",
+    "maturity": "emerging",
+    "domains": ["genomics"],
+    "tags": ["组装错误", "indel", "长读长", "orf 中断", "检验"],
+    "summary": "用短读长证据找出长读长组装中的 indel 与错误",
+    "what": [
+      "长读长组装的结构往往很漂亮，但同聚物区的 indel 错误会让编码区出现假的移码与提前终止——这类错误不会体现在 N50、BUSCO 完整度或 CheckM2 里，却会直接影响基因注释与耐药突变判断。IDEEL 正是针对这一点：结合组装序列与短读长证据，逐 contig 找出可疑的小 indel 与被打断的开放阅读框，给出可按位置核查的清单。",
+      "同一套工具链里的 assembly-scan 提供快速的整体体检（序列条数、长度分布、异常结构），适合在把组装送去做注释或提交之前先看一眼。两者都是诊断工具：它们指出问题位置，不做修正——修正要靠抛光或重新组装。",
+      "它在流程里的位置很清楚：长读长组装 → 抛光 → IDEEL / assembly-scan 核查 → 通过后才进入注释、变异分析与提交。清单里会包含真实的生物学变异（相对参考的 indel），区分真伪需要与参考基因组或其他菌株比较，并结合覆盖度一起看。"
+    ],
+    "inputs": [
+      { "type": "contigs", "name": "待检验的组装", "required": true, "note": "长读长组装（最好已抛光）；记录版本与 md5" },
+      { "type": "clean-reads", "name": "短读长证据 (R1/R2)", "required": true, "note": "必须与组装来自同一菌株/同一样本；否则真实差异会被报成错误" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "可疑位点清单", "ext": ".ideel.errors.tsv", "note": "逐 contig 的可疑 indel 与 ORF 中断；确切文件名与列名以官方文档为准" },
+      { "type": "log-report", "name": "检验日志与统计", "ext": ".ideel.log", "note": "含 assembly-scan 的整体统计与运行参数" }
+    ],
+    "provides": [
+      { "tool": "IDEEL", "version": "1.0.x", "access": "cli", "install": "source", "note": "以仓库形式发布、版本迭代较快，不同版本的入口与参数差异较大。**本模块只给出输入输出与判定思路，未固化具体调用** —— 请以官方仓库文档为准补齐命令并记录版本" },
+      { "tool": "assembly-scan", "version": "0.7.x", "access": "cli", "install": "pip", "note": "快速给出组装统计与结构概览，用于送检前的整体体检" }
+    ],
+    "feeds": [
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "把多份组装的错误清单汇总，比较各样本的错误密度" },
+      { "target": "viz_ggplot2", "viaType": "tsv-table", "note": "把可疑位点沿 contig 的位置画出来，看是否集中在同聚物区或重复区" }
+    ],
+    "usage": [
+      {
+        "label": "先做整体体检",
+        "lang": "bash",
+        "code": "# assembly-scan 的输入是组装 FASTA，输出统计概览\n# 可执行入口与参数名以官方仓库文档为准\nassembly-scan 02_assembly/sample.polished.fasta > 10_logs/sample.assembly_scan.txt"
+      },
+      {
+        "label": "结合短读长定位可疑 indel",
+        "lang": "bash",
+        "code": "# IDEEL 的输入是「组装 FASTA」+「Illumina 短读长」，输出逐 contig 的可疑位点\n# 可执行入口与参数名以官方仓库 README 为准（版本间差异较大）\ncolumn -t 04_qc/ideel_sample/errors.tsv | head -20"
+      },
+      {
+        "label": "按 contig 统计可疑位点密度",
+        "lang": "bash",
+        "code": "awk -F'\\t' 'NR>1{c[$1]++} END{for (k in c) print k, c[k]}' \\\n  04_qc/ideel_sample/errors.tsv | sort -k2,2nr | head"
+      }
+    ],
+    "recipes": {
+      "bash": "# 1) 整体体检：assembly-scan 的入口与输出字段以官方文档为准\nassembly-scan 02_assembly/${SAMPLE}.polished.fasta \\\n  > 10_logs/${SAMPLE}.assembly_scan.txt\n# 2) 错误检验：IDEEL 需要「组装 FASTA」+「Illumina 短读长」\n#    可执行入口与参数名以官方仓库文档为准，请按所用版本补齐下一行\n#    <ideel 命令> 02_assembly/${SAMPLE}.polished.fasta \\\n#      01_clean/${SAMPLE}_R1.fq.gz 01_clean/${SAMPLE}_R2.fq.gz \\\n#      > 10_logs/${SAMPLE}.ideel.log",
+      "python": "run(f\"assembly-scan {ASM_DIR}/{sample}.polished.fasta > {LOG_DIR}/{sample}.assembly_scan.txt\")\n# TODO: 按官方仓库文档补上 IDEEL 的调用（入口与参数名随版本变化）\n# 输入为组装 FASTA 与 Illumina 短读长，输出为逐 contig 的可疑位点清单"
+    },
+    "params": [
+      { "flag": "短读长比对质量与碱基质量阈值", "default": "以官方文档为准", "note": "决定判定证据的强度；阈值越松，报出的可疑位点越多，人工核查成本越高" },
+      { "flag": "最小覆盖度", "default": "以官方文档为准", "note": "低覆盖区域的判定不可靠，应结合覆盖度过滤后再解读清单" },
+      { "flag": "组装与读长的同一性", "default": "必须一致", "note": "短读长必须来自同一样本；否则所有真实差异都会被报成错误" },
+      { "flag": "assembly-scan 的输入", "default": "组装 FASTA", "note": "可用于送检前的整体体检；具体输出字段以官方文档为准" }
+    ],
+    "pitfalls": [
+      "IDEEL 报出的「错误」包含真实生物学差异：如果短读长来自另一株菌，真实的 indel 会被一并列出。判断真伪要看证据强度，以及位置是否落在组装图的重复区或低覆盖区。",
+      "这类错误不会出现在 N50、BUSCO 或 CheckM2 里：一份 BUSCO 99%、N50 数百 kb 的长读长组装完全可以有几十个同聚物区 indel。对编码区敏感的结论（移码、提前终止、耐药点突变）必须做这一步核查。",
+      "它是诊断而非修正。发现问题后的处理顺序是：先确认是否为真实变异，再决定重新抛光（asm_medaka_polish / asm_short_polish）还是回到组装步骤（提高长读长质量、换预设、增加覆盖度）。",
+      "工具较新、使用者少，不同版本的行为差异可能较大，务必记录版本与参数。把它的输出当作绝对真值（例如直接据此手改序列）是危险的用法。",
+      "低覆盖区域与小 contig 上的判定不可靠：覆盖度不足时，短读长的少数错配会被放大成「错误」。核查清单时要把覆盖度与位置一起看。",
+      "它不能替代污染检验与结构验证：嵌合连接（两个来源被错误拼接）在 indel 层面可能完全正常，需要 GUNC、分类结果与读长回贴覆盖度一起判断。"
+    ],
+    "related": [
+      { "id": "asm_medaka_polish", "note": "长读长共识抛光；IDEEL 报出的同聚物区问题通常回到这里修" },
+      { "id": "asm_short_polish", "note": "短读长抛光；对编码区准确性要求高时叠加使用" },
+      { "id": "asmqc_gunc", "note": "污染与嵌合检验；与局部错误检验是两件不同的事" },
+      { "id": "asm_unicycler", "note": "桥接与闭环容易引入局部错误，是本模块的重点核查对象" },
+      { "id": "asmqc_quast", "note": "结构统计量；与错误清单互补，回答不同问题" }
+    ],
+    "docs": [
+      { "label": "第 4 章 组装质量与污染评估", "path": "docs/guidebook/04-assembly-qc.md" }
+    ]
+  }
+]

@@ -1,0 +1,231 @@
+{
+  "version": "1.0.0",
+  "note": "模块 id 的权威清单。用途有两个：(1) 约束 feeds.target 只能引用真实存在的模块；(2) 让人一眼看清整个知识系统的覆盖范围。每新增一个模块，必须同时在这里登记，否则 tools/build.mjs 的 manifest-sync 检查会失败。id 命名规则见 docs/reference/module-schema.md。",
+  "naming": {
+    "pattern": "^[a-z][a-z0-9-]{2,40}$",
+    "prefixes": {
+      "qc_": "质控与去宿主",
+      "asm_": "基因组组装",
+      "asmqc_": "组装质量与污染评估",
+      "tax_": "分类鉴定与物种注释",
+      "var_": "变异检测与分型",
+      "anno_": "功能注释",
+      "res_": "耐药与毒力",
+      "phage_": "噬菌体与可移动元件",
+      "pange_": "泛基因组",
+      "comp_": "比较基因组",
+      "amplicon_": "扩增子与微生物组",
+      "meta_": "宏基因组分类与功能",
+      "tran_": "转录组定量与差异表达",
+      "phy_": "系统发育与建树",
+      "py_": "Python 数据处理",
+      "r_": "R 数据处理与统计",
+      "viz_": "可视化与图表",
+      "wf_": "流程引擎与调度",
+      "util_": "工具与数据操作",
+      "io_": "数据格式与互转"
+    }
+  },
+  "byCategory": {
+    "quality-control": [
+      { "id": "qc_fastp", "name": "读长质控与去接头 (fastp)" },
+      { "id": "qc_fastqc", "name": "原始读长质量报告 (FastQC)" },
+      { "id": "qc_trimmomatic", "name": "读长修剪 (Trimmomatic)" },
+      { "id": "qc_multi_qc", "name": "多步骤质控汇总 (MultiQC)" },
+      { "id": "qc_remove_host", "name": "去除宿主污染序列 (Bowtie2 / minimap2)" },
+      { "id": "qc_dedup_reads", "name": "读长去重 (seqkit / clumpify)" },
+      { "id": "qc_quality_trim_long", "name": "长读长质量控制 (NanoFilt / Filtlong)" },
+      { "id": "qc_contamination_screen", "name": "原始数据污染筛查 (Kraken2 / FastQ Screen)" }
+    ],
+    "assembly": [
+      { "id": "asm_spades", "name": "基因组组装：SPAdes" },
+      { "id": "asm_skesa", "name": "基因组组装：SKESA" },
+      { "id": "asm_flye", "name": "长读长组装：Flye" },
+      { "id": "asm_unicycler", "name": "混合组装：Unicycler" },
+      { "id": "asm_short_polish", "name": "短读长抛光长读长组装 (Pilon / POLCA)" },
+      { "id": "asm_medaka_polish", "name": "长读长共识抛光 (Medaka / Racon)" },
+      { "id": "asm_hic_scaffold", "name": "Hi-C 挂载到染色体 (YaHS / SALSA2)" },
+      { "id": "asm_filter_contigs", "name": "contig 过滤与精简 (seqkit / seqtk)" }
+    ],
+    "assembly-qc": [
+      { "id": "asmqc_quast", "name": "组装统计评估 (QUAST)" },
+      { "id": "asmqc_busco", "name": "单拷贝基因完整性评估 (BUSCO)" },
+      { "id": "asmqc_checkm2", "name": "基因组完整度与污染度 (CheckM2)" },
+      { "id": "asmqc_gunc", "name": "污染与近缘物种检验 (GUNC)" },
+      { "id": "asmqc_ideel", "name": "组装错误与嵌合检验 (IDEEL / Assembly-scan)" }
+    ],
+    "taxonomy": [
+      { "id": "tax_gtdbtk", "name": "基因组分类学注释 (GTDB-Tk)" },
+      { "id": "tax_fastani", "name": "基因组平均核苷酸一致性 (fastANI)" },
+      { "id": "tax_16s_extract", "name": "从基因组提取 16S rRNA (barrnap / RNAmmer)" },
+      { "id": "tax_16s_blast", "name": "16S 序列比对鉴定 (BLAST / EzBioCloud)" },
+      { "id": "tax_sourmash", "name": "基于 k-mer 的基因组相似性 (sourmash)" },
+      { "id": "tax_mash", "name": "快速基因组距离估计 (Mash)" }
+    ],
+    "variant-calling": [
+      { "id": "var_bwa_map", "name": "读长比对到参考基因组 (BWA-MEM2)" },
+      { "id": "var_bcftools_call", "name": "变异检出与过滤 (bcftools / FreeBayes)" },
+      { "id": "var_snippy", "name": "单菌 SNP 流程 (Snippy)" },
+      { "id": "var_mlst", "name": "多位点序列分型 (MLST)" },
+      { "id": "var_amrfinder", "name": "耐药基因与突变检测 (AMRFinderPlus)" },
+      { "id": "var_typing_cgmlst", "name": "cgMLST 分型 (chewBBACA / Ridom)" }
+    ],
+    "annotation-functional": [
+      { "id": "anno_prokka", "name": "基因组注释：Prokka" },
+      { "id": "anno_bakta", "name": "基因组注释：Bakta" },
+      { "id": "anno_prodigal", "name": "基因预测 (Prodigal)" },
+      { "id": "anno_ncbi_submit", "name": "提交到 NCBI 注释 (PGAP)" },
+      { "id": "anno_eggnog", "name": "同源群与功能归类 (eggNOG-mapper)" },
+      { "id": "anno_kofamscan", "name": "KEGG 直系同源分配 (KofamScan)" },
+      { "id": "anno_diamond_nr", "name": "蛋白序列同源搜索 (DIAMOND / MMseqs2)" },
+      { "id": "anno_interpro", "name": "蛋白结构域注释 (InterProScan)" },
+      { "id": "anno_dbcan", "name": "碳水化合物活性酶注释 (dbCAN)" },
+      { "id": "anno_cazy", "name": "CAZy 分类归属 (CAZy 数据库比对)" }
+    ],
+    "annotation-resistance": [
+      { "id": "res_card_rgi", "name": "耐药基因注释 (RGI / CARD)" },
+      { "id": "res_abricate", "name": "多数据库基因筛查 (ABRicate)" },
+      { "id": "res_resfinder", "name": "耐药基因与突变 (ResFinder / PointFinder)" },
+      { "id": "res_vfdb", "name": "毒力因子注释 (VFDB)" },
+      { "id": "res_plasmidfinder", "name": "质粒复制子分型 (PlasmidFinder)" },
+      { "id": "res_mobilome", "name": "可移动元件注释 (mobileOG-db)" }
+    ],
+    "annotation-phage": [
+      { "id": "phage_phaster", "name": "前噬菌体鉴定 (PHASTER / PHASTEST)" },
+      { "id": "phage_checkv", "name": "病毒序列鉴定与质量评估 (CheckV)" },
+      { "id": "phage_genomad", "name": "病毒与质粒序列识别 (geNomad)" },
+      { "id": "phage_crisprcas", "name": "CRISPR-Cas 系统鉴定 (CRT / CRISPRCasFinder)" }
+    ],
+    "pangenome": [
+      { "id": "pange_panaroo", "name": "泛基因组构建 (Panaroo)" },
+      { "id": "pange_roary", "name": "泛基因组构建：Roary（经典）" },
+      { "id": "pange_orthofinder", "name": "直系同源群推断 (OrthoFinder)" },
+      { "id": "pange_core_align", "name": "核心基因比对与串联 (core SNP alignment)" },
+      { "id": "pange_acc_stats", "name": "核心/附属基因统计与曲线 (rarefaction / accumulation)" }
+    ],
+    "comparative": [
+      { "id": "comp_syri", "name": "基因组共线性比较 (SyRI / MUMmer)" },
+      { "id": "comp_proksee", "name": "比较基因组可视化 (Proksee / CGView)" },
+      { "id": "comp_snp_dist", "name": "SNP 距离矩阵（菌株传播）" },
+      { "id": "comp_gene_presence", "name": "基因存在/缺失矩阵构建" },
+      { "id": "comp_island_path", "name": "基因组岛与致病岛预测 (IslandViewer)" }
+    ],
+    "amplicon": [
+      { "id": "amplicon_qiime2_import", "name": "扩增子数据导入 (QIIME 2)" },
+      { "id": "amplicon_dada2", "name": "ASV 推断与去噪 (DADA2)" },
+      { "id": "amplicon_deblur", "name": "ASV 推断 (Deblur)" },
+      { "id": "amplicon_qiime2_diversity", "name": "多样性与群落结构 (QIIME 2 diversity)" },
+      { "id": "amplicon_taxonomy_assign", "name": "ASV 物种注释 (SILVA / Greengenes2)" },
+      { "id": "amplicon_phyloseq", "name": "微生物组数据对象与差异分析 (phyloseq)" },
+      { "id": "amplicon_decontam", "name": "污染物序列识别 (decontam)" },
+      { "id": "amplicon_its_fungal", "name": "真菌 ITS 扩增子分析 (ITSx / UNITE)" }
+    ],
+    "metagenome": [
+      { "id": "meta_kraken2", "name": "读长物种分类 (Kraken 2)" },
+      { "id": "meta_bracken", "name": "物种丰度重估计 (Bracken)" },
+      { "id": "meta_metaphlan", "name": "标志基因物种谱 (MetaPhlAn)" },
+      { "id": "meta_humann", "name": "通路与功能谱 (HUMAnN)" },
+      { "id": "meta_megahit", "name": "宏基因组组装 (MEGAHIT)" },
+      { "id": "meta_metaspades", "name": "宏基因组组装：metaSPAdes" },
+      { "id": "meta_binning_metabat", "name": "MAG 分箱 (MetaBAT2 / MaxBin2 / SemiBin)" },
+      { "id": "meta_bin_refine", "name": "分箱优化与去冗余 (DAS Tool / dRep)" },
+      { "id": "meta_mag_taxonomy", "name": "MAG 分类注释与命名 (GTDB-Tk)" },
+      { "id": "meta_coverm", "name": "MAG 丰度定量 (CoverM / Bowtie2)" },
+      { "id": "meta_virome", "name": "病毒组识别与丰度 (geNomad / CheckV)" },
+      { "id": "meta_assembly_qc", "name": "宏基因组组装质量与去冗余" }
+    ],
+    "transcriptome": [
+      { "id": "tran_rrna_remove", "name": "rRNA 去除与富集评估 (SortMeRNA / RiboDetector)" },
+      { "id": "tran_hisat_align", "name": "读长比对 (HISAT2 / Bowtie2)" },
+      { "id": "tran_featurecounts", "name": "基因水平计数 (featureCounts)" },
+      { "id": "tran_salmon_quant", "name": "转录本定量 (Salmon / kallisto)" },
+      { "id": "tran_deseq2", "name": "差异表达分析 (DESeq2)" },
+      { "id": "tran_edger", "name": "差异表达分析 (edgeR)" },
+      { "id": "tran_batch_correct", "name": "批次效应校正 (ComBat-seq / limma)" },
+      { "id": "tran_go_enrich", "name": "GO / 通路富集分析" }
+    ],
+    "phylogeny": [
+      { "id": "phy_mafft", "name": "多序列比对 (MAFFT)" },
+      { "id": "phy_trimal", "name": "比对修剪 (trimAl)" },
+      { "id": "phy_iqtree", "name": "最大似然建树 (IQ-TREE)" },
+      { "id": "phy_fasttree", "name": "快速建树 (FastTree)" },
+      { "id": "phy_raxml", "name": "最大似然建树 (RAxML-NG)" },
+      { "id": "phy_modeltest", "name": "替换模型选择 (ModelFinder)" },
+      { "id": "phy_root_calibrate", "name": "定根与外群设置" },
+      { "id": "phy_support_test", "name": "分支支持度检验 (bootstrap / SH-aLRT / aLRT)" },
+      { "id": "phy_tree_compare", "name": "树拓扑比较 (Robinson-Foulds)" },
+      { "id": "phy_its_phylogeny", "name": "真菌 ITS / 大亚基建树" }
+    ],
+    "downstream-python": [
+      { "id": "py_numpy_arrays", "name": "数值数组与向量化 (NumPy)" },
+      { "id": "py_pandas_io", "name": "表格读取与整理 (pandas)" },
+      { "id": "py_pandas_tidy", "name": "长宽表转换与合并 (tidy 数据整理)" },
+      { "id": "py_scipy_stats", "name": "统计检验与多重校正 (SciPy / statsmodels)" },
+      { "id": "py_sklearn_cluster", "name": "聚类与降维 (scikit-learn / UMAP)" },
+      { "id": "py_biopython", "name": "序列读写与格式转换 (Biopython)" },
+      { "id": "py_pysam", "name": "比对文件读写 (pysam)" },
+      { "id": "py_snakemake_py", "name": "Python 侧流程粘合 (Snakemake rule 片段)" },
+      { "id": "py_export_report", "name": "生成表格与报告 (to_csv / to_excel / Jinja2)" }
+    ],
+    "downstream-r": [
+      { "id": "r_tidyverse", "name": "R 数据整形 (tidyverse / dplyr)" },
+      { "id": "r_read_import", "name": "结果表读入与清洗 (readr / readxl)" },
+      { "id": "r_matrix_stats", "name": "矩阵运算与距离 (base R / vegan)" },
+      { "id": "r_vegan_diversity", "name": "群落多样性与排序 (vegan)" },
+      { "id": "r_deseq2_object", "name": "DESeq2 对象与差异表 (DESeq2)" },
+      { "id": "r_limma_stats", "name": "线性模型差异分析 (limma)" },
+      { "id": "r_survival_meta", "name": "meta 分析基础 (metafor)" },
+      { "id": "r_export_table", "name": "R 结果导出与表格生成 (write_csv / flextable)" }
+    ],
+    "visualization": [
+      { "id": "viz_ggplot2", "name": "通用统计绘图 (ggplot2)" },
+      { "id": "viz_seaborn", "name": "Python 统计绘图 (seaborn / matplotlib)" },
+      { "id": "viz_plotly", "name": "交互式图表 (plotly)" },
+      { "id": "viz_heatmap", "name": "热图与聚类热图 (ComplexHeatmap / pheatmap)" },
+      { "id": "viz_rarefaction_curve", "name": "稀释曲线与累积曲线" },
+      { "id": "viz_alpha_beta", "name": "Alpha/Beta 多样性图 (PCoA / NMDS)" },
+      { "id": "viz_composition_bar", "name": "群落组成堆叠柱状图" },
+      { "id": "viz_volcano_ma", "name": "差异表达火山图与 MA 图" },
+      { "id": "viz_circos", "name": "基因组环形图 (Circos / pyCirclize)" },
+      { "id": "viz_tree_plot", "name": "进化树可视化与注释 (ggtree / iTOL)" },
+      { "id": "viz_upset", "name": "集合交集可视化 (UpSet)" },
+      { "id": "viz_sankey_flow", "name": "丰度流向与桑基图 (Sankey)" },
+      { "id": "viz_pub_style", "name": "出版级图规范与配色" }
+    ],
+    "workflow": [
+      { "id": "wf_snakemake", "name": "流程编排：Snakemake" },
+      { "id": "wf_nextflow", "name": "流程编排：Nextflow" },
+      { "id": "wf_conda_env", "name": "环境与依赖锁定 (conda / mamba / pixi)" },
+      { "id": "wf_container", "name": "容器化运行 (Docker / Singularity)" },
+      { "id": "wf_cluster_submit", "name": "集群提交与资源申请 (Slurm / PBS)" },
+      { "id": "wf_dag_rule", "name": "流程结构与依赖声明 (DAG / rule)" },
+      { "id": "wf_reproducibility", "name": "结果可追溯与版本记录" },
+      { "id": "wf_flexible_join", "name": "通用数据流适配器（格式/接口转换）", "kind": "adapter" },
+      { "id": "wf_batch_loop", "name": "多样本批量循环处理" },
+      { "id": "wf_checkpoint_pipeline", "name": "断点续跑与缓存复用" }
+    ],
+    "utility": [
+      { "id": "util_seqkit", "name": "序列文件操作 (seqkit / seqtk)" },
+      { "id": "util_samtools", "name": "比对文件操作 (SAMtools / BAM)" },
+      { "id": "util_bedtools", "name": "区间运算 (bedtools)" },
+      { "id": "util_gnu_parallel", "name": "并行执行与任务分发 (GNU parallel / xargs)" },
+      { "id": "util_awk_sed", "name": "文本流处理 (awk / sed / grep)" },
+      { "id": "util_rename_manifest", "name": "重命名、样本清单与路径整理" },
+      { "id": "util_args_validate", "name": "参数校验与输入检查" },
+      { "id": "util_install_tools", "name": "工具安装与环境准备" },
+      { "id": "util_download_ref", "name": "参考数据库下载与版本管理" },
+      { "id": "util_checksum", "name": "文件校验与完整性确认 (md5 / sha256)" }
+    ],
+    "io-formats": [
+      { "id": "io_fastq_to_fasta", "name": "FASTQ 与 FASTA 互转" },
+      { "id": "io_bam_to_bed", "name": "BAM 转覆盖度/区间 (BED / depth)" },
+      { "id": "io_gff_convert", "name": "注释格式互转 (GFF / GTF / GenBank)" },
+      { "id": "io_vcf_convert", "name": "变异格式互转 (VCF / PED / PHYLIP)" },
+      { "id": "io_table_to_phylip", "name": "表格转 PHYLIP / Nexus（建树输入）" },
+      { "id": "io_biom_to_tsv", "name": "BIOM 与环境数据表互转" },
+      { "id": "io_newick_convert", "name": "树文件格式互转 (Newick / Nexus / NEXML)" },
+      { "id": "io_compress_index", "name": "压缩与索引 (bgzip / tabix / samtools index)" },
+      { "id": "io_interop_standard", "name": "跨语言数据互通 (Parquet / Arrow / Feather)" }
+    ]
+  }
+}

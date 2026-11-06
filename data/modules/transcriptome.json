@@ -1,0 +1,663 @@
+[
+  {
+    "id": "tran_rrna_remove",
+    "name": "rRNA 去除与富集评估 (SortMeRNA / RiboDetector)",
+    "category": "transcriptome",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["transcriptomics"],
+    "tags": ["rna-seq", "rrna", "去除", "富集", "sortmerna", "ribodetector", "细菌"],
+    "summary": "用比对或模型判定并剔除 rRNA 读长，评估富集效果",
+    "what": [
+      "这一步在做什么：把质控后的读长里属于 rRNA 的部分剔掉，留下 mRNA 来源的读长。细菌 RNA-seq 不做 poly(A) 选择（细菌 mRNA 绝大多数没有 poly(A) 尾，用 Oligo(dT) 富集等于把 mRNA 全部丢掉），文库里的 rRNA 占比因此在很多样本里高得惊人——rRNA 本身就是细胞内最丰度的 RNA，rRNA 操纵子又是高拷贝。常见实现有三类：SortMeRNA 把读长比到内置的 rRNA 参考库（SILVA / Rfam 等），命中即丢弃；RiboDetector 用训练好的模型逐条读长打分，不依赖参考库；以及用 Bowtie2 / minimap2 把读长比到自建的 rRNA 参考序列集后取未命中的读长。",
+      "为什么必须做、怎么判断做没做对：判断这一步是否成功，唯一可靠的指标是去除前后的 rRNA 占比，而不是「丢掉了多少读长」。做法是去除前后各取一部分读长做分类（Kraken 2 的物种组成，或把保留的读长再比一次 rRNA 参考），看残留比例。期望的结果是残留降到个位数百分比；如果仍在几十个百分点，通常是参考库缺该物种的 rRNA 序列（非模式菌、新属）、模型与数据不匹配或阈值过松，此时继续往下做只会得到「比对率很高但差异表达几乎什么都没有」的结果。同时要看「留下了什么」：参数过松会连带丢掉与 rRNA 有局部相似的 mRNA，表现为有效读长总数骤降、覆盖到的基因数明显变少。",
+      "与真核流程的差别：真核的 rRNA 去除通常是 poly(A) 富集的副产品，而细菌流程里它是成败关键，值得单独作为一个步骤来评估。它与去宿主应该串联，顺序会影响两者的残留比例（宿主的 rRNA 也会被一并去掉），因此两个步骤都要用同一套方法核查效果。另外，样本类型决定可接受程度：富培养基里的指数期培养物 rRNA 占比极高，而低生物量样本、细胞内感染样本的 rRNA 占比天然更低，不能用同一套阈值去判断所有样本。"
+    ],
+    "inputs": [
+      { "type": "clean-reads", "name": "清理后的双端读长 (R1/R2)", "required": true, "note": "先去接头与低质量碱基：未修剪的低质量碱基会造成假比对，让 rRNA 判定不准" },
+      { "type": "reference-genome", "name": "自定义 rRNA 参考序列集", "required": false, "note": "默认用工具内置库或模型；非模式菌建议自建（例如从本株基因组提取 rRNA）并记录版本" }
+    ],
+    "outputs": [
+      { "type": "clean-reads", "name": "去 rRNA 后的读长", "ext": ".nonrrna.fq.gz", "note": "下游比对与定量的真正输入；文件大小变化不大，但有效信息占比完全不同" },
+      { "type": "log-report", "name": "rRNA 占比与去除统计", "ext": ".rrna_stats.txt", "note": "含去除前后的读长数、命中 rRNA 的读长数与占比；这是判断本步骤是否成功的核心数字" },
+      { "type": "tsv-table", "name": "逐条读长的判定明细", "ext": ".rrna_hits.tsv", "note": "RiboDetector 的逐条概率、SortMeRNA 的命中参考；用于核查边缘判定是否合理" }
+    ],
+    "provides": [
+      { "tool": "SortMeRNA", "version": "4.3.x", "access": "cli", "install": "conda", "note": "基于参考库的比对式判定；首次运行会为参考库建索引" },
+      { "tool": "RiboDetector", "version": "0.4.x", "access": "python-api", "install": "pip", "note": "深度学习模型逐条打分，不依赖参考库；对非模式菌更友好" },
+      { "tool": "Bowtie2", "version": "2.5.x", "access": "cli", "install": "conda", "note": "自建 rRNA 参考后回比、取未命中读长的通用做法" },
+      { "tool": "SAMtools", "version": "1.1x", "access": "cli", "install": "conda", "note": "按比对标志拆出未命中读长并导回 FASTQ" }
+    ],
+    "feeds": [
+      { "target": "tran_hisat_align", "viaType": "clean-reads", "note": "去 rRNA 后再比对，避免大量读长堆在 rRNA 位点上把比对率抬高" },
+      { "target": "tran_salmon_quant", "viaType": "clean-reads", "note": "定量前必须去 rRNA，否则 TPM 会被 rRNA 主导" },
+      { "target": "qc_multi_qc", "viaType": "log-report", "note": "把各样本的 rRNA 残留比例放进项目级总览，最容易发现异常样本" }
+    ],
+    "usage": [
+      {
+        "label": "SortMeRNA：比对式去除（RiboDetector 之外最常用的选择）",
+        "lang": "bash",
+        "code": "# 首次运行会在 --workdir 下为参考库建索引，后续复用\nsortmerna --ref rrna_ref.fasta \\\n  --reads clean_R1.fq.gz --reads clean_R2.fq.gz \\\n  --paired_in --fastx --other nonrrna --aligned rrna \\\n  --workdir smr_work --threads 8"
+      },
+      {
+        "label": "RiboDetector：不依赖参考库的模型判定",
+        "lang": "bash",
+        "code": "ribodetector_cpu -t 8 -l 150 -i clean_R1.fq.gz clean_R2.fq.gz \\\n  -e norrna -o nonrrna_R1.fq.gz nonrrna_R2.fq.gz"
+      },
+      {
+        "label": "Bowtie2 路线：自建参考 + 取未命中读长",
+        "lang": "bash",
+        "code": "bowtie2-build rrna_ref.fasta rrna_index/rrna\nbowtie2 -x rrna_index/rrna -1 clean_R1.fq.gz -2 clean_R2.fq.gz -p 8 --very-sensitive 2> rrna.log | \\\n  samtools view -b -f 4 - | samtools fastq -1 nonrrna_R1.fq.gz -2 nonrrna_R2.fq.gz -"
+      },
+      {
+        "label": "核查残留：对去 rRNA 后的读长再判一次",
+        "lang": "bash",
+        "code": "# 残留比例是判断这一步是否有效的唯一依据\nsortmerna --ref rrna_ref.fasta --reads nonrrna_R1.fq.gz \\\n  --fastx --aligned rrna_leftover --other discard \\\n  --workdir smr_check --threads 8\nhead -20 rrna_leftover.log"
+      }
+    ],
+    "recipes": {
+      "bash": "sortmerna --ref ${RRNA_REF} \\\n  --reads 01_clean/${SAMPLE}_R1.fq.gz --reads 01_clean/${SAMPLE}_R2.fq.gz \\\n  --paired_in --fastx --other 01_clean/${SAMPLE}_nonrrna --aligned 10_logs/${SAMPLE}_rrna \\\n  --workdir 10_logs/smr_${SAMPLE} --threads ${THREADS} \\\n  > 10_logs/${SAMPLE}.rrna_stats.txt 2>&1",
+      "python": "run([\n    \"sortmerna\", \"--ref\", str(rrna_ref),\n    \"--reads\", str(QC_DIR / f\"{sample}_R1.fq.gz\"),\n    \"--reads\", str(QC_DIR / f\"{sample}_R2.fq.gz\"),\n    \"--paired_in\", \"--fastx\",\n    \"--other\", str(QC_DIR / f\"{sample}_nonrrna\"),\n    \"--aligned\", str(LOG_DIR / f\"{sample}_rrna\"),\n    \"--workdir\", str(LOG_DIR / f\"smr_{sample}\"),\n    \"--threads\", str(THREADS),\n], log_name=f\"{sample}.rrna_stats.txt\")"
+    },
+    "params": [
+      { "flag": "SortMeRNA --fastx", "default": "关闭", "note": "不加时输出是 FASTA，质量值会全部丢失；下游比对与定量都需要 FASTQ，这个默认值很容易被忽略" },
+      { "flag": "SortMeRNA --paired_in", "default": "关闭", "note": "任一端命中 rRNA 就丢弃整对，比只丢命中端更保守；代价是可能连带丢掉真实的 mRNA 对" },
+      { "flag": "RiboDetector -l", "default": "100", "note": "读长参数，必须与实际读长接近；模型按长度处理输入，偏差过大时准确率下降" },
+      { "flag": "RiboDetector -e", "default": "norrna", "note": "指定输出哪一类读长（rRNA 或非 rRNA）；写反会得到完全相反的结果，先在小样本上确认取值（以官方文档为准）" },
+      { "flag": "RiboDetector --dna", "default": "关闭", "note": "输入是 DNA 读长（例如宏基因组去 rRNA）时使用；对 RNA 数据误加会降低准确率" },
+      { "flag": "Bowtie2 -f 4", "default": "—", "note": "只取未比对的读长；写成 -F 4 会反过来只保留 rRNA，而且从读长数量上不容易立刻发现" }
+    ],
+    "pitfalls": [
+      "细菌没有 poly(A) 尾，把真核流程的 Oligo(dT) poly(A) 富集照搬过来，会得到几乎空的文库。细菌必须用 rRNA 去除（或 rRNA 消耗）建库，这是整套流程与真核最大的分歧点，选错方向后面所有分析都没有意义。",
+      "SortMeRNA 默认输出 FASTA。不加 --fastx 时质量值被丢掉，而文件仍能正常打开、下游也照样能跑，因此这个错误极难察觉；需要质量信息的场合必须回到原始数据重做。",
+      "「去掉了 90% 的读长」既可能是好事也可能是灾难。要同时看去除前后的 rRNA 占比与剩余读长总数：如果本样本剩余读长比同批次其他样本低一大截，优先怀疑参考库覆盖度或阈值，而不是认定样本里真的没有 mRNA。",
+      "参考库覆盖度决定上限。SILVA 对非模式菌、新属的 rRNA 收录可能只有近缘种条目，命中率会明显偏低；这时换 RiboDetector（模型判定，不依赖参考库），或从本株基因组提取 rRNA 自建参考，通常比反复调阈值有效。",
+      "不要在同一批数据上串联 SortMeRNA 和 RiboDetector 做「双重去除」。两者判据不同，串联会累积假阳性、系统性丢掉真实 mRNA，而且出了问题无法归因。正确做法是选一种方法，再用独立手段核查残留。",
+      "去 rRNA 之后不要复用之前的质控结论。读长组成已经变了，GC 分布与过度代表序列都会明显不同；把去 rRNA 前后的报告混在一张表里比较，会得出与事实相反的结论。"
+    ],
+    "related": [
+      { "id": "qc_remove_host", "note": "同属「先丢掉不需要的读长」；顺序会互相影响，两步都要用同一套方法核查效果" },
+      { "id": "tran_hisat_align", "note": "本模块的直接下游；比对率与 rRNA 残留比例要放在一起看" },
+      { "id": "tax_16s_extract", "note": "需要自建 rRNA 参考时，用它从基因组里提取 rRNA 序列" },
+      { "id": "tran_salmon_quant", "note": "另一条下游路线；rRNA 残留对定量的影响比对比对路线更直接" }
+    ],
+    "docs": [
+      { "label": "第 9 章 转录组与差异表达", "path": "docs/guidebook/09-transcriptome-differential-expression.md" }
+    ]
+  },
+  {
+    "id": "tran_hisat_align",
+    "name": "读长比对 (HISAT2 / Bowtie2)",
+    "category": "transcriptome",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["transcriptomics"],
+    "tags": ["rna-seq", "比对", "hisat2", "bowtie2", "bam", "多重比对", "细菌"],
+    "summary": "把 mRNA 读长比对到参考基因组并输出排序 BAM",
+    "what": [
+      "这一步在做什么：把去 rRNA 后的读长比对到参考基因组，得到带坐标的比对记录（SAM/BAM）。它是计数路线（featureCounts / HTSeq）的入口：只有先确定每条读长落在基因组的什么地方，才能把它归到某个基因上。HISAT2 的卖点是剪接感知（splice-aware），会用已知剪接位点与链方向建模、允许一条读长跨越内含子；Bowtie2 不做剪接建模，但更小更快、参数语义更透明；BWA-MEM 在细菌里同样是常见选择。比对结果通常立刻用 samtools 按坐标排序并建索引，供下游计数与覆盖度分析使用。",
+      "细菌数据的关键差异：细菌基因几乎没有内含子，因此剪接感知能力在这个场景里没有用武之地——HISAT2 的 --dta、--rna-strandness 这类为真核转录组设计的选项在细菌数据上不产生额外价值。真正要小心的是另一半：细菌基因密度极高，操纵子与重叠基因普遍存在，一条读长常常能同样好地匹配到多个基因上。比对器只能在参考序列层面报告多个同等最优的比对与相应的比对质量，至于「这条读长算谁的」，是计数阶段必须显式做的决定。因此本模块的输出必须保留比对质量与多重比对相关信息，不要在比对阶段就用质量阈值把低质量比对记录整批丢掉。",
+      "参考与注释必须配套：细菌分析通常用同一株（或同种）的高质量完成图基因组做参考，FASTA 与 GFF 必须来自同一次提交、同一套坐标，换版本会让所有坐标失效。链特异性建库方式（例如 dUTP 法）决定了计数阶段该用哪种链方向设置；比对这一步不做链特异性判断，但必须在动手前确认建库方法，否则计数会系统性偏向反义链且看起来「有结果」。另外，参考基因组里当然也包含 rRNA 操纵子：rRNA 没去干净时，比对率会很好看，但落在这些区域的读长会一起进入计数，造成少数基因极端高表达。"
+    ],
+    "inputs": [
+      { "type": "clean-reads", "name": "去 rRNA 后的读长 (R1/R2)", "required": true, "note": "若跳过 rRNA 去除，比对与计数仍能完成，但结果会被 rRNA 主导" },
+      { "type": "reference-genome", "name": "参考基因组 FASTA", "required": true, "note": "必须与 GFF 同一次提交、同一版本；记录 accession 与下载日期" },
+      { "type": "gff", "name": "基因注释表 (GFF/GTF)", "required": false, "note": "仅在比对器需要已知剪接位点或外显子信息时使用；细菌通常不需要" }
+    ],
+    "outputs": [
+      { "type": "bam", "name": "排序并建索引的比对结果", "ext": ".sorted.bam", "note": "保留比对质量与多重比对相关信息；计数与覆盖度分析都用它" },
+      { "type": "log-report", "name": "比对统计", "ext": ".align.log", "note": "含整体比对率、唯一比对与多重比对比例；samtools flagstat 的摘要可一并写入同一份日志" }
+    ],
+    "provides": [
+      { "tool": "HISAT2", "version": "2.2.x", "access": "cli", "install": "conda", "note": "剪接感知比对器；对细菌数据剪接模型无用武之地，但稳定性与生态仍可用" },
+      { "tool": "Bowtie2", "version": "2.5.x", "access": "cli", "install": "conda", "note": "无剪接建模，参数透明、速度快，是细菌 RNA-seq 的常见选择" },
+      { "tool": "BWA", "version": "0.7.x", "access": "cli", "install": "conda", "note": "BWA-MEM 在细菌中同样常用；长读长应改走 minimap2" },
+      { "tool": "SAMtools", "version": "1.1x", "access": "cli", "install": "conda", "note": "排序、建索引、统计与取子集；比对后几乎必然要用" }
+    ],
+    "feeds": [
+      { "target": "tran_featurecounts", "viaType": "bam", "note": "计数路线：把排序好的 BAM 交给 featureCounts 汇总到基因水平" },
+      { "target": "util_samtools", "viaType": "bam", "note": "后续的排序、索引、按区域取子集等常规操作" },
+      { "target": "qc_multi_qc", "viaType": "log-report", "note": "把各样本的比对率与多重比对比例纳入项目级总览" }
+    ],
+    "usage": [
+      {
+        "label": "HISAT2：建索引 + 比对 + 排序索引",
+        "lang": "bash",
+        "code": "hisat2-build ref.fna ref_index/ref          # 一次建索引，长期复用\nhisat2 -x ref_index/ref -1 nonrrna_R1.fq.gz -2 nonrrna_R2.fq.gz -p 8 2> align.log | \\\n  samtools sort -@ 4 -o sample.sorted.bam -\nsamtools index sample.sorted.bam\nsamtools flagstat sample.sorted.bam > sample.flagstat.txt"
+      },
+      {
+        "label": "Bowtie2：更轻量，参数语义更直接",
+        "lang": "bash",
+        "code": "bowtie2-build ref.fna ref_index/bt2\nbowtie2 -x ref_index/bt2 -1 nonrrna_R1.fq.gz -2 nonrrna_R2.fq.gz -p 8 --very-sensitive 2> align.log | \\\n  samtools sort -@ 4 -o sample.sorted.bam -"
+      },
+      {
+        "label": "检查多重比对与比对质量的分布",
+        "lang": "bash",
+        "code": "# 比对质量问题比单一阈值更值得看：先看分布，再决定计数阶段怎么处理\nsamtools view -c sample.sorted.bam                  # 总记录数\nsamtools view -c -q 20 sample.sorted.bam            # 达到质量阈值的记录数\nsamtools view -c -q 1 sample.sorted.bam"
+      }
+    ],
+    "recipes": {
+      "bash": "samtools sort -@ ${THREADS} -o 02_align/${SAMPLE}.sorted.bam 02_align/${SAMPLE}.sam\nsamtools index -@ ${THREADS} 02_align/${SAMPLE}.sorted.bam\nsamtools flagstat 02_align/${SAMPLE}.sorted.bam > 10_logs/${SAMPLE}.flagstat.txt",
+      "python": "run(f\"hisat2 -x {ref_index} -1 {QC_DIR}/{sample}_R1.fq.gz -2 {QC_DIR}/{sample}_R2.fq.gz \"\n    f\"-p {THREADS} 2> {LOG_DIR}/{sample}.align.log | \"\n    f\"samtools sort -@ {THREADS} -o {ALIGN_DIR}/{sample}.sorted.bam -\")\nrun([\"samtools\", \"index\", \"-@\", str(THREADS), str(ALIGN_DIR / f\"{sample}.sorted.bam\")])"
+    },
+    "params": [
+      { "flag": "bowtie2 --very-sensitive", "default": "关闭", "note": "提高敏感度的预设组合（内部子参数以官方文档为准）；细菌基因组小、索引小，通常承受得起，代价是多重比对比例升高" },
+      { "flag": "hisat2 -N / -L", "default": "由预设决定", "note": "允许的错配数与最小种子长度；放松能提高比对率，但会让旁系同源基因互相抢读长" },
+      { "flag": "--no-mixed / --no-discordant", "default": "关闭", "note": "禁止只有一端比对上的配对与不一致配对；RNA-seq 中这类记录多来自残留 rRNA 或重复序列，过滤后计数更干净" },
+      { "flag": "-p", "default": "1", "note": "线程数；比对通常是全流程最耗时的步骤之一，务必显式设置" },
+      { "flag": "samtools sort -@ / -m", "default": "-@ 0", "note": "排序线程与每线程内存；BAM 较大时不设 -m 容易触发磁盘临时文件，速度会骤降" },
+      { "flag": "--all / -k", "default": "关闭", "note": "报告多条比对位置；只在需要评估多映射时才用，会让 BAM 显著变大" }
+    ],
+    "pitfalls": [
+      "别把真核的剪接参数照搬过来。细菌基因基本没有内含子，--dta、--rna-strandness 这类选项不产生价值；真正影响结果的是如何处理同时匹配多个基因的读长。",
+      "链特异性设置必须与建库方法对上。细菌 RNA-seq 常用 dUTP 法，计数阶段的链方向参数写错不会报错，只会让某一链方向的计数系统性偏高。核查方式是用两种设置各计数一次，看哪种的 assigned 比例明显更高。",
+      "比对率高不等于数据可用。残留的 rRNA 读长同样能 100% 比对到参考基因组的 rRNA 操纵子，把整体比对率抬得很高；必须单独统计落在 rRNA 区域的读长比例。",
+      "多重比对不能靠调比对质量阈值「解决」。细菌的重叠基因、旁系同源基因与可移动元件会让大量读长有多个同等最优的比对；在比对阶段丢掉它们，等于把分配决策交给比对质量的具体实现。正确做法是保留记录，把分配策略放到计数阶段显式决定。",
+      "参考基因组与注释必须同版本、同坐标。用 A 版本的 FASTA 配 B 版本的 GFF，比对能跑完、计数也能出结果，但基因坐标是错的——这是最难发现的一类错误。下载时记录 accession、版本与日期。",
+      "不要每个样本重建一次索引。细菌基因组索引几分钟就能建好，但批量运行时反复重建会浪费大量机时；把索引放共享目录，并在目录名或 README 里写清参考版本。"
+    ],
+    "related": [
+      { "id": "qc_remove_host", "note": "同样是把读长比对到参考并筛选，但目的是去掉宿主污染" },
+      { "id": "tran_featurecounts", "note": "计数路线的直接下游" },
+      { "id": "tran_salmon_quant", "note": "另一条不依赖全基因组比对的定量路线" },
+      { "id": "var_bwa_map", "note": "同样是读长比对，但目标是变异检出而非表达量" },
+      { "id": "util_samtools", "note": "BAM 排序、索引与统计的标准工具" }
+    ],
+    "docs": [
+      { "label": "第 9 章 转录组与差异表达", "path": "docs/guidebook/09-transcriptome-differential-expression.md" }
+    ]
+  },
+  {
+    "id": "tran_featurecounts",
+    "name": "基因水平计数 (featureCounts)",
+    "category": "transcriptome",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["transcriptomics"],
+    "tags": ["rna-seq", "计数", "featurecounts", "重叠基因", "操纵子", "count-matrix"],
+    "summary": "把比对记录汇总成基因水平的整数计数矩阵",
+    "what": [
+      "这一步在做什么：featureCounts（Subread 套件）读取按坐标排序的 BAM 与注释表（GFF/GTF），把每条读长按其比对位置分配给基因，输出「基因 × 样本」的整数计数矩阵，以及一份说明读长去向的分配汇总。它是计数路线的核心产物：计数矩阵是 DESeq2 / edgeR 唯一正确的输入形式，因为这些模型是为原始计数设计的（离散、方差随均值增长），而不是为 TPM/FPKM 这类已经做过长度与深度归一化的连续值设计的。",
+      "细菌的两个特性会在这里集中体现。第一，基因密度高、操纵子与重叠基因普遍：一条读长可能同时落在两个甚至更多基因上。featureCounts 的默认行为是把这类读长记为 ambiguous 而不计入任何基因，结果是相关基因的计数被系统性压低，严重时直接低到被后续过滤掉。可以打开允许一读多基因的选项来挽回这部分计数，代价是同一个 read 被数进多个基因，破坏了差异分析所依赖的「各基因计数近似独立」的假设——是否打开必须在方法里写清楚，不能默默使用。第二，rRNA 操纵子与高拷贝元件会在局部造成极高的读长堆积，少数基因的计数比中位数高几个数量级，这会把归一化因子的估计带偏（见 tran_deseq2 的 size factor 讨论）。",
+      "注释来源决定参数：Prokka、Bakta、NCBI 的 GFF 使用的 feature 类型与属性名各不相同（例如 CDS 配 locus_tag，或 gene 配 ID），必须先用命令看一眼注释文件第三列与第九列的内容，再决定用哪种 feature 类型与基因 ID 属性；写错时的典型症状是计数几乎全为 0，或者只统计到 RNA 类基因而漏掉 CDS。最后一定要读 featureCounts 的汇总文件：Assigned 的比例，以及 Unassigned_NoFeatures（比对上了但不在注释内，常见于 rRNA 残留、UTR、基因间区或注释缺失）、Unassigned_Ambiguity（重叠基因）、Unassigned_MultiMapping 各占多少，这几行直接告诉你上游哪一步有问题。"
+    ],
+    "inputs": [
+      { "type": "bam", "name": "排序后的比对结果", "required": true, "note": "按坐标排序并建索引；featureCounts 不接受未排序的 SAM" },
+      { "type": "gff", "name": "与参考基因组同版本的注释表 (GFF/GTF)", "required": true, "note": "必须与 BAM 所用参考同一次提交；feature 类型与基因 ID 属性由它决定" }
+    ],
+    "outputs": [
+      { "type": "count-matrix", "name": "基因水平计数矩阵", "ext": ".counts.tsv", "note": "整数计数；列名是样本名，行名是基因 ID，附带的坐标与长度列在分析前应剔除" },
+      { "type": "log-report", "name": "读长分配汇总", "ext": ".counts.summary", "note": "Assigned 与各 Unassigned_* 行；判断计数是否可信的第一手材料" }
+    ],
+    "provides": [
+      { "tool": "featureCounts", "version": "2.0.x", "access": "cli", "install": "conda", "note": "Subread 套件；速度快、内存可控，是计数路线的默认选择" },
+      { "tool": "HTSeq", "version": "2.0.x", "access": "cli", "install": "conda", "note": "Python 实现；链方向与重叠处理模式的语义很清晰，适合逐样本核对结果" },
+      { "tool": "SAMtools", "version": "1.1x", "access": "cli", "install": "conda", "note": "排序与索引；featureCounts 的输入要求由它满足" }
+    ],
+    "feeds": [
+      { "target": "tran_deseq2", "viaType": "count-matrix", "note": "负二项 GLM 差异表达的标准输入" },
+      { "target": "tran_edger", "viaType": "count-matrix", "note": "另一套负二项实现（exactTest 或拟似然框架）" },
+      { "target": "tran_batch_correct", "viaType": "count-matrix", "note": "存在批次效应时，可在计数矩阵层面校正（先确认批次与分组没有混杂）" }
+    ],
+    "usage": [
+      {
+        "label": "先看清注释结构，再决定 feature 类型与基因 ID",
+        "lang": "bash",
+        "code": "awk '$3 != \"#\" {print $3}' ref.gff | sort | uniq -c | sort -rn | head\ngrep -v '^#' ref.gff | head -3     # 看第九列用的是哪种属性名"
+      },
+      {
+        "label": "单样本计数（双端 + 链特异性 + 允许重叠基因）",
+        "lang": "bash",
+        "code": "featureCounts -T 8 -p --countReadPairs -s 2 \\\n  -t CDS -g locus_tag -O --fraction \\\n  -a ref.gff -o sample.counts.tsv sample.sorted.bam"
+      },
+      {
+        "label": "多样本一次计数（推荐：保证注释与参数完全一致）",
+        "lang": "bash",
+        "code": "featureCounts -T 8 -p --countReadPairs -s 2 -t CDS -g locus_tag \\\n  -a ref.gff -o all_samples.counts.tsv 02_align/*.sorted.bam\ncolumn -t all_samples.counts.summary | head"
+      }
+    ],
+    "recipes": {
+      "bash": "featureCounts -T ${THREADS} -p --countReadPairs -s ${STRAND} \\\n  -t ${FEATURE_TYPE} -g ${GENE_ATTR} \\\n  -a ${REF_GFF} -o 03_counts/all_samples.counts.tsv \\\n  02_align/*.sorted.bam",
+      "python": "bams = sorted(str(p) for p in ALIGN_DIR.glob(\"*.sorted.bam\"))\nrun([\"featureCounts\", \"-T\", str(THREADS), \"-p\", \"--countReadPairs\",\n     \"-s\", str(STRAND), \"-t\", FEATURE_TYPE, \"-g\", GENE_ATTR,\n     \"-a\", str(REF_GFF), \"-o\", str(COUNT_DIR / \"all_samples.counts.tsv\"),\n     *bams])"
+    },
+    "params": [
+      { "flag": "-t / -g", "default": "-t exon -g gene_id", "note": "必须按注释文件的实际内容改（细菌常见为 CDS + locus_tag，或 gene + ID）；用错会导致计数为 0 或只统计到部分基因" },
+      { "flag": "-s", "default": "0（非链特异）", "note": "0=不区分链，1=正向链，2=反向链；dUTP 建库通常对应 2。写错不会报错，但计数会系统偏向一侧" },
+      { "flag": "-p / --countReadPairs", "default": "关闭", "note": "双端数据必须加 -p；「按 read 还是按 fragment 计数」由 --countReadPairs 控制，不同版本默认行为不同（以官方文档为准），全项目必须统一" },
+      { "flag": "-O / --fraction", "default": "关闭", "note": "允许把落在多个基因上的读长分配给所有重叠基因；--fraction 用分数计数避免重复计数偏倚。会让计数变成小数，DESeq2 可以接受（tximport 路线也是估计计数），但必须在方法里说明" },
+      { "flag": "-M / --minMQS", "default": "0", "note": "最小比对质量；提高它会丢掉多重比对读长，等于在计数阶段隐式做了分配决策。先看清多重比对占多少，再决定是否设置" },
+      { "flag": "-T", "default": "1", "note": "线程数；批量计数时几乎总该设置，否则会白等很久" }
+    ],
+    "pitfalls": [
+      "计数矩阵必须是整数计数。不要把 TPM/FPKM 送进 DESeq2/edgeR：这两个模型依赖原始计数的方差结构，输入已归一化的连续值会让离散度估计失效，得到的 p 值不可信。",
+      "重叠基因与操纵子会让读长变成 ambiguous，默认行为是不计入任何基因。这会制造「某些基因计数极低甚至全零」的假象；是否允许一读多基因必须在方法里显式说明，因为它牺牲了计数之间的独立性。",
+      "链特异性写反是最隐蔽的错误之一。流程能跑完、矩阵也非空，但某一链方向的计数被系统性高估。核查方式是用两种设置各跑一次，正确设置下 Assigned 比例明显更高。",
+      "一定要读汇总文件。除 Assigned 之外，Unassigned_NoFeatures（比对到参考但不在注释里，通常是 rRNA 残留、UTR/基因间区或注释缺失）、Unassigned_Ambiguity（重叠基因）、Unassigned_MultiMapping 的相对大小能直接指出上游哪一步有问题。",
+      "不同样本的注释与参数必须完全一致。给 featureCounts 一次传入所有 BAM 比逐样本计数再合并更安全：后者很容易把不同 feature 类型或不同 GFF 版本的结果拼在一起，而这种错误在矩阵里完全看不出来。",
+      "合并样本表时必须按样本名而不是按列位置连接。featureCounts 按命令行里 BAM 的顺序排列列，一旦顺序错位，所有下游结论都会错，而且不会有任何报错。"
+    ],
+    "related": [
+      { "id": "tran_hisat_align", "note": "上游；BAM 必须按坐标排序并建索引" },
+      { "id": "tran_salmon_quant", "note": "另一条定量路线；两者的基因水平结果应当能互相印证" },
+      { "id": "tran_deseq2", "note": "计数矩阵的主要消费者" },
+      { "id": "tran_edger", "note": "另一种差异表达实现，同样以计数矩阵为输入" }
+    ],
+    "docs": [
+      { "label": "第 9 章 转录组与差异表达", "path": "docs/guidebook/09-transcriptome-differential-expression.md" }
+    ]
+  },
+  {
+    "id": "tran_salmon_quant",
+    "name": "转录本定量 (Salmon / kallisto)",
+    "category": "transcriptome",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["transcriptomics"],
+    "tags": ["rna-seq", "定量", "salmon", "kallisto", "tpm", "多映射", "细菌"],
+    "summary": "不依赖比对的转录本定量，输出估计计数与 TPM",
+    "what": [
+      "这一步在做什么：Salmon 与 kallisto 属于不依赖比对的定量工具。它们把读长拆成 k-mer，直接在转录本序列上寻找匹配，再用 EM 算法把多映射读长按概率分摊到各个转录本，最后输出每个转录本的估计计数（numReads）与 TPM。相比比对路线，它省掉了生成与排序 BAM 的开销，速度快很多；更重要的是，多映射处理是显式建模的概率问题，这在细菌里很有价值——重叠基因、旁系同源基因与可移动元件让「这条读长属于谁」本来就不是非黑即白。两者思路相近：Salmon 做选择性比对后 EM，kallisto 用伪比对确定等价类后 EM，速度更快、对有效长度估计的依赖略有不同。",
+      "细菌用这条路线的两个前提。第一，参考必须是转录本核酸序列而不是基因组：细菌注释通常每个基因只有一个转录本，isoform 分配的核心优势用不上，但你仍需要一份基因序列 FASTA（一般来自注释产物的 CDS 文件）。第二，CDS 序列不含 UTR 与操纵子间区：如果建库是 rRNA 去除的全长 mRNA 测序，文库里有相当一部分读长来自 UTR、操纵子间隔区、以及未注释的小 RNA 与非编码 RNA，这些读长在 CDS-only 参考里找不到位置，会被记为未匹配。因此这条路线的匹配率天然低于真核，不能拿真核的经验阈值判断数据好坏。",
+      "结果怎么用：numReads 是估计值（可能不是整数），应当通过 tximport / tximeta 连同平均转录本长度一起交给 DESeq2 或 edgeR，让模型把长度偏倚作为偏移量处理；直接把 numReads 或 TPM 当计数喂进去会引入系统性偏差。只想要基因水平结果时，可以用 Salmon 的基因映射选项在定量阶段就把转录本计数合并到基因，或在 R 侧用转录本到基因的对应表汇总。无论走哪条路线，都建议把基因水平结果与 featureCounts 的结果对比一次：差异特别大的基因通常正是重叠或多映射的那些，值得单独检查。"
+    ],
+    "inputs": [
+      { "type": "clean-reads", "name": "去 rRNA 后的读长 (R1/R2)", "required": true, "note": "不去 rRNA 会让 TPM 被 rRNA 主导，估计计数也失去意义" },
+      { "type": "cds-fasta", "name": "转录本 / 基因核酸序列 (FASTA)", "required": true, "note": "通常来自注释产物的 CDS 文件；序列 ID 必须与下游基因对应表一致" }
+    ],
+    "outputs": [
+      { "type": "count-matrix", "name": "基因（或转录本）水平估计计数", "ext": ".counts.tsv", "note": "numReads 经基因映射或 tximport 汇总；不是整数，但可直接进入 DESeq2/edgeR" },
+      { "type": "tsv-table", "name": "转录本水平定量结果", "ext": ".quant.sf", "note": "含 TPM 与 numReads；保留它以便随时回到转录本层面核对" },
+      { "type": "log-report", "name": "匹配率与文库类型统计", "ext": ".quant.log", "note": "含读长匹配比例与文库类型判定结果；文库类型判错时数值会在这里露出来" }
+    ],
+    "provides": [
+      { "tool": "Salmon", "version": "1.10.x", "access": "cli", "install": "conda", "note": "选择性比对 + EM；支持在定量阶段直接输出基因水平结果" },
+      { "tool": "kallisto", "version": "0.5x", "access": "cli", "install": "conda", "note": "伪比对 + EM；速度更快，定量模型与 Salmon 略有差异" },
+      { "tool": "tximport", "version": "1.3x", "access": "r-api", "install": "cran", "note": "把转录本水平定量汇总成基因水平并保留长度偏移；DESeq2/edgeR 的推荐入口" }
+    ],
+    "feeds": [
+      { "target": "tran_deseq2", "viaType": "count-matrix", "note": "估计计数 + 长度偏移可直接进入负二项模型" },
+      { "target": "tran_edger", "viaType": "count-matrix", "note": "同样可导入，但要注意估计计数不是整数" },
+      { "target": "tran_batch_correct", "viaType": "count-matrix", "note": "需要批次校正时，先汇总到基因水平再处理" }
+    ],
+    "usage": [
+      {
+        "label": "建索引 + 定量（最常用）",
+        "lang": "bash",
+        "code": "salmon index -t cds.fa -i salmon_index -k 31\n\nsalmon quant -i salmon_index -l A \\\n  -1 nonrrna_R1.fq.gz -2 nonrrna_R2.fq.gz -p 8 \\\n  -o quant/sample"
+      },
+      {
+        "label": "在定量阶段直接得到基因水平结果",
+        "lang": "bash",
+        "code": "# gene_map.tsv 为两列：转录本 ID <tab> 基因 ID\nsalmon quant -i salmon_index -l A \\\n  -1 nonrrna_R1.fq.gz -2 nonrrna_R2.fq.gz -p 8 \\\n  -g gene_map.tsv -o quant/sample_genelevel"
+      },
+      {
+        "label": "R 侧导入（推荐路线：保留长度偏移）",
+        "lang": "r",
+        "code": "library(tximport)\nfiles <- file.path(\"quant\", samples, \"quant.sf\")\nnames(files) <- samples\ntxi <- tximport(files, type = \"salmon\", tx2gene = tx2gene)\ndds <- DESeqDataSetFromTximport(txi, colData = coldata, design = ~ condition)"
+      }
+    ],
+    "recipes": {
+      "bash": "salmon quant -i ${SALMON_INDEX} -l A \\\n  -1 01_clean/${SAMPLE}_R1.nonrrna.fq.gz \\\n  -2 01_clean/${SAMPLE}_R2.nonrrna.fq.gz \\\n  -p ${THREADS} -o 04_quant/${SAMPLE}",
+      "r": "library(tximport)\nfiles <- file.path(QUANT_DIR, samples, \"quant.sf\")\nnames(files) <- samples\ntxi <- tximport(files, type = \"salmon\", tx2gene = read.delim(\"tx2gene.tsv\", header = FALSE))"
+    },
+    "params": [
+      { "flag": "salmon index -k", "default": "31", "note": "k-mer 长度；必须小于最短转录本长度。细菌 CDS 普遍较长通常没问题，但短基因（< 100 bp）较多时要调小，否则这些基因无法被定量" },
+      { "flag": "salmon quant -l", "default": "A（自动检测）", "note": "文库类型；小样本或链特异性不标准时可能判错，必须回看输出里的文库类型统计并与预期链型比例核对（输出文件与格式以官方文档为准）" },
+      { "flag": "salmon quant -g / --geneMap", "default": "无", "note": "提供转录本到基因的对应表后额外输出基因水平结果；细菌常常直接从基因水平解读" },
+      { "flag": "salmon quant --gcBias / --seqBias", "default": "关闭", "note": "GC 与序列偏好校正；开启会明显增加时间与内存。是否开启应依据数据质量与样本量（以官方文档为准），但同一次比较里所有样本必须一致" },
+      { "flag": "kallisto quant -b", "default": "0", "note": "bootstrap 重采样次数；只有需要用下游不确定性估计工具时才需要，计数路线设 0 即可，否则耗时成倍增加" },
+      { "flag": "tximport type", "default": "无", "note": "必须与定量工具一致（salmon / kallisto）；写错会让长度偏移与计数都对不上，而 R 不会报错" }
+    ],
+    "pitfalls": [
+      "CDS-only 参考会系统性丢掉 UTR 与基因间区读长。细菌 mRNA 有 5' UTR、操纵子间隔区与大量小 RNA，这些读长在参考里没有位置，表现为匹配率偏低。这不是数据质量问题；应与 featureCounts 的 Unassigned_NoFeatures 对照，而不是直接判定测序失败。",
+      "TPM 不能直接送进 DESeq2/edgeR。要么用 tximport 把估计计数与平均转录本长度一起导入，要么用基因水平结果；把 TPM 当计数的做法在文献里很常见，但会让高表达的短基因被系统性高估。",
+      "「一个基因一条转录本」的注释意味着转录本水平的收益有限。如果每个基因只有一个转录本，isoform 分配能力用不上，这套路线的主要价值变成「快 + 对多映射的概率分摊」；据此判断是否值得切换，而不是因为工具更新就换。",
+      "自动文库类型检测在小数据量下会判错，后果是定量结果整体偏低（大量读长被当成不符合预期链型的噪声），而不是报错。跑完必须核对文库类型统计。",
+      "同源基因家族会让读长被「分摊」。细菌的旁系同源基因、可移动元件与 rRNA 残余拷贝之间 k-mer 高度相似，EM 会把读长切给多个基因，相关基因的估计值同时被压低；这类基因（往往正是研究对象）应当用比对路线的结果交叉确认。",
+      "索引与定量设置必须一起记录。k-mer 长度、是否开启偏好校正都会改变 numReads，换设置就要重建索引，不同设置下的结果不能直接合并；把这些写进索引目录名或配套说明里。"
+    ],
+    "related": [
+      { "id": "tran_featurecounts", "note": "比对计数路线；两条路线的基因水平结果应互相印证" },
+      { "id": "tran_rrna_remove", "note": "上游；不去 rRNA 会让 TPM 被 rRNA 主导" },
+      { "id": "tran_deseq2", "note": "通过 tximport 消费估计计数" },
+      { "id": "tran_edger", "note": "另一种下游差异表达实现" }
+    ],
+    "docs": [
+      { "label": "第 9 章 转录组与差异表达", "path": "docs/guidebook/09-transcriptome-differential-expression.md" }
+    ]
+  },
+  {
+    "id": "tran_deseq2",
+    "name": "差异表达分析 (DESeq2)",
+    "category": "transcriptome",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["transcriptomics"],
+    "tags": ["rna-seq", "差异表达", "deseq2", "负二项", "重复数", "归一化"],
+    "summary": "负二项 GLM 差异表达分析，含离散度与 LFC 收缩",
+    "what": [
+      "这一步在做什么：DESeq2 对每个基因拟合负二项广义线性模型，把「计数数据的方差随均值增长」显式写进模型——均值为 μ 的基因，方差被建模为 μ + α·μ²，其中 α 是该基因的离散度。它从全部基因借信息（经验贝叶斯收缩）来稳定单个基因的离散度估计，这正是每组只有 3 个重复时仍能给出可用结果的原因。差异检验用 Wald 检验（或似然比检验），并对 p 值做多重校正得到 padj。",
+      "细菌数据上的三个前置决策。第一是生物学重复数：n=3 是底线而不是理想值。n=2 时组内变异几乎没有信息，离散度基本由先验撑着，只有效应量极大的基因能显著；n=1 时无法估计组内变异，分析根本不该开始。想检测 2 倍以内的变化、或希望结果在另一个实验室可重复，应当从设计阶段就安排 4–6 个重复，而不是事后用统计技巧弥补。第二是低表达基因过滤：一个基因如果所有样本加起来只有十几个计数，它几乎不可能在多重校正后显著，却会占用检验名额、拉低整体的校正后 p 值分布。做法是建模前先按「至少在若干个样本中 CPM 超过阈值」或「总计数达到下限」过滤，并把规则写进方法——绝不能看完结果再回头调阈值。第三是归一化因子（size factor）的估计：DESeq2 默认用 median-of-ratios，它假设「大多数基因不差异表达」。细菌基因组只有几千个基因，若样本间存在成片的差异表达（一个操纵子、一个前噬菌体或一个毒力岛被整体诱导），或者 rRNA 残留使少数基因占据大部分读长，这个假设就会被破坏。",
+      "结果怎么用：差异表至少应包含 baseMean、log2FoldChange、lfcSE、pvalue、padj 五列，并且必须说明对比的是什么（contrast）与设计公式是什么。padj 是判断显著性的依据，pvalue 主要用于排序与诊断（p 值直方图是判断模型是否合理最快的手段）。收缩后的 log2FC 适合排序与可视化，但 p 值仍来自未收缩的模型，两者不要混为一谈。批次应写进设计公式（如 ~ batch + condition）来吸收；如果批次与分组完全混杂，模型矩阵会不满秩，DESeq2 会直接报错——这时唯一正确的做法是回到实验设计，而不是删掉批次项。"
+    ],
+    "inputs": [
+      { "type": "count-matrix", "name": "基因水平计数矩阵", "required": true, "note": "整数计数；来自 featureCounts，或由 tximport 汇总的 Salmon 估计计数" },
+      { "type": "tsv-table", "name": "样本表（分组、批次、协变量）", "required": true, "note": "必须用样本名与计数矩阵一一对应；分组不要只写数字编码而不记录含义" }
+    ],
+    "outputs": [
+      { "type": "stats-result", "name": "差异表达结果表", "ext": ".deseq2.tsv", "note": "含 baseMean / log2FoldChange / lfcSE / stat / pvalue / padj" },
+      { "type": "tsv-table", "name": "归一化后的表达矩阵", "ext": ".normalized_counts.tsv", "note": "用于热图与样本间比较；不要拿它做假设检验" },
+      { "type": "gene-list", "name": "显著差异基因列表", "ext": ".sig_genes.txt", "note": "按 padj 与 |log2FC| 阈值筛出，供富集分析使用；阈值必须写进方法" }
+    ],
+    "provides": [
+      { "tool": "DESeq2", "version": "1.4x", "access": "r-api", "install": "cran", "note": "Bioconductor；版本必须与 R / Bioconductor 版本匹配" },
+      { "tool": "apeglm", "version": "1.2x", "access": "r-api", "install": "cran", "note": "lfcShrink 的 apeglm 方法所需的收缩估计包" },
+      { "tool": "tximport", "version": "1.3x", "access": "r-api", "install": "cran", "note": "从 Salmon/kallisto 结果导入估计计数（走定量路线时必需）" }
+    ],
+    "feeds": [
+      { "target": "tran_go_enrich", "viaType": "gene-list", "note": "把显著基因送去富集分析（注意背景基因集要另行提供）" },
+      { "target": "viz_volcano_ma", "viaType": "stats-result", "note": "火山图与 MA 图直接读差异表" },
+      { "target": "py_export_report", "viaType": "stats-result", "note": "整理成交付用的结果表与汇总" }
+    ],
+    "usage": [
+      {
+        "label": "标准流程：建模 → 检验 → 收缩",
+        "lang": "r",
+        "code": "library(DESeq2)\ncounts  <- read.delim(\"all_samples.counts.tsv\", row.names = 1)\ncoldata <- read.delim(\"samples.tsv\", row.names = 1)\n\ndds <- DESeqDataSetFromMatrix(counts, coldata, design = ~ batch + condition)\ndds <- dds[rowSums(counts(dds)) >= 10, ]          # 先过滤低表达基因，再看结果\ndds <- DESeq(dds)\n\nres    <- results(dds, contrast = c(\"condition\", \"treat\", \"ctrl\"), alpha = 0.05)\nresLfc <- lfcShrink(dds, coef = \"condition_treat_vs_ctrl\", type = \"apeglm\")\nsummary(res)"
+      },
+      {
+        "label": "检查归一化假设：size factor 与对照基因",
+        "lang": "r",
+        "code": "# size factor 在样本间差异很大，或某个样本明显离群，都要先查原因再往下做\nsizeFactors(dds)\n\n# 已知一组不差异表达的管家基因时，用它重新估计更稳\ndds <- estimateSizeFactors(dds, controlGenes = housekeeping_ids)"
+      },
+      {
+        "label": "诊断：p 值分布与 MA 图",
+        "lang": "r",
+        "code": "hist(res$pvalue, breaks = 50)   # 理想情况下富集在 0 附近，整体分布平坦\nplotMA(res, ylim = c(-4, 4))     # 看是否存在依赖表达量的系统偏差"
+      },
+      {
+        "label": "导出差异表",
+        "lang": "r",
+        "code": "res_df <- as.data.frame(res)\nres_df$gene_id <- rownames(res_df)\nwrite.table(res_df[order(res_df$padj), ], \"deseq2_results.tsv\",\n            sep = \"\\t\", quote = FALSE, row.names = FALSE)"
+      }
+    ],
+    "recipes": {
+      "r": "library(DESeq2)\ncounts  <- read.delim(file.path(COUNT_DIR, \"all_samples.counts.tsv\"), row.names = 1)\ncoldata <- read.delim(file.path(META_DIR, \"samples.tsv\"), row.names = 1)\ndds <- DESeqDataSetFromMatrix(counts, coldata, design = ~ batch + condition)\ndds <- dds[rowSums(counts(dds)) >= 10, ]\ndds <- DESeq(dds)\nres <- results(dds, contrast = c(\"condition\", \"treat\", \"ctrl\"), alpha = 0.05)\nwrite.table(as.data.frame(res), file.path(RES_DIR, \"deseq2_results.tsv\"),\n            sep = \"\\t\", quote = FALSE)"
+    },
+    "params": [
+      { "flag": "design", "default": "~ condition", "note": "把批次等协变量写进公式（~ batch + condition）；批次与分组完全混杂时模型矩阵不满秩，DESeq2 会报错，这是设计问题而非参数问题" },
+      { "flag": "alpha", "default": "0.05", "note": "独立过滤与结果表使用的 FDR 阈值；它同时影响独立过滤保留多少基因，改动它会改变被过滤掉的基因集合" },
+      { "flag": "results(independentFiltering)", "default": "TRUE", "note": "默认开启的独立过滤会按平均表达量自动优化检验效能；它不能替代你在建模前主动做的低表达基因过滤" },
+      { "flag": "lfcShrink type", "default": "normal", "note": "apeglm 收缩更准确但要求用 coef 而不是 contrast 指定对比；收缩后的 log2FC 不能用于假设检验" },
+      { "flag": "estimateSizeFactors type", "default": "ratio", "note": "ratio 即 median-of-ratios（假设多数基因不差异）；当大量基因为零或存在成片差异表达时，poscounts / iterate 通常更稳健" },
+      { "flag": "minReplicatesForReplace", "default": "7", "note": "自动替换离群样本所需的最小重复数；每组只有 3 个重复时该功能不生效，离群样本必须靠 sizeFactors 与样本聚类自己发现" }
+    ],
+    "pitfalls": [
+      "n=2 不等于「做了两个重复」。离散度是所有后续推断的基础，n=2 时组内变异只有极少信息，只有效应极大的基因能显著；n=3 是能跑出可信结果的下限，想检测小幅变化请用 4–6 个重复。",
+      "不做低表达基因过滤，结果表里几乎什么都没有。低计数基因的检验统计量离散、p 值分布平坦，多重校正后还要占用显著名额。过滤规则必须在建模前定好并写进方法；看完结果再调阈值属于 p-hacking。",
+      "size factor 的假设在细菌里未必成立。median-of-ratios 要求「大多数基因不差异表达」，但前噬菌体诱导、毒力岛激活、rRNA 残留都可能让少数基因占据大部分读长。先看 sizeFactors 是否在样本间差异异常，必要时用 controlGenes 指定一组管家基因，或换用 edgeR 的 TMM 做敏感性对比。",
+      "不要把 lfcShrink 之后的 log2FC 当作检验依据。收缩改变的是效应量估计，p 值仍来自未收缩的模型；报告里两个数必须写清来源。",
+      "显著基因列表不是结论。padj < 0.05 只说明「在给定模型下不易由噪声产生」；效应大小、重复间一致性与独立实验验证才决定这个基因值不值得追。",
+      "样本表的三类错误都不会让 DESeq2 报错，却会让整份结果失去意义：分组用数字编码且不记录含义、样本名顺序与矩阵列不一致、矩阵里混入重复样本。建模前先打印 colData 与 counts 的列名并逐一对齐。"
+    ],
+    "related": [
+      { "id": "tran_edger", "note": "另一套负二项实现；拟似然框架对假阳性的控制通常更严格" },
+      { "id": "tran_featurecounts", "note": "计数矩阵的主要来源" },
+      { "id": "tran_salmon_quant", "note": "另一条计数来源；用 tximport 导入" },
+      { "id": "tran_batch_correct", "note": "批次处理的另一条思路（先校正矩阵）；不要与「把批次写进设计」叠加使用" },
+      { "id": "viz_volcano_ma", "note": "差异表的常规可视化" }
+    ],
+    "docs": [
+      { "label": "第 9 章 转录组与差异表达", "path": "docs/guidebook/09-transcriptome-differential-expression.md" }
+    ]
+  },
+  {
+    "id": "tran_edger",
+    "name": "差异表达分析 (edgeR)",
+    "category": "transcriptome",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["transcriptomics"],
+    "tags": ["rna-seq", "差异表达", "edger", "拟似然", "tmm", "过滤"],
+    "summary": "负二项与拟似然框架的差异表达分析工具包",
+    "what": [
+      "这一步在做什么：edgeR 与 DESeq2 同属负二项家族，但提供两套风格不同的检验框架。最简单的 exactTest 直接在两组之间做条件似然检验（负二项版本的精确检验），适合「两组、无协变量」的简单比较；更通用的是 glmQLFit + glmQLFTest 的拟似然（quasi-likelihood, QL）框架，它不假设离散度已被准确估计，而是额外引入基因级的方差膨胀因子来吸收离散度估计误差，因此在重复数少、离散度估计不稳时对假阳性的控制通常更好。",
+      "归一化与过滤：edgeR 默认用 TMM（trimmed mean of M-values）而不是 DESeq2 的 median-of-ratios。TMM 先指定一个参考样本，按 M 值（表达量比值的对数）与 A 值（平均表达量）做双端修剪，再用剩余基因计算缩放因子。它对「少数基因极端高表达」的抵抗力更强，因此在细菌 RNA-seq（rRNA 残留、高表达操纵子）里常被优先选择。不论用哪种方法，归一化的前提都是「大部分基因在样本间不做大幅变化」，这个假设必须结合实验设计来审视。edgeR 还自带 filterByExpr：根据设计矩阵、样本量与 CPM 阈值自动判断每个基因是否保留，比手工定 rowSums 阈值更有依据，但必须在设计矩阵确定之后、任何统计检验之前运行。",
+      "与 DESeq2 怎么选：简单两组比较、样本量很小、最担心假阳性时，edgeR 的 QL 框架是不错的选择；需要连续变量、多因素设计、或希望用收缩后的 log2FC 做排序与可视化时，DESeq2 的默认流程更省事。两者在多数数据集上给出一致的显著基因集合，不一致的部分通常集中在低表达基因与离散度估计困难的地方——如果结论对工具选择敏感，正确做法是把两套结果都做一遍并报告交集，而不是挑一个更好看的。"
+    ],
+    "inputs": [
+      { "type": "count-matrix", "name": "基因水平计数矩阵", "required": true, "note": "整数计数；列名必须是样本名" },
+      { "type": "tsv-table", "name": "样本表（分组与协变量）", "required": true, "note": "分组必须是因子而不是数字；有批次/时间点时必须用它构建设计矩阵" }
+    ],
+    "outputs": [
+      { "type": "stats-result", "name": "差异表达结果表", "ext": ".edger.tsv", "note": "含 logFC / logCPM / F 或 LR 统计量 / PValue / FDR" },
+      { "type": "tsv-table", "name": "归一化因子与表达矩阵", "ext": ".edger_norm.tsv", "note": "含 TMM 缩放因子与 log2 CPM；用于核对归一化是否合理" },
+      { "type": "gene-list", "name": "显著差异基因列表", "ext": ".sig_genes.txt", "note": "按 FDR 与 |logFC| 阈值筛出，供富集分析使用" }
+    ],
+    "provides": [
+      { "tool": "edgeR", "version": "4.2.x", "access": "r-api", "install": "cran", "note": "Bioconductor；exactTest 与拟似然（QL）两套框架" },
+      { "tool": "limma", "version": "3.6x", "access": "r-api", "install": "cran", "note": "limma-voom 是另一条常用路线：在 log2 CPM 上做加权线性模型，设计复杂时很灵活" }
+    ],
+    "feeds": [
+      { "target": "tran_go_enrich", "viaType": "gene-list", "note": "把显著基因送入富集分析" },
+      { "target": "viz_volcano_ma", "viaType": "stats-result", "note": "火山图与 MA 图" },
+      { "target": "py_export_report", "viaType": "stats-result", "note": "整理成交付用的结果表" }
+    ],
+    "usage": [
+      {
+        "label": "两组简单比较：exactTest",
+        "lang": "r",
+        "code": "library(edgeR)\ncounts <- read.delim(\"all_samples.counts.tsv\", row.names = 1)\ngroup  <- factor(c(\"ctrl\",\"ctrl\",\"ctrl\",\"treat\",\"treat\",\"treat\"))\n\ny <- DGEList(counts = counts, group = group)\nkeep <- filterByExpr(y)                 # 必须在设计确定之后、检验之前\ny <- y[keep, , keep.lib.sizes = FALSE]\ny <- calcNormFactors(y, method = \"TMM\")\ny <- estimateDisp(y)\net  <- exactTest(y, pair = c(\"ctrl\", \"treat\"))\ntop <- topTags(et, n = Inf, sort.by = \"PValue\")"
+      },
+      {
+        "label": "多因素设计：拟似然框架",
+        "lang": "r",
+        "code": "design <- model.matrix(~ batch + group)\ny   <- estimateDisp(y, design)\nfit <- glmQLFit(y, design)\nqlf <- glmQLFTest(fit, coef = \"grouptreat\")\ntopTags(qlf, n = 20)"
+      },
+      {
+        "label": "看离散度：判断结果是否可信",
+        "lang": "r",
+        "code": "y$common.dispersion   # 共同离散度\nplotBCV(y)            # 生物变异系数随表达量的变化"
+      }
+    ],
+    "recipes": {
+      "r": "library(edgeR)\ncounts <- read.delim(file.path(COUNT_DIR, \"all_samples.counts.tsv\"), row.names = 1)\ngroup  <- factor(coldata$condition)\ny <- DGEList(counts = counts, group = group)\ny <- y[filterByExpr(y), , keep.lib.sizes = FALSE]\ny <- calcNormFactors(y, method = \"TMM\")\ny <- estimateDisp(y)\net <- exactTest(y, pair = levels(group))\nwrite.table(topTags(et, n = Inf)$table, file.path(RES_DIR, \"edger_results.tsv\"),\n            sep = \"\\t\", quote = FALSE)"
+    },
+    "params": [
+      { "flag": "filterByExpr", "default": "无", "note": "按设计矩阵与样本量自动过滤低表达基因；必须在设计矩阵确定后、检验之前运行，不同设计会得到不同的保留集合" },
+      { "flag": "calcNormFactors method", "default": "TMM", "note": "TMM 对少数极高表达基因更稳健；可用 TMMwsp 或 RLE（等价于 DESeq2 的中位数法）做敏感性对比" },
+      { "flag": "estimateDisp robust", "default": "FALSE", "note": "开启稳健估计可降低离群基因对离散度的影响；样本数很少时效果有限" },
+      { "flag": "glmQLFit legacy / abundance.trend", "default": "FALSE", "note": "控制是否让离散度趋势依赖表达丰度；基因数多、动态范围大时值得评估（以官方文档为准）" },
+      { "flag": "exactTest", "default": "—", "note": "只适用于两组、无协变量的比较；有批次或时间序列时必须改用 GLM/QL 框架" },
+      { "flag": "glmTreat lfc", "default": "0", "note": "检验「效应量大于某个阈值」而不是「不等于 0」；想滤掉微小但显著的差异时很有用" }
+    ],
+    "pitfalls": [
+      "exactTest 不支持协变量。把批次、时间点写进设计后必须换用 glmQLFit/glmLRT；否则你会在「已经校正了批次」的错觉下得到混杂的结果。",
+      "TMM 与 DESeq2 的 size factor 会给出不同的缩放因子，同一份数据在两套流程下的显著基因集合因此不完全相同。这不是 bug；重要的是在同一篇分析里保持一致，并说明为什么选它。",
+      "filterByExpr 的保留集合取决于设计矩阵。先过滤、后改设计（例如合并两个组）会让过滤标准失效；正确顺序是定设计 → 过滤 → 归一化 → 估计离散度 → 检验。",
+      "不要用 RPKM/TPM 作为 edgeR 的输入。edgeR 的模型是为计数设计的；如果手上只有归一化表达值，应改用 limma 的线性模型路线，而不是硬套负二项模型。",
+      "「显著基因特别少」通常先怀疑过滤过严或离散度估计偏大，而不是断言生物学上没有差异。先看 BCV 图与离散度数值，再考虑调整设计或重复数。",
+      "全零基因要过滤掉，但不要把「所有样本里都为零」当成「处理后下调」。这类基因在数据里没有任何信息，把它们算进差异基因列表是最常见的定量错误之一。"
+    ],
+    "related": [
+      { "id": "tran_deseq2", "note": "另一套负二项实现；设计复杂、需要 LFC 收缩时通常更省事" },
+      { "id": "tran_featurecounts", "note": "计数矩阵的主要来源" },
+      { "id": "tran_salmon_quant", "note": "另一条计数来源；估计计数不是整数" },
+      { "id": "r_limma_stats", "note": "线性模型路线（含 voom）的更细用法" },
+      { "id": "viz_volcano_ma", "note": "差异表的常规可视化" }
+    ],
+    "docs": [
+      { "label": "第 9 章 转录组与差异表达", "path": "docs/guidebook/09-transcriptome-differential-expression.md" }
+    ]
+  },
+  {
+    "id": "tran_batch_correct",
+    "name": "批次效应校正 (ComBat-seq / limma)",
+    "category": "transcriptome",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["transcriptomics"],
+    "tags": ["批次效应", "combat-seq", "limma", "pca", "协变量", "混杂"],
+    "summary": "在计数矩阵层面校正批次效应，并验证校正效果",
+    "what": [
+      "这一步在做什么：批次效应是与生物学分组无关、但按实验批次系统性变化的技术变异——不同批次的试剂、操作者、测序 lane、RNA 提取时间都会引入。它的危害不是让结果更「吵」，而是让样本按批次聚类：要么与分组同向时制造假阳性，要么吃掉生物学方差、把真实差异掩盖掉。ComBat-seq 是专为 RNA-seq 计数设计的校正方法，用负二项回归估计并移除批次效应，输出仍然是整数计数（保留计数分布），因此可以继续交给 DESeq2/edgeR。limma 的 removeBatchEffect 走线性模型路线，输出连续值，只适合 PCA、聚类、热图这类探索性分析。",
+      "先判断「有没有」，再决定「要不要」。标准做法是用校正前的表达矩阵做 PCA 或层次聚类，看第一主成分是否与批次重合，或比较批内与批间的样本相关性。如果没有证据表明存在批次效应，强行校正只会引入新的噪声、降低检验效能。另外要注意批次的强度：批次与分组部分重合时（每个批次里都有各组样本，但比例不均），校正仍然可行，但检验效能会下降，这一点需要在方法里说明。",
+      "关键取舍：把批次放进模型公式，还是先校正矩阵？两者在统计上不等价。更推荐在差异表达分析时把批次作为协变量写进设计公式（DESeq2 的 ~ batch + condition，edgeR 的 model.matrix(~ batch + group)），让模型在估计生物学效应的同时吸收批次方差——这样不会人为改动计数，也不会重复扣除。矩阵校正适合「必须把所有样本放进同一张图比较」的场景（PCA、热图、聚类，或下游工具不支持协变量），但它会引入额外的估计不确定性，小样本下容易过度校正，把真实的分组差异一起抹平。最后一条铁律：批次与分组完全混杂（每个批次只有一种处理）时不能校正——软件会照常给出结果，但你无法区分批次效应与处理效应。"
+    ],
+    "inputs": [
+      { "type": "count-matrix", "name": "基因水平计数矩阵", "required": true, "note": "建议先做与差异分析一致的低表达过滤；把大量全零基因带进校正会让批次效应估计偏向噪声" },
+      { "type": "tsv-table", "name": "样本表（批次、分组与其他协变量）", "required": true, "note": "批次列必须如实记录，并保留批次编号与实验日期/操作者的对应关系" }
+    ],
+    "outputs": [
+      { "type": "count-matrix", "name": "校正后的计数矩阵", "ext": ".batch_corrected.tsv", "note": "ComBat-seq 输出仍为整数计数，可继续做差异分析；其他方法的连续值不要当计数使用" },
+      { "type": "tsv-table", "name": "批次效应评估表", "ext": ".batch_eval.tsv", "note": "含校正前后各样本的主成分坐标与批内/批间距离，用于确认校正有效且没有过度校正" }
+    ],
+    "provides": [
+      { "tool": "sva (ComBat-seq)", "version": "3.5x", "access": "r-api", "install": "cran", "note": "Bioconductor；comBat_seq() 直接接受计数矩阵与批次向量" },
+      { "tool": "limma", "version": "3.6x", "access": "r-api", "install": "cran", "note": "removeBatchEffect() 用于可视化前的校正；输出不是计数" },
+      { "tool": "RUVSeq", "version": "1.3x", "access": "r-api", "install": "cran", "note": "用管家基因或阴性对照基因估计不需要的变异因素；需要合适的对照基因" }
+    ],
+    "feeds": [
+      { "target": "tran_deseq2", "viaType": "count-matrix", "note": "校正后的整数计数可继续做差异表达（注意不要再把 batch 写进设计公式）" },
+      { "target": "tran_edger", "viaType": "count-matrix", "note": "同样可继续使用，前提是计数形式与校正方法匹配" },
+      { "target": "viz_ggplot2", "viaType": "tsv-table", "note": "把校正前后的样本分布画出来，确认校正有效且没有把分组差异一起抹掉" }
+    ],
+    "usage": [
+      {
+        "label": "先确认是否存在批次效应",
+        "lang": "r",
+        "code": "library(edgeR)\nlogcpm <- cpm(y, log = TRUE, prior.count = 2)\npca <- prcomp(t(logcpm))\nplot(pca$x[, 1], pca$x[, 2],\n     col = as.factor(coldata$batch), pch = 19,\n     xlab = \"PC1\", ylab = \"PC2\")\n# 第一主成分与批次高度重合，才值得做校正"
+      },
+      {
+        "label": "ComBat-seq：保留整数计数的校正",
+        "lang": "r",
+        "code": "library(sva)\ncorrected <- comBat_seq(as.matrix(counts),\n                        batch = coldata$batch,\n                        group = coldata$condition)   # 保护要研究的生物学分组"
+      },
+      {
+        "label": "limma：只为可视化做校正（结果不能用于检验）",
+        "lang": "r",
+        "code": "library(limma)\nlogcpm_nobatch <- removeBatchEffect(logcpm,\n                                    batch = coldata$batch,\n                                    design = model.matrix(~ condition, coldata))"
+      },
+      {
+        "label": "更推荐的路线：把批次写进设计公式",
+        "lang": "r",
+        "code": "# 不修改计数，让模型同时吸收批次方差\ndds <- DESeqDataSetFromMatrix(counts, coldata, design = ~ batch + condition)"
+      }
+    ],
+    "recipes": {
+      "r": "library(sva)\ncounts  <- as.matrix(read.delim(file.path(COUNT_DIR, \"all_samples.counts.tsv\"),\n                                row.names = 1))\ncoldata <- read.delim(file.path(META_DIR, \"samples.tsv\"), row.names = 1)\ncorrected <- comBat_seq(counts, batch = coldata$batch, group = coldata$condition)\nwrite.table(corrected, file.path(RES_DIR, \"batch_corrected.tsv\"), sep = \"\\t\", quote = FALSE)"
+    },
+    "params": [
+      { "flag": "comBat_seq group", "default": "NULL", "note": "把要保护的分组变量传进去，校正只在组内估计批次效应；不传会让生物学差异一起被扣除" },
+      { "flag": "comBat_seq full_mod", "default": "TRUE", "note": "是否在模型中包含分组协变量；设为 FALSE 时只做批次校正，更容易抹掉真实差异" },
+      { "flag": "removeBatchEffect 的 design", "default": "无", "note": "必须显式给出要保留的设计（如 ~ condition），否则会把生物学效应一并扣除；且结果只能用于可视化" },
+      { "flag": "低表达过滤", "default": "先过滤", "note": "校正前先做与差异分析一致的过滤；把大量全零基因带进校正会让批次效应估计偏向噪声" },
+      { "flag": "批次与分组的关系", "default": "—", "note": "完全混杂时无法校正；部分混杂时校正后检验效能会下降，需要在方法里说明" }
+    ],
+    "pitfalls": [
+      "最危险的情况是批次与分组完全混杂：每个批次只有一种处理。任何校正方法都会给出看起来正常的矩阵，但生物学效应与批次效应在数学上不可分离——这不是调参能解决的问题，只能回到实验设计或补做样本。",
+      "removeBatchEffect 的输出不是计数，不能拿去跑 DESeq2/edgeR。它改变了数据的分布与方差结构，只适合画图；把它当作「已校正的表达矩阵」继续做统计检验是常见的严重误用。",
+      "先校正矩阵、再把 batch 写进设计公式，等于校正两次。批次方差被重复扣除，真实差异会被压缩。要么把批次写进设计（推荐），要么先校正矩阵、再跑不含批次项的分析，两者不要叠加。",
+      "校正会引入新的不确定性，小样本时尤其容易过度校正。判断标准是「校正后样本是否按分组而不是按批次聚类」，同时要确认组间差异没有一起消失；如果校正后所有组都混在一起，很可能是校正过头了。",
+      "批次编号必须与真实来源对应并留档（测序批次、建库日期、lane、操作者）。只留一个 batch 1/2/3 的数字，事后既无法判断批次是否与某个已知技术因素重合，也无法在审稿人提问时解释。",
+      "不要为了让 PCA 好看而校正。如果批次并不影响你要检验的对比（各批次内各组都有样本、批次方差也不大），把批次作为协变量放进设计通常比矩阵校正更保守、也更可解释。"
+    ],
+    "related": [
+      { "id": "tran_deseq2", "note": "把批次写进设计公式的首选实现" },
+      { "id": "tran_edger", "note": "同样支持用协变量吸收批次方差" },
+      { "id": "tran_featurecounts", "note": "计数矩阵的来源；样本表与计数矩阵的对应关系在这里最容易出错" },
+      { "id": "r_limma_stats", "note": "limma 线性模型的用法细节" }
+    ],
+    "docs": [
+      { "label": "第 9 章 转录组与差异表达", "path": "docs/guidebook/09-transcriptome-differential-expression.md" }
+    ]
+  },
+  {
+    "id": "tran_go_enrich",
+    "name": "GO / 通路富集分析",
+    "category": "transcriptome",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["transcriptomics"],
+    "tags": ["富集", "go", "kegg", "clusterprofiler", "背景基因集", "gsea", "细菌"],
+    "summary": "用自定义注释做 GO/KEGG 富集，并控制背景偏差",
+    "what": [
+      "这一步在做什么：富集分析回答「有差异的那批基因，是否在某个功能类别里异常集中」。两条主流思路：ORA（过表达分析，把显著基因列表与背景基因集做超几何/Fisher 检验，clusterProfiler 的 enricher/enrichKEGG 属于这一类）与 GSEA（不设阈值，用全部基因按 log2FC 或统计量排序，检验某个基因集是否集中在排序顶端或底端）。显著基因只有十几个时 ORA 的统计量极不稳定，GSEA 通常更有信息量。",
+      "细菌富集与真核最大的差别：没有现成的物种注释包。真核可以直接用物种注释包拿到基因到 GO/KO 的映射，细菌必须自己构建「基因 → GO term / KEGG KO」的映射表，再以 TERM2GENE/TERM2NAME 的形式交给 clusterProfiler。可靠的映射来源是功能注释步骤的产物（eggNOG-mapper 的 GO 列、KofamScan 的 KO 号、InterProScan 的结构域注释），并且必须记录注释数据库的版本与日期。",
+      "背景基因集决定结果是否可信：正确的背景是「这次实验里有可能被检测到的所有基因」，也就是经过表达过滤后仍留在分析里的基因，而不是基因组的全部基因。用全基因组做背景，会把「本来就没表达、不可能进入差异列表」的基因算进分母，系统性高估显著性。此外 GO 是层级结构，父条目与子条目的 p 值高度相关，报告时应当做冗余削减（或用语义相似度聚类），说明富集到的是哪几个独立功能模块。多重校正同样适用：BH 校正后的 padj 才是判断依据，并建议叠加「命中基因数达到下限」这类可解释的门槛。"
+    ],
+    "inputs": [
+      { "type": "gene-list", "name": "显著差异基因列表", "required": true, "note": "通常是 padj < 0.05 且 |log2FC| 超过阈值的基因；阈值必须记录在方法里" },
+      { "type": "tsv-table", "name": "功能注释映射表（基因 → GO/KO）", "required": true, "note": "来自 eggNOG-mapper / KofamScan / InterProScan 的产物；基因 ID 体系必须与差异表一致" },
+      { "type": "stats-result", "name": "完整差异表（全部基因）", "required": false, "note": "做 GSEA 时需要；只做 ORA 可以不提供" }
+    ],
+    "outputs": [
+      { "type": "enrich-result", "name": "富集结果表", "ext": ".enrich.tsv", "note": "含条目 ID、描述、命中基因数、背景数、p 值与 padj" },
+      { "type": "tsv-table", "name": "背景与命中基因明细", "ext": ".enrich_genes.tsv", "note": "记录每个条目命中了哪些基因、背景集里有哪些基因，便于复核与画图" }
+    ],
+    "provides": [
+      { "tool": "clusterProfiler", "version": "4.1x", "access": "r-api", "install": "cran", "note": "ORA 与 GSEA 的统一入口；支持自定义 TERM2GENE，是细菌富集分析的主力" },
+      { "tool": "GO.db", "version": "3.1x", "access": "r-api", "install": "cran", "note": "GO 本体结构（层级与父子关系）；用于冗余削减与语义相似度计算" },
+      { "tool": "topGO", "version": "2.5x", "access": "r-api", "install": "cran", "note": "在 GO 层级结构内做检验，可减轻「父条目因基因数多而假显著」的问题" },
+      { "tool": "gprofiler2", "version": "0.2.x", "access": "r-api", "install": "cran", "note": "在线富集服务接口，便于快速核对；需要网络，而且底层数据库版本会随时间变化" }
+    ],
+    "feeds": [
+      { "target": "viz_ggplot2", "viaType": "enrich-result", "note": "把富集结果画成气泡图/条形图" },
+      { "target": "py_export_report", "viaType": "enrich-result", "note": "整理成交付用的富集结果表与说明" }
+    ],
+    "usage": [
+      {
+        "label": "自定义注释做 GO 富集（ORA）",
+        "lang": "r",
+        "code": "library(clusterProfiler)\n# gene2go.tsv 两列：GO ID <tab> 基因 ID\nterm2gene <- read.delim(\"gene2go.tsv\", header = FALSE,\n                        col.names = c(\"term\", \"gene\"))\nbg <- readLines(\"background_genes.txt\")   # 表达过滤后剩下的基因\n\nego <- enricher(gene = sig_genes, universe = bg,\n                TERM2GENE = term2gene,\n                pvalueCutoff = 0.05, qvalueCutoff = 0.05)"
+      },
+      {
+        "label": "GSEA：不设阈值，用全部基因排序",
+        "lang": "r",
+        "code": "geneList <- res_df$log2FoldChange\nnames(geneList) <- res_df$gene_id\ngeneList <- sort(geneList, decreasing = TRUE)\n\negse <- GSEA(geneList, TERM2GENE = term2gene, pvalueCutoff = 0.05)"
+      },
+      {
+        "label": "KEGG：细菌常用 KO 层面",
+        "lang": "r",
+        "code": "# 没有对应物种三字母代码时用 organism = \"ko\"（KEGG Orthology 层面）\nkk <- enrichKEGG(gene = ko_ids, organism = \"ko\", universe = bg_ko)"
+      }
+    ],
+    "recipes": {
+      "r": "library(clusterProfiler)\nterm2gene <- read.delim(file.path(ANNO_DIR, \"gene2go.tsv\"), header = FALSE,\n                        col.names = c(\"term\", \"gene\"))\nbg <- readLines(file.path(COUNT_DIR, \"background_genes.txt\"))\nego <- enricher(gene = sig_genes, universe = bg, TERM2GENE = term2gene,\n                pvalueCutoff = 0.05, qvalueCutoff = 0.05)\nwrite.table(as.data.frame(ego), file.path(RES_DIR, \"go_enrich.tsv\"),\n            sep = \"\\t\", quote = FALSE)"
+    },
+    "params": [
+      { "flag": "universe", "default": "全基因组（错误做法）", "note": "必须显式给出背景基因集（表达过滤后剩下的基因）；换背景会得到完全不同的 p 值" },
+      { "flag": "pAdjustMethod", "default": "BH", "note": "多重校正方法；BH 是标准选择，富集结果必须报告 padj 而不是原始 p 值" },
+      { "flag": "minGSSize / maxGSSize", "default": "10 / 500", "note": "条目大小范围；过小的条目（只有几个基因）几乎必然显著却不可解释，过大的条目缺乏特异性" },
+      { "flag": "ont", "default": "BP", "note": "GO 的三个分支（BP/CC/MF）应分别分析而不是混在一起；混做会让条目数膨胀、显著性被稀释" },
+      { "flag": "GSEA 的 geneList", "default": "—", "note": "必须用全部基因（不能先筛显著基因）并按统计量排序；用 log2FC 时要注意低表达基因的 LFC 波动很大，可改用 Wald 统计量排序" },
+      { "flag": "enrichKEGG organism", "default": "物种三字母代码", "note": "没有对应物种代码时用 organism = \"ko\"（KO 层面）；用错物种代码会得到完全无关的通路" }
+    ],
+    "pitfalls": [
+      "用全基因组当背景是细菌富集分析里最常见也最严重的错误。正确的背景是「经过表达过滤、本来有机会进入差异分析的所有基因」；否则 p 值会系统性偏小，显著条目数量虚高。",
+      "细菌没有现成的物种注释包。把真核的注释包套在细菌基因 ID 上，得到的「富集」没有任何生物学意义；必须用 eggNOG-mapper / KofamScan / InterProScan 的注释产物自建 TERM2GENE 表。",
+      "只送显著基因做 ORA 会丢掉效应量信息，而且结果强烈依赖阈值：把 |log2FC| 从 1 改到 0.5，富集结果可能完全变样。显著基因数少于几十个时，优先用 GSEA 并报告排序依据。",
+      "GO 条目之间高度冗余。一个功能模块会同时以父条目、子条目和若干近义条目出现，「有 200 个显著 GO term」这种描述没有信息量；应做冗余削减或用相似度聚类后报告代表性条目。",
+      "注释版本必须记录。GO 本体与 eggNOG/KEGG 数据库都在持续更新，同一基因集在不同版本下富集结果会变化；不写版本的结果无法复现。",
+      "ORA 只回答「是否集中」，不区分上调与下调。想知道某个通路是被激活还是被抑制，需要把上下调基因分开做，或用 GSEA 的富集分数符号来判断。"
+    ],
+    "related": [
+      { "id": "tran_deseq2", "note": "显著基因列表与排序统计量的来源" },
+      { "id": "tran_edger", "note": "另一条差异表达来源，同样可提供基因列表" },
+      { "id": "anno_eggnog", "note": "GO 映射的常用来源" },
+      { "id": "anno_kofamscan", "note": "KEGG KO 映射的常用来源" },
+      { "id": "viz_ggplot2", "note": "把富集结果画成可读的图" }
+    ],
+    "docs": [
+      { "label": "第 9 章 转录组与差异表达", "path": "docs/guidebook/09-transcriptome-differential-expression.md" }
+    ]
+  }
+]

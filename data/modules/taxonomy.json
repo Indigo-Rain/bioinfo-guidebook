@@ -1,0 +1,475 @@
+[
+  {
+    "id": "tax_gtdbtk",
+    "name": "基因组分类学注释 (GTDB-Tk)",
+    "category": "taxonomy",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "active",
+    "domains": ["genomics", "metagenomics", "phylogenetics"],
+    "tags": ["分类注释", "gtdb", "标记基因", "mag", "标准化"],
+    "summary": "基于标记基因的基因组分类学标准化注释",
+    "what": [
+      "GTDB-Tk 把基因组（或 MAG）的蛋白序列比对到 GTDB 的标记基因集合，再用这些基因的比对与树确定它在 GTDB 分类体系中的位置，输出从域到种的完整分类串（如 d__Bacteria;p__Pseudomonadota;...;s__Escherichia coli），以及最近的参考基因组与 ANI 值。它的价值是标准化：同一套参考数据与流程让不同实验室、不同批次的基因组可以互相比较。",
+      "它的分类体系是 GTDB 自己定义的，与 NCBI 分类学不同：GTDB 的种以 ANI 95% 簇为基准划分，因此会出现「GTDB 有 s__ 名称而 NCBI 里没有对应种名」或反之的情况，属名与种名也常被重排。写论文时必须说明用的是哪套体系以及参考数据版本。",
+      "它不做种以下分型：同一个 s__ 下的不同菌株（不同 ST、不同毒力谱）会得到完全相同的分类串。菌株级区分必须靠 ANI 精算、cgMLST 或 core-SNP 分析。此外它对真核生物与病毒无效，对完整度过低的 MAG 结果也不可靠。"
+    ],
+    "inputs": [
+      { "type": "genome-fasta", "name": "基因组或 MAG 序列", "required": true, "note": "单文件或目录批量；工具内部会做基因预测，因此必须给核酸序列" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "分类结果汇总表", "ext": ".gtdbtk.bac120.summary.tsv", "note": "含完整分类串、最近参考基因组与 ANI；古菌样本会另有 arc122 的表" },
+      { "type": "tree", "name": "标记基因树", "ext": ".gtdbtk.bac120.classify.tree", "note": "快速树，用于展示与粗分组，不适合作为系统发育结论" },
+      { "type": "alignment-fasta", "name": "标记基因比对", "ext": ".gtdbtk.bac120.user_msa.fasta.gz", "note": "gzip 压缩的多序列比对；可用于自行建树与复核" },
+      { "type": "log-report", "name": "运行日志", "ext": ".gtdbtk.log", "note": "记录 GTDB 参考数据版本与参数，必须与结果一起保存" }
+    ],
+    "provides": [
+      { "tool": "GTDB-Tk", "version": "2.4.x", "access": "cli", "install": "conda", "note": "需要数十 GB 量级的 GTDB 参考数据，并依赖 Prodigal、HMMER、pplacer/FastTree 等" },
+      { "tool": "Prodigal", "version": "2.6.x", "access": "cli", "install": "conda", "note": "GTDB-Tk 内部用于基因预测；版本变化会轻微影响标记基因集合" }
+    ],
+    "feeds": [
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "把多份基因组的分类结果汇总成一张表" },
+      { "target": "viz_tree_plot", "viaType": "tree", "note": "把标记基因树画出来做展示（注意它不是严格的系统发育树）" }
+    ],
+    "usage": [
+      {
+        "label": "完整流程：分类 + 树（最常用）",
+        "lang": "bash",
+        "code": "gtdbtk classify_wf --genome_dir 02_assembly/filtered/ \\\n  --out_dir 05_taxonomy/gtdbtk --extension fna --cpus 16"
+      },
+      {
+        "label": "只要分类结果（更快，不建树）",
+        "lang": "bash",
+        "code": "gtdbtk classify --genome_dir 02_assembly/filtered/ \\\n  --out_dir 05_taxonomy/gtdbtk_classify --extension fna --cpus 16"
+      },
+      {
+        "label": "用已有比对建 de novo 树（外群选择会影响定根）",
+        "lang": "bash",
+        "code": "gtdbtk de_novo_wf --genome_dir 02_assembly/filtered/ \\\n  --out_dir 05_taxonomy/gtdbtk_tree --extension fna \\\n  --outgroup_taxon <outgroup> --cpus 16"
+      }
+    ],
+    "recipes": {
+      "bash": "gtdbtk classify_wf --genome_dir 02_assembly/filtered/ \\\n  --out_dir 05_taxonomy/gtdbtk --extension fna --cpus ${THREADS} \\\n  --scratch_dir ${SCRATCH_DIR:-/tmp} \\\n  > 10_logs/gtdbtk.log 2>&1",
+      "python": "run([\n    \"gtdbtk\", \"classify_wf\",\n    \"--genome_dir\", str(ASM_DIR / \"filtered\"),\n    \"--out_dir\", str(TAX_DIR / \"gtdbtk\"),\n    \"--extension\", \"fna\",\n    \"--cpus\", str(THREADS),\n    \"--scratch_dir\", os.environ.get(\"SCRATCH_DIR\", \"/tmp\"),\n])"
+    },
+    "params": [
+      { "flag": "--extension", "default": "以版本为准", "note": "批量目录时只处理匹配后缀的文件；.fa/.fasta/.fna 混放会静默漏掉样本" },
+      { "flag": "--min_perc_aa", "default": "10", "note": "参与比对的标记基因氨基酸比例下限；低于它该基因组会被跳过或只给出高阶分类。远缘或碎片化基因组可适当放宽，但结果可靠性随之下降" },
+      { "flag": "--cpus", "default": "以版本为准", "note": "CPU 数；比对与建树阶段对线程敏感" },
+      { "flag": "--scratch_dir", "default": "临时目录", "note": "中间文件很大（每个基因组 GB 量级），大批量运行必须指到大磁盘" },
+      { "flag": "--outgroup_taxon", "default": "无", "note": "仅 de_novo_wf 使用：定根外群；选错会改变树的根位置（分类串不受影响），参数细节以官方文档为准" },
+      { "flag": "参考数据版本（R2xx）", "default": "随安装包", "note": "必须在方法学中写明；不同版本会改变分类命名与 ANI 计算，跨批次数据不可混用版本" }
+    ],
+    "pitfalls": [
+      "GTDB 分类与 NCBI 分类不能混用：同一条基因组在 GTDB 里可能是未命名种（只有 s__ 前缀的空缺或编号），在 NCBI 里却有正式种名；属名对应关系也常变化。报告里要写清来源，别把两套名称拼在一句话里。",
+      "不能给出种以下分型。同一 s__ 内的多个菌株分类串完全相同（连最近参考基因组的 ANI 都可能一样），菌株级结论必须靠 cgMLST、core-SNP 或 ANI 精算。",
+      "GTDB 参考数据版本（R2xx）与 GTDB-Tk 版本必须记录：版本更新会改变分类命名与 ANI 计算，跨批次用不同版本注释会让「新种/新属」的结论无法复现。",
+      "标记基因缺失太多（高度碎片化的 MAG、参考库覆盖很差的谱系）会导致分类失败或只给出高阶分类。看到「只到 p__ / c__」不要硬套到种，先看 --min_perc_aa 的提示与基因组完整度。",
+      "输出的树是基于标记基因的快速树：可以用于展示与粗分组，但不适合作为系统发育结论（没有去重组、没有支持度检验，标记集也不是为该类群优化的）。正式建树请另做完整流程。",
+      "它不提供表型、致病性或耐药信息，也不检测污染。分类正确与基因组纯净是两件事，需要 CheckM2/GUNC 一起看。"
+    ],
+    "related": [
+      { "id": "tax_fastani", "note": "种边界与最近邻的定量证据；GTDB-Tk 的 ANI 可与之互相印证" },
+      { "id": "asmqc_checkm2", "note": "先确认完整度/污染度，再解释分类结果" },
+      { "id": "tax_mash", "note": "更快的粗筛，用于在大库里先找候选近缘" },
+      { "id": "phy_iqtree", "note": "需要严格系统发育结论时，用标记基因比对另做建树" },
+      { "id": "meta_mag_taxonomy", "note": "MAG 场景下分类注释与命名的完整流程" }
+    ],
+    "docs": [
+      { "label": "第 5 章 分类鉴定与物种注释", "path": "docs/guidebook/05-taxonomy-identification.md" }
+    ]
+  },
+  {
+    "id": "tax_fastani",
+    "name": "基因组平均核苷酸一致性 (fastANI)",
+    "category": "taxonomy",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics", "phylogenetics"],
+    "tags": ["ani", "种边界", "fastani", "近缘", "物种界定"],
+    "summary": "用片段映射快速计算基因组间 ANI，划定种边界",
+    "what": [
+      "fastANI 把查询基因组切成片段，映射到参考基因组上，再用成功映射片段的平均核苷酸一致性估计 ANI。它比 BLAST 类方法快几个数量级，因此可以在几分钟内把一份新组装与成百上千个参考基因组比较完。",
+      "它的主要用途是物种界定与近缘检索：ANI ≥ 95%（大致对应 70% dDDH）通常被视为同一个种，95–80% 属于同属不同种，低于 80% 一般不再有意义。这个阈值是基因组时代的物种界定惯例，但不是分类学上的正式定义，命名仍需要分类学证据。",
+      "它的分辨率在近缘处会饱和：两株 ANI 都报 100.0 的菌仍可能有数千个 SNP。因此 fastANI 回答的是「是不是同一个种」，不能回答「是不是同一株」——菌株级区分要用 core-SNP、cgMLST 或专门的分型方法。"
+    ],
+    "inputs": [
+      { "type": "genome-fasta", "name": "查询基因组", "required": true, "note": "草图或完成图均可；批量时用列表文件" },
+      { "type": "reference-genome", "name": "参考基因组集合", "required": true, "note": "同一套参考库版本必须固定并记录，换库会让最近邻与 ANI 一起变化" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "ANI 结果表", "ext": ".fastani.tsv", "note": "每行一对：查询、参考、ANI、双向映射片段数与总片段数" },
+      { "type": "log-report", "name": "运行日志", "ext": ".fastani.log", "note": "记录参数与参考库来源，是结果可比的前提" }
+    ],
+    "provides": [
+      { "tool": "fastANI", "version": "1.3x", "access": "cli", "install": "conda", "note": "基于 Mashmap 式片段映射；单机多线程即可处理上千基因组" }
+    ],
+    "feeds": [
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "把成对的 ANI 结果整理成矩阵或最近邻表" },
+      { "target": "viz_heatmap", "viaType": "tsv-table", "note": "把 ANI 矩阵画成聚类热图，直观展示种/属的边界" }
+    ],
+    "usage": [
+      {
+        "label": "单个查询对单个参考",
+        "lang": "bash",
+        "code": "fastANI -q query.fna -r reference.fna -o 05_taxonomy/ani.tsv -t 16"
+      },
+      {
+        "label": "批量：查询列表 × 参考列表",
+        "lang": "bash",
+        "code": "ls 02_assembly/filtered/*.fna > query_list.txt\nls refs/*.fna > ref_list.txt\nfastANI --ql query_list.txt --rl ref_list.txt \\\n  -o 05_taxonomy/ani_all.tsv -t 16"
+      },
+      {
+        "label": "只看每个查询的最佳命中",
+        "lang": "bash",
+        "code": "sort -t$'\\t' -k1,1 -k3,3nr 05_taxonomy/ani_all.tsv | \\\n  awk -F'\\t' '!seen[$1]++' > 05_taxonomy/ani_best.tsv"
+      }
+    ],
+    "recipes": {
+      "bash": "ls 02_assembly/filtered/*.fna > 05_taxonomy/query_list.txt\nls ${REF_DIR}/*.fna > 05_taxonomy/ref_list.txt\nfastANI --ql 05_taxonomy/query_list.txt --rl 05_taxonomy/ref_list.txt \\\n  -o 05_taxonomy/ani_all.tsv -t ${THREADS} \\\n  > 10_logs/fastani.log 2>&1",
+      "python": "run([\n    \"fastANI\",\n    \"--ql\", str(TAX_DIR / \"query_list.txt\"),\n    \"--rl\", str(TAX_DIR / \"ref_list.txt\"),\n    \"-o\", str(TAX_DIR / \"ani_all.tsv\"),\n    \"-t\", str(THREADS),\n])"
+    },
+    "params": [
+      { "flag": "--minFraction", "default": "0.2", "note": "至少需要多少比例的查询片段能映射上才输出 ANI；降低它可以比较更远的关系，但数值偏差变大（默认值以官方文档为准）" },
+      { "flag": "--fragLen", "default": "3000", "note": "片段长度；调小对碎片化组装更友好但更慢，结果也会变化，跨运行必须固定" },
+      { "flag": "-k / --kmer", "default": "16", "note": "映射阶段的 k-mer 长度；改动会影响敏感度（以官方文档为准）" },
+      { "flag": "-t / --threads", "default": "以版本为准", "note": "线程数；参考基因组数量大时内存与时间近似线性增长" },
+      { "flag": "--ql / --rl", "default": "单文件模式", "note": "批量必须用列表文件；参考库上千时建议先用 Mash/sourmash 粗筛再精算" }
+    ],
+    "pitfalls": [
+      "ANI 相同不代表基因组相同。95% 阈值只能划种；两株 ANI ≥ 99.9% 的菌差异可能在几十到几千个 SNP 之间，暴发调查必须用 core-SNP 或 cgMLST，而不是 ANI。",
+      "不同 ANI 实现（fastANI / ANIb / ANIm / OrthoANI / dDDH）不能互换：同一对基因组的数值差异可达零点几个百分点，正好落在种边界附近时结论会翻转。方法学里必须写明工具与参数。",
+      "参考库的选择直接决定结论：用精简的代表基因组集与用全部基因组，可能给出不同的最近邻与 ANI。参考库版本与获取日期必须记录。",
+      "高度碎片化的草图会降低可映射片段比例：大量短 contig 让 --minFraction 门槛更难达到，可能出现「无结果」或系统性偏低的 ANI。先看组装连续性，再解释异常。",
+      "ANI 是全基因组的平均值，会掩盖局部差异：同种菌株之间可以有整段基因组岛的有无、以及完全不同的质粒。ANI 高不代表基因内容一致（那要看泛基因组或基因存在缺失矩阵）。",
+      "把「ANI 不是 100」当差异证据是过度解读：测序错误、组装差异与重复区处理都会让同一菌株的 ANI 变成 99.9x。"
+    ],
+    "related": [
+      { "id": "tax_mash", "note": "先用 Mash 粗筛候选，再用 fastANI 精算，是大规模比较的常规组合" },
+      { "id": "tax_sourmash", "note": "另一种 k-mer 相似性路线；不比对即可快速比较" },
+      { "id": "tax_gtdbtk", "note": "标准化分类注释；其 ANI 列可用于交叉验证种边界" },
+      { "id": "comp_snp_dist", "note": "菌株级区分要在 ANI 之后用 SNP 距离补上" },
+      { "id": "var_typing_cgmlst", "note": "同种内的流行病学分型方法" }
+    ],
+    "docs": [
+      { "label": "第 5 章 分类鉴定与物种注释", "path": "docs/guidebook/05-taxonomy-identification.md" },
+      { "label": "第 7 章 比较基因组与泛基因组", "path": "docs/guidebook/07-comparative-pangenome.md" }
+    ]
+  },
+  {
+    "id": "tax_16s_extract",
+    "name": "从基因组提取 16S rRNA (barrnap / RNAmmer)",
+    "category": "taxonomy",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics", "phylogenetics"],
+    "tags": ["16s", "rrna", "barrnap", "提取", "鉴定"],
+    "summary": "从组装中定位并提取 16S rRNA 基因序列",
+    "what": [
+      "barrnap 用 HMM 在核酸序列上定位 rRNA 基因（16S/23S/5S），输出 GFF 坐标，再用 bedtools 之类的工具按坐标把序列取出来。RNAmmer 是同类工具里被大量旧文献引用的一个，但已停更且有许可限制，新项目一般从 barrnap 开始。",
+      "细菌基因组通常有多个 rRNA 操纵子（16S 拷贝数从 1 到十几个），因此「提取 16S」得到的是序列集合而不是一条。这一点必须显式处理：不同拷贝之间可能有明显差异，只取第一条会让鉴定结果取决于运气。",
+      "提取质量取决于组装质量：rRNA 区富含重复与二级结构，是短读长组装最容易塌缩或断裂的区域之一。如果 16S 被打断（两个 contig 各含一半）或长度明显短于预期（完整 16S 约 1.5 kb），下游鉴定的可靠性会大幅下降——先检查长度与完整性，再做比对。"
+    ],
+    "inputs": [
+      { "type": "genome-fasta", "name": "基因组或 MAG 序列", "required": true, "note": "单菌组装、MAG 或多序列 FASTA 均可" }
+    ],
+    "outputs": [
+      { "type": "cds-fasta", "name": "rRNA 基因序列", "ext": ".rrna.fasta", "note": "核酸序列 FASTA（目录里没有专门的 rRNA 类型，用 cds-fasta 承载「基因级核酸序列」）；16S/23S/5S 混在一起，需按坐标筛选" },
+      { "type": "gff", "name": "rRNA 坐标注释", "ext": ".rrna.gff", "note": "确认拷贝数与每条 rRNA 的完整性；筛选 16S 靠它" },
+      { "type": "log-report", "name": "运行日志", "ext": ".barrnap.log", "note": "记录所用工具、模型与阈值" }
+    ],
+    "provides": [
+      { "tool": "barrnap", "version": "0.9", "access": "cli", "install": "conda", "note": "HMM 模型定位 rRNA；依赖 hmmer，速度快、依赖轻" },
+      { "tool": "bedtools", "version": "2.31.x", "access": "cli", "install": "conda", "note": "按 GFF 坐标取序列（getfasta）" },
+      { "tool": "RNAmmer", "version": "1.2", "access": "cli", "install": "source", "note": "经典工具，旧文献常用；已停更且许可有附加限制，新项目建议用 barrnap" }
+    ],
+    "feeds": [
+      { "target": "tax_16s_blast", "viaType": "cds-fasta", "note": "提取出的 16S 序列直接进入比对鉴定" },
+      { "target": "phy_mafft", "viaType": "cds-fasta", "note": "多个 16S 拷贝或跨菌株比对，用于建树" },
+      { "target": "py_pandas_io", "viaType": "gff", "note": "统计拷贝数与长度分布，作为提取质量的门槛" }
+    ],
+    "usage": [
+      {
+        "label": "定位 rRNA 基因",
+        "lang": "bash",
+        "code": "barrnap --kingdom bac --threads 8 02_assembly/sample.filtered.fasta \\\n  > 05_taxonomy/sample.rrna.gff"
+      },
+      {
+        "label": "按坐标取出序列",
+        "lang": "bash",
+        "code": "bedtools getfasta -fi 02_assembly/sample.filtered.fasta \\\n  -bed 05_taxonomy/sample.rrna.gff \\\n  -fo 05_taxonomy/sample.rrna.fasta"
+      },
+      {
+        "label": "只取足够长的 16S（列 4/5 为起止坐标）",
+        "lang": "bash",
+        "code": "awk '$3 ~ /16S/ && ($5-$4) > 1200' 05_taxonomy/sample.rrna.gff \\\n  > 05_taxonomy/sample.16s.gff\nbedtools getfasta -fi 02_assembly/sample.filtered.fasta \\\n  -bed 05_taxonomy/sample.16s.gff -fo 05_taxonomy/sample.16s.fasta\nseqkit stats -a 05_taxonomy/sample.16s.fasta"
+      }
+    ],
+    "recipes": {
+      "bash": "barrnap --kingdom bac --threads ${THREADS} \\\n  02_assembly/${SAMPLE}.filtered.fasta > 05_taxonomy/${SAMPLE}.rrna.gff\nbedtools getfasta -fi 02_assembly/${SAMPLE}.filtered.fasta \\\n  -bed 05_taxonomy/${SAMPLE}.rrna.gff -fo 05_taxonomy/${SAMPLE}.rrna.fasta\nseqkit stats -a 05_taxonomy/${SAMPLE}.rrna.fasta > 10_logs/${SAMPLE}.rrna.stats.tsv",
+      "python": "with open(TAX_DIR / f\"{sample}.rrna.gff\", \"w\", encoding=\"utf-8\") as fh:\n    subprocess.run([\"barrnap\", \"--kingdom\", \"bac\", \"--threads\", str(THREADS),\n                    str(ASM_DIR / f\"{sample}.filtered.fasta\")], check=True, stdout=fh)\nrun([\"bedtools\", \"getfasta\",\n     \"-fi\", str(ASM_DIR / f\"{sample}.filtered.fasta\"),\n     \"-bed\", str(TAX_DIR / f\"{sample}.rrna.gff\"),\n     \"-fo\", str(TAX_DIR / f\"{sample}.rrna.fasta\")])"
+    },
+    "params": [
+      { "flag": "--kingdom", "default": "以版本为准", "note": "bac / arc / euk / mito；选错域会漏掉或误判。样本里混有古菌或真核序列时建议分别运行再合并" },
+      { "flag": "部分命中的长度/拒绝阈值", "default": "以官方文档为准", "note": "barrnap 有控制「多短的命中算部分 rRNA」的阈值；放宽会得到更多被打断的片段，鉴定前必须按长度筛" },
+      { "flag": "--threads", "default": "以版本为准", "note": "线程数；barrnap 本身很快，瓶颈通常在后续取序列与比对" },
+      { "flag": "直接输出序列的选项", "default": "以官方文档为准", "note": "若所用版本提供直接输出序列的选项，其行为以官方文档为准；GFF + bedtools 取序列是最通用的做法" },
+      { "flag": "长度门槛", "default": "建议 ≥ 1200 bp", "note": "完整 16S 约 1.5 kb；短于 1200 bp 的片段用于鉴定会把相似度系统性拉低" }
+    ],
+    "pitfalls": [
+      "16S 拷贝数不止一个。忽略这点会得出「这个菌的 16S 是 X」这种不严谨的结论；正确做法是把所有拷贝都取出、分别比对，并报告拷贝之间的差异。",
+      "rRNA 区是组装的重灾区：短读长组装常在此塌缩或断开，提取出来的「16S」可能是嵌合体或只有一半。拿到序列先看长度（完整 16S 约 1.5 kb）以及是否跨越 contig 边界。",
+      "16S 的分辨率有限，很多类群区分不到种：Bacillus cereus group、Escherichia/Shigella、部分 Borrelia 与 Mycobacterium 即使全长 16S 也难以区分。这类样本必须用基因组层面的方法（ANI、core-SNP）。",
+      "不同数据库对 16S 边界（是否包含侧翼或部分 23S）的定义不同，提取序列的起止位置会影响相似度计算结果。比对前先确认 query 的长度与完整性。",
+      "从 MAG 提取 16S 时经常一无所获：rRNA 在宏基因组组装与分箱中都容易被丢掉。MAG 里找不到 16S 是常态，不能据此说该菌没有 16S 基因。",
+      "barrnap 同时会报 23S/5S 与部分片段。把 23S（约 2.9 kb）误当 16S 去比对，会得到奇怪的「新物种」结果——务必按注释类型筛选。"
+    ],
+    "related": [
+      { "id": "tax_16s_blast", "note": "提取后的标准下游：比对鉴定" },
+      { "id": "phy_mafft", "note": "多拷贝或多个菌株的 16S 比对与建树入口" },
+      { "id": "phy_its_phylogeny", "note": "真菌要用 ITS / 大亚基，不能用 16S 的思路" },
+      { "id": "amplicon_taxonomy_assign", "note": "扩增子测序路线的物种注释，与从基因组提取是两条不同路径" },
+      { "id": "tax_gtdbtk", "note": "需要稳定、可比较的物种归属时用基因组层面的分类" }
+    ],
+    "docs": [
+      { "label": "第 5 章 分类鉴定与物种注释", "path": "docs/guidebook/05-taxonomy-identification.md" }
+    ]
+  },
+  {
+    "id": "tax_16s_blast",
+    "name": "16S 序列比对鉴定 (BLAST / EzBioCloud)",
+    "category": "taxonomy",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics", "metagenomics", "phylogenetics"],
+    "tags": ["16s", "blast", "鉴定", "ezbiocloud", "相似度"],
+    "summary": "把 16S 序列比对到参考库做物种鉴定",
+    "what": [
+      "拿到 16S 序列后，用 BLAST 比对到整理好的 16S 参考库（如 NCBI 16S rRNA RefSeq、SILVA、EzBioCloud），按相似度与覆盖度给出候选物种。它是最经典、最容易被审稿人接受的鉴定路线，因为结果可追溯到具体的参考序列与比对区间。",
+      "解读靠三个量：相似度、比对覆盖度、以及候选之间的差距。常用经验阈值是 ≥99% 提示同种、97–99% 提示同属、<95% 提示更高层级差异；但这是惯例而不是标准，且必须与覆盖度一起看——一个覆盖度只有 80% 的 99% 命中不能作为鉴定依据。",
+      "在线服务（如 EzBioCloud 的 16S 鉴定）方便且库维护良好，但受使用条款与限流约束，不适合脚本化批量分析；批量项目应把公共数据库下载到本地建库，并把数据库版本写进结果记录。"
+    ],
+    "inputs": [
+      { "type": "cds-fasta", "name": "查询 16S 序列", "required": true, "note": "核酸序列 FASTA；可能含多个拷贝，逐条保留结果" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "命中结果表", "ext": ".blast16s.hits.tsv", "note": "自定义 outfmt 的表格：相似度、覆盖度、E 值、分类信息；列顺序必须随结果一起记录" },
+      { "type": "log-report", "name": "运行日志", "ext": ".blast16s.log", "note": "记录数据库来源与版本、BLAST 版本与参数" }
+    ],
+    "provides": [
+      { "tool": "BLAST+", "version": "2.16.x", "access": "cli", "install": "conda", "note": "blastn；用 -outfmt 6 输出可解析的表格" }
+    ],
+    "feeds": [
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "整理每个拷贝的命中，汇总成鉴定结论表" },
+      { "target": "py_export_report", "viaType": "tsv-table", "note": "把鉴定结果并入交付报告或补充材料" }
+    ],
+    "usage": [
+      {
+        "label": "一次性建库（本地参考库）",
+        "lang": "bash",
+        "code": "makeblastdb -in 16S_ribosomal_RNA.fna -dbtype nucl \\\n  -out db/16S_refseq -title \"16S reference\""
+      },
+      {
+        "label": "比对并输出表格",
+        "lang": "bash",
+        "code": "blastn -query 05_taxonomy/sample.16s.fasta -db db/16S_refseq \\\n  -outfmt \"6 qseqid sseqid pident length qcovhsp evalue bitscore staxid ssciname\" \\\n  -max_target_seqs 50 -num_threads 8 \\\n  -out 05_taxonomy/sample.blast16s.hits.tsv"
+      },
+      {
+        "label": "按相似度与覆盖度初筛（列 3=相似度，列 5=覆盖度）",
+        "lang": "bash",
+        "code": "awk -F'\\t' '$3>=97 && $5>=90' 05_taxonomy/sample.blast16s.hits.tsv \\\n  | sort -k3,3nr | head -20"
+      }
+    ],
+    "recipes": {
+      "bash": "blastn -query 05_taxonomy/${SAMPLE}.16s.fasta -db ${BLAST_DB} \\\n  -outfmt \"6 qseqid sseqid pident length qcovhsp evalue bitscore staxid ssciname\" \\\n  -max_target_seqs 50 -num_threads ${THREADS} \\\n  -out 05_taxonomy/${SAMPLE}.blast16s.hits.tsv\nawk -F'\\t' '$3>=97 && $5>=90' 05_taxonomy/${SAMPLE}.blast16s.hits.tsv \\\n  > 05_taxonomy/${SAMPLE}.blast16s.filtered.tsv",
+      "python": "run([\n    \"blastn\",\n    \"-query\", str(TAX_DIR / f\"{sample}.16s.fasta\"),\n    \"-db\", blast_db,\n    \"-outfmt\", \"6 qseqid sseqid pident length qcovhsp evalue bitscore staxid ssciname\",\n    \"-max_target_seqs\", \"50\",\n    \"-num_threads\", str(THREADS),\n    \"-out\", str(TAX_DIR / f\"{sample}.blast16s.hits.tsv\"),\n])"
+    },
+    "params": [
+      { "flag": "-outfmt 6", "default": "0（成对文本）", "note": "脚本化必须用 6（表格）；列由你指定顺序，务必把列定义写进方法或随结果保存" },
+      { "flag": "-max_target_seqs", "default": "以版本为准", "note": "它限制的是参与输出的命中数而不是「最优的 N 条」，设得太小可能错过真正的最佳命中；做鉴定时应给足（见 pitfalls）" },
+      { "flag": "-qcov_hsp_perc", "default": "0", "note": "按 HSP 覆盖度过滤；鉴定场景设 90 以上可显著减少部分命中造成的假象" },
+      { "flag": "-perc_identity", "default": "0", "note": "搜索阶段就设相似度下限（如 90）；设了之后低相似度的真信号也看不到，鉴定时通常先不设、事后筛" },
+      { "flag": "-num_threads", "default": "1", "note": "线程数；本地库比对很快，瓶颈常在库的构建与更新" },
+      { "flag": "数据库选择", "default": "无", "note": "NCBI 16S RefSeq / SILVA / EzBioCloud / Greengenes 的序列集与命名不同，最佳命中可能不同；数据库版本必须记录" }
+    ],
+    "pitfalls": [
+      "BLAST 的 -max_target_seqs 不是「返回最好的 N 条」：它按数据库扫描顺序保留先满足阈值的命中，可能漏掉得分更高的序列。做物种鉴定时把该值设小会直接改变结论（Shah 等 2018 年专门讨论过这个参数被误解的问题）。",
+      "只看相似度不看覆盖度是鉴定中最常见的过度解读。片段化的 16S（例如只有 700 bp）很容易出现 99–100% 的命中，但那往往只是保守区匹配；鉴定要求长度与覆盖度一起达标。",
+      "数据库选择会让结论变化：同一序列在 SILVA 与 NCBI 16S RefSeq 中的最佳命中可能属于不同物种（收录范围与命名体系不同）。方法学里必须写明数据库与版本，跨研究比较前先统一。",
+      "嵌合 16S（PCR 或组装产生）会表现为「与多个不同物种各有一段高相似度」的命中模式，而不是单一最佳命中。看到最佳命中覆盖度低且候选分散时，应先做嵌合检测，而不是挑一个最像的报上去。",
+      "16S 相似度阈值不是物种判定标准。99%/97%/95% 只是惯例，不同类群的种内 16S 差异差别很大；正式鉴定应结合 ANI（≥95%）或其他基因组层面的证据。",
+      "有多拷贝时不要只比一条。若基因组内有多个 16S 拷贝，应分别比对并报告拷贝间差异；只挑一条会隐去拷贝不一致这一重要信息。"
+    ],
+    "related": [
+      { "id": "tax_16s_extract", "note": "上游的提取步骤；结果质量直接决定鉴定可信度" },
+      { "id": "tax_fastani", "note": "有基因组时优先用 ANI 定种，16S 作为补充证据" },
+      { "id": "tax_gtdbtk", "note": "标准化的基因组分类注释，可替代 16S 的物种归属" },
+      { "id": "amplicon_taxonomy_assign", "note": "扩增子路线的注释方法（如 SILVA/GTDB 参考库），与本模块的查询来源不同" },
+      { "id": "phy_mafft", "note": "需要展示候选与近缘种的系统发育关系时" }
+    ],
+    "docs": [
+      { "label": "第 5 章 分类鉴定与物种注释", "path": "docs/guidebook/05-taxonomy-identification.md" }
+    ]
+  },
+  {
+    "id": "tax_sourmash",
+    "name": "基于 k-mer 的基因组相似性 (sourmash)",
+    "category": "taxonomy",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "active",
+    "domains": ["genomics", "metagenomics"],
+    "tags": ["k-mer", "minhash", "sourmash", "相似性", "组成"],
+    "summary": "k-mer 草图做基因组相似性比较与组成筛查",
+    "what": [
+      "sourmash 把序列（基因组、转录本、宏基因组读长都可以）压缩成 MinHash 草图，用 Jaccard 相似度或 containment 快速比较。速度来自「不比对」：不依赖参考的坐标信息，因此可以在几秒内比较数千份基因组，也可以把测序读长直接与参考库比较。",
+      "两种典型用法必须区分：compare 计算两两 Jaccard（适合一组基因组之间的相似性与聚类），gather 计算 containment 并贪心地解释一个混合样本（适合宏基因组：回答「样本里有哪些基因组、各占多少」，并把无法解释的部分留出来）。用错子命令会得到看似合理但语义错误的结果。",
+      "草图参数（k 与 scaled）决定可比性：只有 k、scaled 与分子类型完全一致的草图才能互相比较，工具会拒绝混用。scaled 越小（哈希越多）越精确也越大；物种级筛查常用 scaled=1000，近缘区分需要更密的草图。"
+    ],
+    "inputs": [
+      { "type": "genome-fasta", "name": "基因组序列", "required": true, "note": "可批量 sketch 成签名库；同一签名库内参数必须一致" },
+      { "type": "clean-reads", "name": "读长（宏基因组样本）", "required": false, "note": "读长也可直接 sketch，用于对参考库做 gather 组成分析" }
+    ],
+    "outputs": [
+      { "type": "cluster-dist", "name": "相似度/ANI 矩阵", "ext": ".sourmash.compare.csv", "note": "compare 的 CSV 输出；可直接进入聚类与热图" },
+      { "type": "tsv-table", "name": "组成解释结果", "ext": ".sourmash.gather.csv", "note": "gather 的结果：每个参考基因组的覆盖率与贡献，以及未解释比例" },
+      { "type": "log-report", "name": "运行日志", "ext": ".sourmash.log", "note": "记录 sketch 参数（k、scaled）与所用参考库版本" }
+    ],
+    "provides": [
+      { "tool": "sourmash", "version": "4.8.x", "access": "cli", "install": "conda", "note": "sketch/compare/gather/prefetch 等子命令；跨 k 与 scaled 的签名不可比较" },
+      { "tool": "sourmash (Python API)", "version": "4.8.x", "access": "python-api", "install": "pip", "note": "可在 Python 内构造签名、做自定义筛选与批量分析" }
+    ],
+    "feeds": [
+      { "target": "py_sklearn_cluster", "viaType": "cluster-dist", "note": "把相似度矩阵送入聚类与降维" },
+      { "target": "viz_heatmap", "viaType": "cluster-dist", "note": "画聚类热图展示基因组分组" }
+    ],
+    "usage": [
+      {
+        "label": "为一批基因组建签名（参数一次定死）",
+        "lang": "bash",
+        "code": "sourmash sketch dna -p k=31,scaled=1000 \\\n  -o 05_taxonomy/genomes.sig 02_assembly/filtered/*.fna"
+      },
+      {
+        "label": "两两比较并画聚类热图",
+        "lang": "bash",
+        "code": "sourmash compare 05_taxonomy/genomes.sig -o 05_taxonomy/cmp \\\n  --csv 05_taxonomy/cmp.csv\nsourmash plot 05_taxonomy/cmp --labels"
+      },
+      {
+        "label": "宏基因组样本对参考库做组成解释",
+        "lang": "bash",
+        "code": "sourmash sketch dna -p k=31,scaled=1000 \\\n  -o 05_taxonomy/sample.sig 01_clean/sample_R1.fq.gz\nsourmash gather 05_taxonomy/sample.sig 05_taxonomy/refs.sig \\\n  -o 05_taxonomy/sample.gather.csv"
+      }
+    ],
+    "recipes": {
+      "bash": "sourmash sketch dna -p k=${SOURMASH_K:-31},scaled=1000 \\\n  -o 05_taxonomy/genomes.sig 02_assembly/filtered/*.fna\nsourmash compare 05_taxonomy/genomes.sig \\\n  -o 05_taxonomy/cmp --csv 05_taxonomy/cmp.csv \\\n  > 10_logs/sourmash.log 2>&1",
+      "python": "run([\n    \"sourmash\", \"sketch\", \"dna\",\n    \"-p\", f\"k={os.environ.get('SOURMASH_K', '31')},scaled=1000\",\n    \"-o\", str(TAX_DIR / \"genomes.sig\"),\n    *[str(p) for p in sorted((ASM_DIR / \"filtered\").glob(\"*.fna\"))],\n])"
+    },
+    "params": [
+      { "flag": "-p k=31,scaled=1000", "default": "k=31, scaled=1000", "note": "一次 sketch 可含多个 k，但比较时只会用相同的 k/scaled。scaled=1000 适合物种级筛查，近缘（>99% ANI）比较需要更小 scaled（如 100）" },
+      { "flag": "--singleton", "default": "关闭", "note": "把每条读长当成独立签名；默认把文件内所有序列合并为一个签名（宏基因组要的正是合并）" },
+      { "flag": "compare --ani", "default": "关闭", "note": "直接输出 ANI 估计而不是 Jaccard；距离越远该换算越不可靠，适用范围以官方文档为准" },
+      { "flag": "gather 的阈值与结果数", "default": "以官方文档为准", "note": "控制解释深度与最少贡献碱基数；阈值定得太低会把噪声当成物种" },
+      { "flag": "sourmash taxonomy", "default": "—", "note": "把 gather 结果映射到分类体系；需要预先准备带 taxonomy 的签名库" }
+    ],
+    "pitfalls": [
+      "草图参数不一致的签名不能比较：k、scaled、分子类型（dna/protein）任一不同，结果就没有意义（工具会报错或给出空结果）。批量流程里最容易犯的错是不同批次用了不同 scaled。",
+      "Jaccard 与 containment 是两个不同的量：比较两份基因组用 Jaccard 更合适；判断「样本里有没有它」要用 containment（gather/prefetch）。混用会得到难以解释的数值。",
+      "k-mer 方法在距离远时迅速失真：ANI 低于约 90% 之后，Jaccard 到 ANI 的换算误差明显变大；远缘关系的判断应回到 ANI 计算或比对方法。",
+      "gather 的「包含」不等于「属于」：参考库里高度相似的多个基因组会互相竞争，先被选中的不一定是真正的那一个；结果里的未解释比例必须一起报告，否则会把不完整的解释当成完整的物种组成。",
+      "把读长直接 sketch 时，测序错误会产生大量只出现一次的 k-mer。合适的 scaled 与足够覆盖度可以减少噪声，但低丰度物种仍可能被漏掉——k-mer 方法不是定量丰度工具（要丰度请用比对或分箱）。",
+      "参考库准备是这步的真实瓶颈：为 GTDB/RefSeq 建立带 taxonomy 的签名库需要专门流程与大量磁盘，且库版本决定结果。不要用「随手 sketch 的一批基因组」代替经过版本管理的参考库。"
+    ],
+    "related": [
+      { "id": "tax_mash", "note": "同类 k-mer 距离方法；Mash 更快更简单，sourmash 在 containment 与分类映射上更强" },
+      { "id": "tax_fastani", "note": "需要可发表的 ANI 数值时改用它" },
+      { "id": "meta_kraken2", "note": "读长物种分类的另一条路线（精确 k-mer 匹配 + 分类树）" },
+      { "id": "meta_metaphlan", "note": "需要物种相对丰度而不是「是否包含」时的选择" },
+      { "id": "py_sklearn_cluster", "note": "相似度矩阵进入聚类与降维" }
+    ],
+    "docs": [
+      { "label": "第 5 章 分类鉴定与物种注释", "path": "docs/guidebook/05-taxonomy-identification.md" },
+      { "label": "第 7 章 比较基因组与泛基因组", "path": "docs/guidebook/07-comparative-pangenome.md" }
+    ]
+  },
+  {
+    "id": "tax_mash",
+    "name": "快速基因组距离估计 (Mash)",
+    "category": "taxonomy",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics", "metagenomics"],
+    "tags": ["minhash", "距离", "mash", "粗筛", "草图"],
+    "summary": "用 MinHash 距离秒级估计基因组间相似性",
+    "what": [
+      "Mash 把基因组压缩成固定大小的 k-mer 草图，用 Mash 距离（Jaccard 的变换）近似两两差异。它比 fastANI 更粗但更快：几秒内就能把一份新组装与上万个参考基因组比较完，因此非常适合做粗筛——先在成千上万份基因组里找出候选近缘，再用 fastANI 或 core-SNP 精确刻画。",
+      "常见换算关系：k=21 时 Mash 距离 0.05 大致对应 ANI 95%（即种边界），0.02 以内通常属于同种。这是近似关系而非等式，距离越大误差越大；用于物种归属判断时应该用 ANI 复核。",
+      "它同样受草图参数影响：默认草图大小（1000 个哈希）对近缘菌株的分辨力有限，距离的随机误差可能大于真实差异。要比较近缘基因组就必须显式加大草图（如 -s 10000）并固定 k，否则「两株菌距离为 0」会频繁出现。"
+    ],
+    "inputs": [
+      { "type": "genome-fasta", "name": "查询基因组", "required": true, "note": "可用 mash sketch 把一批基因组建成 .msh 库，便于反复比较" },
+      { "type": "reference-genome", "name": "参考草图库", "required": false, "note": "一次建库多次复用；参考库版本必须记录" }
+    ],
+    "outputs": [
+      { "type": "cluster-dist", "name": "距离表", "ext": ".mash.dist.tsv", "note": "列：参考、查询、距离、p 值、共享哈希数" },
+      { "type": "log-report", "name": "运行日志", "ext": ".mash.log", "note": "记录 k 与草图大小；参数不同距离不可比较" }
+    ],
+    "provides": [
+      { "tool": "Mash", "version": "2.3", "access": "cli", "install": "conda", "note": "sketch/dist/screen 三个子命令覆盖建库、比较与读长筛查" }
+    ],
+    "feeds": [
+      { "target": "py_sklearn_cluster", "viaType": "cluster-dist", "note": "把距离矩阵送入聚类与降维" },
+      { "target": "viz_heatmap", "viaType": "cluster-dist", "note": "画距离热图，快速看出分组与离群" }
+    ],
+    "usage": [
+      {
+        "label": "为参考库建草图（k 与草图大小显式指定）",
+        "lang": "bash",
+        "code": "mash sketch -k 21 -s 10000 -o 05_taxonomy/refs refs/*.fna"
+      },
+      {
+        "label": "把新组装与整个库比较",
+        "lang": "bash",
+        "code": "mash dist -p 16 05_taxonomy/refs.msh 02_assembly/sample.fna \\\n  > 05_taxonomy/sample.mash.dist.tsv\nsort -k3,3n 05_taxonomy/sample.mash.dist.tsv | head"
+      },
+      {
+        "label": "用读长做快速筛查（样本里有没有目标物种）",
+        "lang": "bash",
+        "code": "mash screen -p 16 05_taxonomy/refs.msh 01_clean/sample_R1.fq.gz \\\n  > 05_taxonomy/sample.mash.screen.tsv"
+      }
+    ],
+    "recipes": {
+      "bash": "mash sketch -k ${MASH_K:-21} -s ${MASH_S:-10000} \\\n  -o 05_taxonomy/refs ${REF_DIR}/*.fna\nmash dist -p ${THREADS} 05_taxonomy/refs.msh \\\n  02_assembly/${SAMPLE}.filtered.fasta \\\n  > 05_taxonomy/${SAMPLE}.mash.dist.tsv 2> 10_logs/${SAMPLE}.mash.log\nsort -k3,3n 05_taxonomy/${SAMPLE}.mash.dist.tsv | head -20 \\\n  > 05_taxonomy/${SAMPLE}.mash.top20.tsv",
+      "python": "run([\"mash\", \"sketch\", \"-k\", os.environ.get(\"MASH_K\", \"21\"),\n     \"-s\", os.environ.get(\"MASH_S\", \"10000\"),\n     \"-o\", str(TAX_DIR / \"refs\"),\n     *[str(p) for p in sorted(REF_DIR.glob(\"*.fna\"))]])\nwith open(TAX_DIR / f\"{sample}.mash.dist.tsv\", \"w\", encoding=\"utf-8\") as fh:\n    subprocess.run([\"mash\", \"dist\", \"-p\", str(THREADS),\n                    str(TAX_DIR / \"refs.msh\"),\n                    str(ASM_DIR / f\"{sample}.filtered.fasta\")], check=True, stdout=fh)"
+    },
+    "params": [
+      { "flag": "-k", "default": "21", "note": "k 越小越能容忍序列差异（适合较远关系的粗筛），k 越大对近缘区分越好但灵敏度下降；物种级常用 21，菌株级常配 31 与更大的草图" },
+      { "flag": "-s", "default": "1000", "note": "草图大小；近缘比较必须加大（如 10000 或更多），否则距离被随机误差主导" },
+      { "flag": "mash dist -p", "default": "以版本为准", "note": "线程数；dist 很快，参考库很大时 I/O 也会成为瓶颈" },
+      { "flag": "mash screen 的一致性/胜者模式选项", "default": "以官方文档为准", "note": "读长筛查时用于控制最小一致性与是否采用 winner-takes-all；不同设置会改变敏感度" },
+      { "flag": "草图参数固定", "default": "必须固定", "note": "k 与 -s 不同的草图之间距离不可比较；批量项目应把参数写进流程并记录" }
+    ],
+    "pitfalls": [
+      "默认草图（-s 1000）分辨不出近缘菌株。用它比较同种的多个分离株会得到一堆 0 或极小的距离，看起来「完全一样」——那只是精度不够。要区分菌株请用 core-SNP/cgMLST，或至少先把草图加大。",
+      "Mash 距离不是 ANI。两者在种边界附近大致吻合（k=21 时 d≈0.05 对应 ANI 95%），但换算关系随 k 与距离变化；报告里应写「Mash 距离」，不要含糊地写成 ANI。",
+      "完整度差异会污染距离：低完整度 MAG 与完整基因组之间，k-mer 集合的差异既来自真实序列差异也来自缺失内容，距离会系统性偏大。比较前先确认完整度（CheckM2/BUSCO）大致可比。",
+      "草图参数必须固定：k 与 -s 不同、或分别用读长与组装建草图时，距离不可直接比较。批量项目应在流程里把参数写死。",
+      "质粒与水平转移区会让整体距离与「菌株相关性」不一致：两株菌染色体几乎相同但其中一个带大质粒时，Mash 距离仍会明显上升。亲缘关系的判断要回到染色体层面。",
+      "它只给距离，不给方向、不给功能、不给分类。把 Mash 当物种鉴定需要额外的参考库与阈值依据；正式鉴定请用 ANI 或标记基因方法。"
+    ],
+    "related": [
+      { "id": "tax_fastani", "note": "粗筛之后精算 ANI 的标准搭配" },
+      { "id": "tax_sourmash", "note": "同类 MinHash 方法；sourmash 在 containment 与分类映射上更完整" },
+      { "id": "tax_gtdbtk", "note": "需要标准化分类命名时用它" },
+      { "id": "comp_snp_dist", "note": "菌株级差异要靠 SNP 距离，而不是 Mash" },
+      { "id": "qc_contamination_screen", "note": "mash screen 也可用于读长层面的快速物种筛查" }
+    ],
+    "docs": [
+      { "label": "第 5 章 分类鉴定与物种注释", "path": "docs/guidebook/05-taxonomy-identification.md" },
+      { "label": "第 7 章 比较基因组与泛基因组", "path": "docs/guidebook/07-comparative-pangenome.md" }
+    ]
+  }
+]

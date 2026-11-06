@@ -1,0 +1,1501 @@
+[
+  {
+    "id": "py_pandas_io",
+    "name": "表格读取与整理 (pandas)",
+    "category": "downstream-python",
+    "layer": "downstream",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics"
+    ],
+    "tags": [
+      "python",
+      "pandas",
+      "表格",
+      "数据整理",
+      "tsv"
+    ],
+    "summary": "把工具产出的各种结果表读成 DataFrame",
+    "what": [
+      "生信工具的输出格式看似都是「制表符分隔的表」，实际上注释行、表头位置、缺失值表示、索引列各有各的习惯。pandas 的 read_csv 是进入下游分析的入口，而这一步的参数写错往往不会报错，只会让某一列变成字符串或整行错位——错误会静静地流到最后的图里。",
+      "因此这一层的价值不在于「会读文件」，而在于把读取过程显式化：用 sep、comment、dtype、na_values 明确说出你期待的结构，再立刻用 shape、dtypes、head 验证读到的东西符合预期。宁可多写几行校验，也不要在画出图之后才发现解析错了。",
+      "整理阶段的重点是让数据变成「一行一个观测」的整洁（tidy）形态：样本或基因组为行，变量为列。工具输出常是宽表（物种 × 样本），而统计与绘图需要长表（每行一个 样本×物种 组合），这个转换是后续所有分析的前提。"
+    ],
+    "inputs": [
+      {
+        "type": "tsv-table",
+        "name": "工具输出的结果表",
+        "required": true,
+        "note": "QUAST、CheckM2、Kraken 报告、featureCounts 等"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "dataframe",
+        "name": "内存中的数据框",
+        "ext": "(内存对象)",
+        "note": "在同一 Python 会话内继续串联后续处理步骤"
+      },
+      {
+        "type": "csv-table",
+        "name": "整理后的表",
+        "ext": ".cleaned.csv",
+        "note": "统一列名与缺失值表示，便于共享与复查"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "pandas",
+        "version": "2.2.x",
+        "access": "python-api",
+        "install": "pip",
+        "note": "数据分析核心库；pandas 3.x 起写时复制语义有变化"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "py_pandas_tidy",
+        "viaType": "dataframe",
+        "note": "读进来之后立刻做长宽表转换与合并"
+      },
+      {
+        "target": "py_scipy_stats",
+        "viaType": "dataframe",
+        "note": "整理好的数据框进入统计检验"
+      },
+      {
+        "target": "py_export_report",
+        "viaType": "csv-table",
+        "note": "清洗后的表导出为交付物或补充材料"
+      },
+      {
+        "target": "py_sklearn_cluster",
+        "viaType": "dataframe",
+        "note": "数值矩阵进入聚类与降维"
+      }
+    ],
+    "usage": [
+      {
+        "label": "读取带注释行的工具输出（以 QUAST 报告为例）",
+        "lang": "python",
+        "code": "import pandas as pd\n\n# QUAST 的报告有任意数量的注释行，表头不在第一行\nquast = pd.read_csv(\"transposed_report.tsv\", sep=\"\\t\", comment=\"#\")\nprint(quast.shape, list(quast.columns)[:6])"
+      },
+      {
+        "label": "明确声明列类型与缺失值，避免静默解析错误",
+        "lang": "python",
+        "code": "counts = pd.read_csv(\n    \"gene_counts.tsv\",\n    sep=\"\\t\",\n    index_col=0,\n    dtype={\"Geneid\": str},       # 基因 id 绝不能被当成数字\n    na_values=[\"\", \"NA\", \"-\"],  # 明确哪些写法算缺失\n    keep_default_na=True,\n)\nassert counts.index.is_unique, \"基因 id 有重复，多半是解析没对齐\"\nprint(counts.dtypes.value_counts())"
+      },
+      {
+        "label": "读多个样本的同一类输出并合并成一个表",
+        "lang": "python",
+        "code": "from pathlib import Path\n\nframes = []\nfor path in sorted(Path(\"03_annotation\").glob(\"*.stats.tsv\")):\n    frame = pd.read_csv(path, sep=\"\\t\")\n    frame[\"sample\"] = path.stem          # 记住这行数据来自哪个样本\n    frames.append(frame)\n\ncombined = pd.concat(frames, ignore_index=True)\ncombined.to_csv(\"09_results/all_stats.csv\", index=False)"
+      }
+    ],
+    "recipes": {
+      "python": "import pandas as pd\n\ndf = pd.read_csv(\"09_results/raw_table.tsv\", sep=\"\\t\", comment=\"#\", na_values=[\"\", \"NA\", \"-\"])\nprint(f\"读入 {df.shape[0]} 行 × {df.shape[1]} 列\")\nprint(df.dtypes.to_string())\nprint(df.head(3).to_string())\ndf.to_csv(\"09_results/cleaned.csv\", index=False)"
+    },
+    "params": [
+      {
+        "flag": "sep",
+        "default": "','",
+        "note": "必须显式给 '\\t'。默认逗号会让 TSV 读成只有一列，而且不报错"
+      },
+      {
+        "flag": "comment",
+        "default": "None",
+        "note": "跳过以该字符开头的行；QUAST、CheckM 等工具的报告都有注释行"
+      },
+      {
+        "flag": "index_col",
+        "default": "None",
+        "note": "把第一列当索引；不设会让索引变成 0..n 数字，合并时列名冲突"
+      },
+      {
+        "flag": "dtype",
+        "default": "自动推断",
+        "note": "显式指定 id 列为 str。基因名被读成数值会造成难以发现的错位"
+      },
+      {
+        "flag": "na_values",
+        "default": "内置一堆",
+        "note": "补上工具特有的缺失写法（'-'、'NA'、'none'）；不补会让缺失值参与计算"
+      },
+      {
+        "flag": "usecols",
+        "default": "None",
+        "note": "只读需要的列；结果表常有几十列，可显著省内存与时间"
+      }
+    ],
+    "pitfalls": [
+      "忘记 sep=\"\\t\" 是最高频的错误。TSV 会被读成单列，而 pandas 不会报错——直到你发现「所有数据都在一列里」。",
+      "基因 id 或样本名被自动推断成数值。像 1E-3、2-3 这类名字会被转成浮点数或日期，之后合并就完全对不上。id 列一律显式 dtype=str。",
+      "工具报告里的注释行没跳过，导致整个数值列都变成字符串（object），而 pandas 对字符串列做数值运算会报错或给出意外的连接结果。读到 object 类型时先检查是不是注释行混进来了。",
+      "用 df.to_csv(path) 而不写 index=False，会多出一列无名的行号，下次读入就多一列、容易在下游搞混。",
+      "把相对丰度当整数计数处理。读取时不要用 astype(int) 强行转——浮点丰度被截断成 0 会让大量低丰度特征消失。",
+      "pd.read_csv 默认把空字段当缺失，但工具输出常把空字段写成 - 或 NA。不补充 na_values 会让这些「假缺失」变成字符串参与分组，产生一个名为 - 的诡异分组。"
+    ],
+    "related": [
+      {
+        "id": "py_pandas_tidy",
+        "note": "读取之后紧接着的整理步骤"
+      },
+      {
+        "id": "py_numpy_arrays",
+        "note": "拿到数值矩阵后做向量化计算"
+      },
+      {
+        "id": "io_interop_standard",
+        "note": "数据量大到 CSV 不够用时换成 Parquet"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 10 章 下游分析与可视化",
+        "path": "docs/guidebook/10-downstream-analysis-visualization.md"
+      }
+    ]
+  },
+  {
+    "id": "py_pandas_tidy",
+    "name": "长宽表转换与合并 (tidy 数据整理)",
+    "category": "downstream-python",
+    "layer": "downstream",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics"
+    ],
+    "tags": [
+      "python",
+      "pandas",
+      "tidy",
+      "reshape",
+      "merge"
+    ],
+    "summary": "把宽表转长表、多表合并成可用于统计的结构",
+    "what": [
+      "生信工具的原始输出多是宽表（物种 × 样本、基因 × 样本），而人类要问的问题往往是「按某个分组，某变量是否不同」。回答这类问题需要长表：每行是一个观测，每个变量占一列。melt 与 pivot 就是在两种形态之间转换的工具。",
+      "整理的另一半工作是合并：把丰度表、样本元数据（分组、时间点、批次）以及多样性指标按共同的键连起来。merge 的难点不在语法，而在连接键是否真的唯一且一致——样本名在测序公司给的表里是 Sample1、在你自己的表里可能是 Sample_1，这种不一致会让内连接静默返回空结果，或让外连接产生大量 NaN。",
+      "因此这一层的正确姿势是：每次 merge 之后立刻断言行数符合预期。how='inner' 之后行数突然变少、how='left' 之后 NaN 突然变多，都是键不匹配的明确信号，必须当场查清而不是继续往下走。"
+    ],
+    "inputs": [
+      {
+        "type": "dataframe",
+        "name": "宽表或待合并的多个表",
+        "required": true,
+        "note": "至少包含一个可作为连接键的列（样本名或基因组 id）"
+      },
+      {
+        "type": "csv-table",
+        "name": "样本元数据表",
+        "required": true,
+        "note": "含分组、批次、时间点等设计信息，是统计与绘图的分组依据"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "dataframe",
+        "name": "长表（tidy 形态）",
+        "ext": "(内存对象)",
+        "note": "每行一个观测，可直接送入统计或绘图"
+      },
+      {
+        "type": "csv-table",
+        "name": "合并后的分析用表",
+        "ext": ".analysis.csv",
+        "note": "作为统计与绘图脚本的稳定输入"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "pandas",
+        "version": "2.2.x",
+        "access": "python-api",
+        "install": "pip",
+        "note": "melt / pivot_table / merge / groupby 是核心"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "py_scipy_stats",
+        "viaType": "dataframe",
+        "note": "长表按分组做检验"
+      },
+      {
+        "target": "viz_seaborn",
+        "viaType": "dataframe",
+        "note": "seaborn 直接吃长表（hue 参数就是分组列）"
+      },
+      {
+        "target": "r_tidyverse",
+        "viaType": "csv-table",
+        "note": "把整理好的表交给 R 端做统计与绘图"
+      },
+      {
+        "target": "py_sklearn_cluster",
+        "viaType": "dataframe",
+        "note": "需要数值矩阵时再转回宽表"
+      }
+    ],
+    "usage": [
+      {
+        "label": "宽表转长表（物种 × 样本 → 每行一个 样本×物种）",
+        "lang": "python",
+        "code": "import pandas as pd\n\n# 假设 abundance 是 物种 × 样本 的宽表\nlong = abundance.reset_index().melt(\n    id_vars=\"species\",          # 保留哪些列不动\n    var_name=\"sample\",          # 原来的列名变成这一列的值\n    value_name=\"abundance\",     # 原来的单元格值变成这一列\n)\nprint(long.head())\nprint(f\"宽表 {abundance.shape} -> 长表 {long.shape}\")"
+      },
+      {
+        "label": "合并元数据并断言行数符合预期",
+        "lang": "python",
+        "code": "meta = pd.read_csv(\"sample_metadata.csv\", dtype={\"sample\": str})\n\nbefore = long.shape[0]\nmerged = long.merge(meta, on=\"sample\", how=\"inner\", validate=\"many_to_one\")\n\n# 关键：立刻验证，别等到画图才发现少了一半样本\nassert merged.shape[0] == before, f\"行数变化：{before} -> {merged.shape[0]}，键没对齐\"\nassert merged[\"group\"].notna().all(), \"有样本没匹配上分组，检查样本名写法\"\nprint(merged.groupby(\"group\")[\"abundance\"].agg([\"count\", \"mean\"]))"
+      },
+      {
+        "label": "分组汇总并转成透视表（做热图前常需要）",
+        "lang": "python",
+        "code": "summary = (\n    long.groupby([\"species\", \"group\"], as_index=False)[\"abundance\"]\n        .mean()\n        .pivot(index=\"species\", columns=\"group\", values=\"abundance\")\n        .fillna(0.0)\n)\nsummary.to_csv(\"09_results/species_by_group.csv\")"
+      }
+    ],
+    "recipes": {
+      "python": "import pandas as pd\n\nabundance = pd.read_csv(\"09_results/abundance.csv\", index_col=0)\nmeta = pd.read_csv(\"sample_metadata.csv\", dtype={\"sample\": str})\n\nlong = abundance.reset_index().melt(id_vars=abundance.index.name or \"index\",\n                                    var_name=\"sample\", value_name=\"abundance\")\nbefore = len(long)\nlong = long.merge(meta, on=\"sample\", how=\"inner\", validate=\"many_to_one\")\nassert len(long) == before, f\"合并后行数变化 {before} -> {len(long)}\"\nlong.to_csv(\"09_results/abundance_long.csv\", index=False)\nprint(long.head().to_string())"
+    },
+    "params": [
+      {
+        "flag": "melt(id_vars, var_name, value_name)",
+        "default": "—",
+        "note": "宽转长；别忘了 value_name，否则值列会叫 'value' 且多张表合并时撞名"
+      },
+      {
+        "flag": "merge(how=)",
+        "default": "'inner'",
+        "note": "inner 会静默丢样本。整理阶段通常用 'left' 保留主表全部行，便于发现匹配失败"
+      },
+      {
+        "flag": "merge(validate=)",
+        "default": "无",
+        "note": "写 'many_to_one' 或 'one_to_one' 让 pandas 主动报键重复。这是最省事的防错参数"
+      },
+      {
+        "flag": "merge(indicator=True)",
+        "default": "关闭",
+        "note": "加一列标明每行来自左表还是右表或两边都有，排查匹配问题时非常直观"
+      },
+      {
+        "flag": "pivot_table(aggfunc=)",
+        "default": "'mean'",
+        "note": "有重复键时用它而不是 pivot；pivot 遇到重复会报错，pivot_table 会聚合并可能掩盖问题"
+      }
+    ],
+    "pitfalls": [
+      "样本名不一致是这一层最常见的失败原因：大小写、连字符与下划线、前后空格、.fq.gz 后缀。整理前先做一次集合差集比较，把差异打印出来。",
+      "用 how='inner' 合并而没检查行数，会静默丢掉样本。一个看起来「组间差异显著」的结果，可能只是因为某个组被合并丢掉了。",
+      "pivot 遇到重复的键组合会报错，pivot_table 则会自动平均——后者更危险，因为它把「数据有问题」变成了「看起来正常」。先用 duplicated 查重复。",
+      "在长表上做 groupby(...).mean() 之前先确认丰度是否需要重新归一化。按物种分组平均之后再算比例，和先算比例再平均，结果不同。",
+      "链式赋值（df[df.a > 1]['b'] = 0）在 pandas 写时复制语义下不会生效且可能出警告。用 .loc 或用 assign 生成新列。",
+      "把 DataFrame 当成可以直接跨会话传递的东西。pandas 对象只在内存里存在；要跨步骤传递必须落盘（CSV 或 Parquet），这也是流程可复现性的要求。"
+    ],
+    "related": [
+      {
+        "id": "py_pandas_io",
+        "note": "上游的读取步骤"
+      },
+      {
+        "id": "r_tidyverse",
+        "note": "R 端的等价操作；两个语言间的表格式保持一致很重要"
+      },
+      {
+        "id": "py_export_report",
+        "note": "整理好的表最终要导出"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 10 章 下游分析与可视化",
+        "path": "docs/guidebook/10-downstream-analysis-visualization.md"
+      }
+    ]
+  },
+  {
+    "id": "py_numpy_arrays",
+    "name": "数值数组与向量化计算 (NumPy)",
+    "category": "downstream-python",
+    "layer": "downstream",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics"
+    ],
+    "tags": [
+      "python",
+      "numpy",
+      "矩阵",
+      "向量化",
+      "性能"
+    ],
+    "summary": "用向量化替代循环处理大矩阵",
+    "what": [
+      "生信数据经常是「大而规整」的数值矩阵：表达矩阵、k-mer 频次、距离矩阵、覆盖度数组。对这类数据用 Python 循环逐元素处理，速度会慢一到三个数量级，而且代码更长、更容易写错。NumPy 的意义是把「对每个元素做同一件事」表达成一次数组运算，让循环发生在 C 层。",
+      "它的第二个价值是内存效率。NumPy 数组的元素是连续存放的原始数值（不像 Python 列表里每个元素都是一个完整对象），因此一个 5000×5000 的浮点矩阵在 NumPy 里约 200 MB，而用嵌套列表表示会大出近一个数量级。当你需要处理接近内存上限的矩阵时，这一点决定了能否跑起来。",
+      "使用它的判断标准很朴素：如果你写了一个 for 循环去遍历数组元素并做算术，几乎总是可以（也应该）改写成数组运算；如果是遍历行去做「每行依赖前面行结果」的逻辑，那么循环可能是合理的，此时才考虑用 numba 或分块处理。"
+    ],
+    "inputs": [
+      {
+        "type": "dataframe",
+        "name": "数值矩阵",
+        "required": true,
+        "note": "来自 pandas 数据框；先确认已剔除纯文本列（如物种名）"
+      },
+      {
+        "type": "count-matrix",
+        "name": "计数矩阵",
+        "required": true,
+        "note": "基因 × 样本或 ASV × 样本的整数矩阵"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "dataframe",
+        "name": "计算结果矩阵",
+        "ext": "(内存对象)",
+        "note": "转回 DataFrame 并带上行列标签，便于继续分析与绘图"
+      },
+      {
+        "type": "csv-table",
+        "name": "导出为表",
+        "ext": ".npy.csv",
+        "note": "失去标签的纯数值产物；通常要连同行列名一起导出"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "NumPy",
+        "version": "2.x",
+        "access": "python-api",
+        "install": "pip",
+        "note": "NumPy 2.x 对部分类型提升规则有破坏性变更"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "py_sklearn_cluster",
+        "viaType": "dataframe",
+        "note": "聚类与降维要求纯数值矩阵，这一步负责转过去"
+      },
+      {
+        "target": "py_scipy_stats",
+        "viaType": "dataframe",
+        "note": "SciPy 的检验与距离计算都以数组为输入"
+      },
+      {
+        "target": "py_export_report",
+        "viaType": "csv-table",
+        "note": "把结果矩阵连同标签导出"
+      },
+      {
+        "target": "viz_heatmap",
+        "viaType": "dataframe",
+        "note": "热图本质上是对矩阵做可视化"
+      }
+    ],
+    "usage": [
+      {
+        "label": "把 DataFrame 转成矩阵（并保住行列标签）",
+        "lang": "python",
+        "code": "import numpy as np\nimport pandas as pd\n\ncounts = pd.read_csv(\"gene_counts.tsv\", sep=\"\\t\", index_col=0)\nmatrix = counts.to_numpy(dtype=float)\nprint(matrix.shape, matrix.nbytes / 1024**2, \"MB\")\n\n# 行列标签单独保存：NumPy 数组本身不带标签\nrow_labels, col_labels = counts.index.to_numpy(), counts.columns.to_numpy()"
+      },
+      {
+        "label": "向量化替代循环：CPM 归一化",
+        "lang": "python",
+        "code": "# 慢且啰嗦的写法（不要这样）\n# for j in range(matrix.shape[1]):\n#     matrix[:, j] = matrix[:, j] / matrix[:, j].sum() * 1e6\n\n# 向量化写法：按列求和后广播相除\nlib_sizes = matrix.sum(axis=0, keepdims=True)   # (1, n_samples)\ncpm = matrix / lib_sizes * 1e6\n\n# 顺手做一次健全性检查\nassert np.allclose(cpm.sum(axis=0), 1e6), \"归一化后每列总和应为 1e6\"\nprint(np.round(cpm.mean(axis=1)[:5], 3))"
+      },
+      {
+        "label": "距离矩阵与掩码运算",
+        "lang": "python",
+        "code": "from scipy.spatial.distance import pdist, squareform\n\n# 样本间距离（行是样本）\ndist_vec = pdist(np.log1p(matrix.T), metric=\"braycurtis\")\ndmat = squareform(dist_vec)\nprint(\"距离矩阵\", dmat.shape, \"最大距离\", round(float(dist_vec.max()), 3))\n\n# 掩码运算：把低丰度特征置零（而不是删行，保持矩阵形状）\nmask = matrix < 1.0\nprint(\"低丰度占比\", round(float(mask.mean()), 4))"
+      }
+    ],
+    "recipes": {
+      "python": "import numpy as np\nimport pandas as pd\n\ncounts = pd.read_csv(\"09_results/counts.tsv\", sep=\"\\t\", index_col=0)\nmatrix = counts.to_numpy(dtype=float)\n\nlib_sizes = matrix.sum(axis=0, keepdims=True)\ncpm = matrix / np.where(lib_sizes == 0, 1, lib_sizes) * 1e6\n\nresult = pd.DataFrame(cpm, index=counts.index, columns=counts.columns)\nresult.to_csv(\"09_results/cpm.csv\")\n\nprint(f\"矩阵 {matrix.shape}，{matrix.nbytes / 1024**2:.1f} MB\")\nprint(f\"每列总和（应约等于 1e6）：{np.round(cpm.sum(axis=0)[:3], 1)}\")"
+    },
+    "params": [
+      {
+        "flag": "dtype",
+        "default": "自动",
+        "note": "显式 dtype=float。整数矩阵做除法时若保持 int 会被截断成 0，这是极隐蔽的错误"
+      },
+      {
+        "flag": "axis / keepdims",
+        "default": "axis=None",
+        "note": "axis=0 按列、axis=1 按行；keepdims=True 让结果保持二维以便广播，省掉 reshape"
+      },
+      {
+        "flag": "np.log1p",
+        "default": "—",
+        "note": "对计数数据取对数；用 log1p 而不是 log 才能容忍 0 值"
+      },
+      {
+        "flag": "数组顺序（C 与 F order）",
+        "default": "'C'",
+        "note": "按行还是按列连续存储。频繁按列切片时用 'F' 会快很多，但要注意 pandas 转换后的默认布局"
+      }
+    ],
+    "pitfalls": [
+      "整数数组做除法会得到整数结果（截断），不是浮点。计数矩阵转成浮点前做任何除法，都会把小于 1 的值全部变成 0，而且不报错。",
+      "NumPy 的广播规则很强大也很容易误用：(n,1) 和 (n,) 相减得到的是 (n,n) 矩阵。形状不对时先打印 shape 再动手，不要靠猜。",
+      "取平均前没处理缺失值。NaN 会污染整行整列的统计结果（mean 返回 NaN），要用 np.nanmean 并明确知道自己在忽略什么。",
+      "matrix.T 在 NumPy 里是视图而非拷贝，改转置后的数组会同时改原数组，这在调试时非常容易被误判成「数据变了」但又找不到原因。需要独立副本时用 .copy()。",
+      "不要用 NumPy 数组替代有标签的表来做长链路分析。一旦丢了行列标签，后面所有的合并与绘图都只能靠位置索引，出错极难发现。转成数组处理完就立刻转回带标签的 DataFrame。",
+      "对距离矩阵做 log1p 或除法等变换前要意识到：距离矩阵的变换会破坏三角不等式，之后再拿去聚类（如层次聚类）得到的树在几何上不再有意义。距离矩阵计算完直接使用，不要二次变换。"
+    ],
+    "related": [
+      {
+        "id": "py_pandas_io",
+        "note": "上游读取；NumPy 与 pandas 通常是同一会话里的搭档"
+      },
+      {
+        "id": "py_scipy_stats",
+        "note": "SciPy 建立在此层之上，做检验与距离计算"
+      },
+      {
+        "id": "py_sklearn_cluster",
+        "note": "要求纯数值矩阵，本层负责准备"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 10 章 下游分析与可视化",
+        "path": "docs/guidebook/10-downstream-analysis-visualization.md"
+      }
+    ]
+  },
+  {
+    "id": "py_scipy_stats",
+    "name": "统计检验与多重校正 (SciPy / statsmodels)",
+    "category": "downstream-python",
+    "layer": "downstream",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics"
+    ],
+    "tags": [
+      "python",
+      "统计",
+      "p值",
+      "多重检验",
+      "FDR"
+    ],
+    "summary": "做检验并对成百上千次比较做多重校正",
+    "what": [
+      "组间比较的第一步是选对检验：两组独立样本、两组配对样本、多组、以及数据是否满足正态性，分别对应不同方法。选错的后果不是报错，而是给出一个看起来合理但没有意义的 p 值。在动手之前先看数据分布（箱线图或直方图）比直接调函数重要得多。",
+      "生信场景真正特殊的地方在于比较次数极多：一次差异丰度分析可能做几千次检验，一次泛基因组分析可能比较上万个基因。此时即使每个检验的假阳性率只有 5%，也会产生数百个「显著」结果。因此多重校正（Benjamini-Hochberg FDR 最常用）不是可选项，而是分析的一部分。",
+      "另一个常被忽视的点是检验的假设。当数据是组成性的（相对丰度总和恒为 1，一个物种增加必然导致其他物种减少），常规检验会产生大量假阳性，必须改用专门方法或先做 CLR/ILR 变换。"
+    ],
+    "inputs": [
+      {
+        "type": "dataframe",
+        "name": "长表或数值矩阵",
+        "required": true,
+        "note": "含分组列；每行一个观测"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "stats-result",
+        "name": "统计结果表",
+        "ext": ".stats.tsv",
+        "note": "含统计量、原始 p 值、校正后 q 值、效应量"
+      },
+      {
+        "type": "dataframe",
+        "name": "带统计结果的数据框",
+        "ext": "(内存对象)",
+        "note": "可直接送入绘图做火山图或箱线图"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "SciPy",
+        "version": "1.1x",
+        "access": "python-api",
+        "install": "pip",
+        "note": "提供检验与距离计算"
+      },
+      {
+        "tool": "statsmodels",
+        "version": "0.14.x",
+        "access": "python-api",
+        "install": "pip",
+        "note": "提供多重校正（multipletests）与回归模型"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "py_export_report",
+        "viaType": "stats-result",
+        "note": "统计结果表是补充材料的标准内容"
+      },
+      {
+        "target": "viz_volcano_ma",
+        "viaType": "stats-result",
+        "note": "差异结果画火山图需要 log2FC 与校正后 p 值"
+      },
+      {
+        "target": "tran_go_enrich",
+        "viaType": "stats-result",
+        "note": "富集分析以差异结果表为输入（显著基因清单由它自行筛选）"
+      },
+      {
+        "target": "r_export_table",
+        "viaType": "stats-result",
+        "note": "交给 R 端做格式化表格导出"
+      }
+    ],
+    "usage": [
+      {
+        "label": "两组比较 + BH 多重校正（批量）",
+        "lang": "python",
+        "code": "import pandas as pd\nfrom scipy import stats\nfrom statsmodels.stats.multitest import multipletests\n\nrecords = []\nfor feature, sub in long.groupby(\"species\"):\n    a = sub.loc[sub[\"group\"] == \"control\", \"abundance\"].to_numpy()\n    b = sub.loc[sub[\"group\"] == \"treated\", \"abundance\"].to_numpy()\n    if len(a) < 3 or len(b) < 3:\n        continue                              # 样本太少，检验没有意义\n    if a.std() == 0 and b.std() == 0:\n        continue                              # 全为同一值，检验无定义\n    stat, p = stats.mannwhitneyu(a, b, alternative=\"two-sided\")\n    records.append({\"feature\": feature, \"stat\": float(stat), \"p\": float(p),\n                    \"median_a\": float(pd.Series(a).median()),\n                    \"median_b\": float(pd.Series(b).median())})\n\nres = pd.DataFrame(records)\n# 多重校正：对全部检验的 p 值一次性校正，不能分批做\nres[\"q\"] = multipletests(res[\"p\"], method=\"fdr_bh\")[1]\nres = res.sort_values(\"q\")\nprint(res.head(10).to_string())"
+      },
+      {
+        "label": "先看图再选检验（不要跳过这一步）",
+        "lang": "python",
+        "code": "import matplotlib.pyplot as plt\nimport seaborn as sns\n\nfig, axes = plt.subplots(1, 2, figsize=(9, 3.6))\nsns.histplot(long[\"abundance\"], bins=40, ax=axes[0])\naxes[0].set_title(\"分布形态：是否严重右偏\")\nsns.boxplot(data=long, x=\"group\", y=\"abundance\", ax=axes[1])\naxes[1].set_title(\"各组分布：中位数与离散度\")\nfig.tight_layout()\nprint(long.groupby('group')['abundance'].describe().to_string())"
+      },
+      {
+        "label": "报告效应量而不只报 p 值",
+        "lang": "python",
+        "code": "# p 值只说「有没有差异」，效应量说「差异多大」\nn1, n2 = len(a), len(b)\nU, p = stats.mannwhitneyu(a, b, alternative=\"two-sided\")\nrank_biserial = 1 - (2 * U) / (n1 * n2)      # 秩二列相关，范围 -1..1\nprint(f\"U={U:.1f}  p={p:.3g}  效应量(r_rb)={rank_biserial:.3f}\")\nprint(\"效应量接近 0 时，即使 p 很小也说明差异微不足道\")"
+      }
+    ],
+    "recipes": {
+      "python": "import pandas as pd\nfrom scipy import stats\nfrom statsmodels.stats.multitest import multipletests\n\ndf = pd.read_csv(\"09_results/abundance_long.csv\")\ngroups = sorted(df[\"group\"].unique())\nassert len(groups) == 2, f\"本示例只处理两组，实际有 {groups}\"\ng1, g2 = groups\n\nrows = []\nfor feature, sub in df.groupby(\"species\"):\n    a = sub.loc[sub[\"group\"] == g1, \"abundance\"].to_numpy()\n    b = sub.loc[sub[\"group\"] == g2, \"abundance\"].to_numpy()\n    if len(a) < 3 or len(b) < 3 or (a.std() == 0 and b.std() == 0):\n        continue\n    stat, p = stats.mannwhitneyu(a, b, alternative=\"two-sided\")\n    rows.append({\"species\": feature, \"group_a\": g1, \"group_b\": g2,\n                 \"median_a\": float(pd.Series(a).median()),\n                 \"median_b\": float(pd.Series(b).median()), \"p\": float(p)})\n\nres = pd.DataFrame(rows)\nres[\"q\"] = multipletests(res[\"p\"], method=\"fdr_bh\")[1]\nres.sort_values(\"q\").to_csv(\"09_results/diff_abundance.tsv\", sep=\"\\t\", index=False)\nprint(f\"检验 {len(res)} 个特征，q<0.05 的有 {(res['q'] < 0.05).sum()} 个\")"
+    },
+    "params": [
+      {
+        "flag": "multipletests method",
+        "default": "'hs'",
+        "note": "要用 'fdr_bh' 而不是默认的 'hs'（Holm-Sidak 控制 FWER，在几千次比较时过严，几乎不会有显著结果）"
+      },
+      {
+        "flag": "alternative",
+        "default": "'two-sided'",
+        "note": "单侧检验必须先有明确的方向性假设；事后根据数据方向改成单侧是 p 值操纵"
+      },
+      {
+        "flag": "nan_policy",
+        "default": "'propagate'",
+        "note": "含 NaN 时默认返回 NaN；要忽略 NaN 需显式给 'omit'，并清楚自己忽略了什么"
+      },
+      {
+        "flag": "equal_var (t 检验)",
+        "default": "True",
+        "note": "两组方差悬殊时应设 False（Welch 检验）；默认的等方差假设在样本量不等时特别容易失效"
+      },
+      {
+        "flag": "zero_method (Wilcoxon)",
+        "default": "'wilcox'",
+        "note": "配对检验里差值为 0 的对如何处理；默认行为会丢弃部分数据，样本少时影响明显"
+      }
+    ],
+    "pitfalls": [
+      "把相对丰度当普通变量做 Mann-Whitney 或 t 检验。相对丰度是组成性数据（总和恒为 1），一个特征的上升必然伴随其他特征下降，常规检验会产生大量假阳性。微生物组差异丰度应使用 ANCOM-BC、ALDEx2 等方法，或先做 CLR/ILR 变换。",
+      "忘记多重校正，或分批校正。校正必须对全部检验的 p 值一次性进行；按物种分批校正会让每一批都有人为的显著结果。",
+      "只报 p 值不报效应量。大样本下极小的差异也能达到 p < 0.05；不看效应量就会把统计学显著误当成生物学重要。",
+      "样本量太少（每组 n < 3）时检验结果极不稳定，此时报 p 值是误导。应先说明样本量限制，用描述性统计与置信区间代替。",
+      "用 multipletests 默认的 'hs' 方法（控制 FWER）处理几千次比较，结果几乎全军覆没，然后误以为「没有差异」。绝大多数生信场景应该用 'fdr_bh'。",
+      "对已经过筛选的数据再做检验（例如「只对在至少一半样本中检出的物种做差异检验」），p 值不再具有标称性质。这类预筛选必须在方法学里明确说明，而不是当成干净的检验处理。"
+    ],
+    "related": [
+      {
+        "id": "py_pandas_tidy",
+        "note": "上游整理出长表"
+      },
+      {
+        "id": "r_limma_stats",
+        "note": "需要线性模型与协变量校正时更合适"
+      },
+      {
+        "id": "tran_deseq2",
+        "note": "计数数据用负二项模型比通用检验更合适"
+      },
+      {
+        "id": "viz_volcano_ma",
+        "note": "统计结果的标准可视化方式"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 10 章 下游分析与可视化",
+        "path": "docs/guidebook/10-downstream-analysis-visualization.md"
+      },
+      {
+        "label": "第 8 章 宏基因组与微生物组",
+        "path": "docs/guidebook/08-metagenome-microbiome.md"
+      }
+    ]
+  },
+  {
+    "id": "py_sklearn_cluster",
+    "name": "聚类与降维 (scikit-learn / UMAP)",
+    "category": "downstream-python",
+    "layer": "downstream",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics"
+    ],
+    "tags": [
+      "python",
+      "聚类",
+      "降维",
+      "PCA",
+      "UMAP",
+      "分箱"
+    ],
+    "summary": "降维观察结构、聚类给出分组",
+    "what": [
+      "降维与聚类解决的是同一类问题的两面：高维数据（几千个基因、几百个物种）无法直接观察，需要先投影到二维看有没有结构（PCA、UMAP、t-SNE），再决定是否需要给出定量分组（k-means、层次聚类、DBSCAN）。",
+      "PCA 是线性降维，保留了全局方差结构，主成分有明确的数学含义（线性组合），因此适合用来判断「主要变异来源是什么」——例如把样本按批次聚集还是按实验条件聚集。UMAP 与 t-SNE 是非线性方法，能把局部邻域关系展示得更好看，但簇间距离没有定量意义，不能根据 UMAP 图上两个簇离得远就说它们差异大。",
+      "在微生物基因组学里，同样的思路用于分箱（binning）与聚类分群：把 contig 按四核苷酸频率与覆盖度聚成 MAG，或把上千个基因组按 ANI 聚成种或株。这类场景的关键是先想清楚用什么距离度量：欧氏距离、Bray-Curtis、Jaccard 对同一份数据会给出不同的分组，而且没有「哪个更对」的通用答案，取决于数据性质与研究问题。"
+    ],
+    "inputs": [
+      {
+        "type": "dataframe",
+        "name": "数值特征矩阵",
+        "required": true,
+        "note": "行是样本或 contig，列是特征；必须先处理缺失值"
+      },
+      {
+        "type": "cluster-dist",
+        "name": "预计算的距离矩阵",
+        "required": false,
+        "note": "已有距离矩阵（如 ANI 距离、SNP 距离）时可直接用，不必再算特征"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "dataframe",
+        "name": "降维坐标",
+        "ext": ".coords.csv",
+        "note": "每行一个样本的 PC1/PC2 或 UMAP1/UMAP2，供绘图"
+      },
+      {
+        "type": "cluster-dist",
+        "name": "聚类分组与距离",
+        "ext": ".clusters.tsv",
+        "note": "每个样本或基因组的簇号，以及可选的簇内距离统计"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "scikit-learn",
+        "version": "1.5.x",
+        "access": "python-api",
+        "install": "pip",
+        "note": "提供 PCA、k-means、层次聚类、轮廓系数"
+      },
+      {
+        "tool": "UMAP",
+        "version": "0.5.x",
+        "access": "python-api",
+        "install": "pip",
+        "note": "非线性降维；学术使用需注意其许可条款"
+      },
+      {
+        "tool": "SciPy",
+        "version": "1.1x",
+        "access": "python-api",
+        "install": "pip",
+        "note": "提供层次聚类（linkage / dendrogram）与距离计算"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "viz_alpha_beta",
+        "viaType": "dataframe",
+        "note": "把 PCoA/UMAP 坐标画成样本散点图"
+      },
+      {
+        "target": "viz_heatmap",
+        "viaType": "cluster-dist",
+        "note": "用聚类结果对热图做行列排序"
+      },
+      {
+        "target": "viz_upset",
+        "viaType": "dataframe",
+        "note": "按聚类分组后比较各组的特征集合交集"
+      },
+      {
+        "target": "py_export_report",
+        "viaType": "cluster-dist",
+        "note": "把分群结果导出为结果表"
+      }
+    ],
+    "usage": [
+      {
+        "label": "PCA + 轮廓系数选 k（先看有没有结构）",
+        "lang": "python",
+        "code": "import numpy as np\nimport pandas as pd\nfrom sklearn.decomposition import PCA\nfrom sklearn.cluster import KMeans\nfrom sklearn.metrics import silhouette_score\nfrom sklearn.preprocessing import StandardScaler\n\nX = pd.read_csv(\"09_results/features.csv\", index_col=0).to_numpy(dtype=float)\nX = np.nan_to_num(X)\n\n# 特征量纲不同时先标准化，否则方差大的特征会主导一切\nX_scaled = StandardScaler().fit_transform(X)\n\npca = PCA(n_components=10, random_state=0)\ncoords = pca.fit_transform(X_scaled)\nprint(\"各主成分解释方差比：\", np.round(pca.explained_variance_ratio_, 3))\n\nfor k in range(2, 8):\n    labels = KMeans(n_clusters=k, n_init=10, random_state=0).fit_predict(coords[:, :5])\n    print(f\"k={k}  轮廓系数={silhouette_score(coords[:, :5], labels):.3f}\")"
+      },
+      {
+        "label": "用已有距离矩阵做层次聚类（基因组或样本分群）",
+        "lang": "python",
+        "code": "import numpy as np\nimport pandas as pd\nfrom scipy.cluster.hierarchy import linkage, fcluster\nfrom scipy.spatial.distance import squareform\n\n# dist 是距离矩阵（对称、对角为 0）\ndist = pd.read_csv(\"09_results/ani_distance.csv\", index_col=0).to_numpy()\nnp.fill_diagonal(dist, 0.0)\n\n# average linkage 比 single 稳健，比 complete 更适合物种级分群\nZ = linkage(squareform(dist, checks=False), method=\"average\")\n\n# 按距离阈值切分（例如 ANI 95% 对应距离 0.05）\nlabels = fcluster(Z, t=0.05, criterion=\"distance\")\nprint(pd.Series(labels).value_counts().to_string())"
+      }
+    ],
+    "recipes": {
+      "python": "import numpy as np\nimport pandas as pd\nfrom sklearn.decomposition import PCA\nfrom sklearn.preprocessing import StandardScaler\n\nX = pd.read_csv(\"09_results/features.csv\", index_col=0)\nlabels = X.index.to_numpy()\nmatrix = np.nan_to_num(X.to_numpy(dtype=float))\n\nscaled = StandardScaler().fit_transform(matrix)\npca = PCA(n_components=min(10, min(matrix.shape)), random_state=0)\ncoords = pca.fit_transform(scaled)\n\nout = pd.DataFrame(coords[:, :2], index=labels, columns=[\"PC1\", \"PC2\"])\nout.to_csv(\"09_results/pca_coords.csv\")\nprint(f\"PC1 {pca.explained_variance_ratio_[0]:.1%}  PC2 {pca.explained_variance_ratio_[1]:.1%}\")\nprint(\"提示：解释比例过低时，二维图不足以代表数据结构\")"
+    },
+    "params": [
+      {
+        "flag": "StandardScaler",
+        "default": "不做",
+        "note": "特征量纲差异大时必须标准化；不标准化等于隐含「方差大的特征更重要」"
+      },
+      {
+        "flag": "PCA(n_components)",
+        "default": "None",
+        "note": "给整数则是保留的主成分个数；要判断保留几个应看累计解释方差比"
+      },
+      {
+        "flag": "KMeans(n_init)",
+        "default": "10（新版）",
+        "note": "初始化的重复次数；旧版本默认只跑一次，结果随随机种子变化，务必显式给较大值"
+      },
+      {
+        "flag": "KMeans(random_state)",
+        "default": "None",
+        "note": "必须固定。不固定会让你每次运行得到不同分组，结果无法复现"
+      },
+      {
+        "flag": "linkage(method)",
+        "default": "'single'",
+        "note": "single 会产生链式效应（长条簇）；物种分群一般用 'average' 或 'ward'"
+      },
+      {
+        "flag": "fcluster(criterion)",
+        "default": "'distance'",
+        "note": "按距离阈值切分比按簇数更可解释（例如 ANI 95% 是物种界限）"
+      }
+    ],
+    "pitfalls": [
+      "根据 UMAP 图上簇间距离下结论。UMAP/t-SNE 只保留局部邻域结构，簇与簇之间的距离、簇的大小都不可定量解释。要比较组间差异必须回到原始距离矩阵做统计检验。",
+      "KMeans 的 random_state 没固定，换一次运行分组就变了，然后以为是数据问题。任何聚类结果都要连同随机种子一起报告。",
+      "不做标准化就聚类。在丰度数据上，高丰度物种会单方面决定分组，结果往往只是把「测序深度」聚了出来。",
+      "把「能聚成 k 个簇」当成「数据里真的有 k 个组」。轮廓系数低（例如 < 0.25）时聚类结果基本不可信，应如实报告而不是硬给出分组。",
+      "t-SNE 的 perplexity 参数会显著改变图形。默认 30 在小样本（< 50）上不合理，常导致看起来「分得很开」的假象。",
+      "对距离矩阵做二次变换（如取对数）后再层次聚类，会破坏三角不等式，得到的树不再对应任何真实度量空间。距离算完直接用。",
+      "降维图上的一个点是一个样本，容易被当作「一个个体」。在微生物组里同一受试者的多个时间点属于伪重复，图上分不开不代表没有差异。"
+    ],
+    "related": [
+      {
+        "id": "py_numpy_arrays",
+        "note": "上游的矩阵准备"
+      },
+      {
+        "id": "viz_alpha_beta",
+        "note": "降维坐标的标准可视化方式"
+      },
+      {
+        "id": "r_vegan_diversity",
+        "note": "R 端的排序方法（PCoA/NMDS/CCA），微生物组里更常用"
+      },
+      {
+        "id": "meta_binning_metabat",
+        "note": "宏基因组分箱。注意它虽然也用聚类思想，但输入是 contigs + 覆盖度，**不接受现成的距离矩阵或分组结果**，因此与本模块无法直接对接"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 10 章 下游分析与可视化",
+        "path": "docs/guidebook/10-downstream-analysis-visualization.md"
+      }
+    ]
+  },
+  {
+    "id": "py_biopython",
+    "name": "序列读写与格式解析 (Biopython)",
+    "category": "downstream-python",
+    "layer": "downstream",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "phylogenetics"
+    ],
+    "tags": [
+      "python",
+      "biopython",
+      "fasta",
+      "解析",
+      "格式"
+    ],
+    "summary": "用 Python 读写生物学序列与注释文件",
+    "what": [
+      "Biopython 是一套纯 Python 的生物学数据工具箱，最常用的是 SeqIO（读写 FASTA/GenBank/FASTQ 等格式）与 Seq 对象（序列操作与翻译）。它不追求速度，而追求格式覆盖广、API 稳定，因此特别适合做小规模但格式杂的脚本化处理：把一批注释文件里的基因名提取出来、把坐标信息转成表格、检查序列与注释是否自洽。",
+      "它的价值在数据量不大时最明显：几百条序列、几十个基因组，用 Python 写几行就能完成，比为了一个格式转换去装一个专门的工具链更省事，而且逻辑显式可读、可写进测试。",
+      "但必须清楚它的边界：Biopython 是纯 Python，逐条解析大文件（几十 GB 的 FASTQ、上亿条的读长）会慢到不可用。这类任务应该交给 seqkit、samtools、seqfu 等专门工具，Biopython 只处理它们筛出来的小结果。"
+    ],
+    "inputs": [
+      {
+        "type": "genome-fasta",
+        "name": "基因组核酸序列",
+        "required": true,
+        "note": "FASTA 或 GenBank 格式"
+      },
+      {
+        "type": "gff",
+        "name": "注释文件",
+        "required": false,
+        "note": "GFF3/GTF；Biopython 对 GFF 的支持有限，复杂解析常需 gffutils"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "cds-fasta",
+        "name": "提取的 CDS 序列",
+        "ext": ".cds.fna",
+        "note": "按注释坐标从基因组中切出的编码序列"
+      },
+      {
+        "type": "protein-faa",
+        "name": "翻译后的蛋白序列",
+        "ext": ".faa",
+        "note": "可用 Biopython 直接翻译，但生产环境更建议用 prodigal"
+      },
+      {
+        "type": "tsv-table",
+        "name": "解析后的特征表",
+        "ext": ".features.tsv",
+        "note": "把注释信息整理成表，便于统计与筛选"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "Biopython",
+        "version": "1.8x",
+        "access": "python-api",
+        "install": "pip",
+        "note": "纯 Python；无需编译，但速度受限于此"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "anno_prokka",
+        "viaType": "protein-faa",
+        "note": "自备蛋白序列时可跳过基因预测直接注释"
+      },
+      {
+        "target": "phy_mafft",
+        "viaType": "cds-fasta",
+        "note": "提取的序列进入多序列比对"
+      },
+      {
+        "target": "py_export_report",
+        "viaType": "tsv-table",
+        "note": "解析出的特征表进报告或补充材料"
+      },
+      {
+        "target": "io_gff_convert",
+        "viaType": "tsv-table",
+        "note": "注释信息转成表格后由格式模块继续处理"
+      }
+    ],
+    "usage": [
+      {
+        "label": "用 SeqIO 读取并统计序列（通用入口）",
+        "lang": "python",
+        "code": "from Bio import SeqIO\n\nrecords = list(SeqIO.parse(\"genome.fna\", \"fasta\"))\nprint(f\"序列条数 {len(records)}\")\nprint(f\"总长度 {sum(len(r.seq) for r in records):,} bp\")\n\nfor rec in records[:3]:\n    gc = (rec.seq.count(\"G\") + rec.seq.count(\"C\")) / len(rec.seq)\n    print(f\"{rec.id[:40]:<42} {len(rec.seq):>10,} bp  GC {gc:.1%}\")"
+      },
+      {
+        "label": "按注释坐标提取 CDS 并翻译（注意互补链）",
+        "lang": "python",
+        "code": "from Bio.Seq import Seq\n\n# 从注释表里拿到的是 1-based 闭区间坐标\nstart, end, strand = 1521, 2399, \"+\"\nchrom = records[0].seq\n\nfragment = chrom[start - 1 : end]      # 转成 Python 的 0-based 半开区间\nif strand == \"-\":\n    fragment = fragment.reverse_complement()\n\nprotein = Seq(fragment).translate(to_stop=True)\nprint(f\"CDS 长度 {len(fragment)} nt -> 蛋白 {len(protein)} aa\")\nprint(f\"含内部终止密码子: {'*' in str(Seq(fragment).translate())[:-1]}\")"
+      },
+      {
+        "label": "解析注释文件并整理成表",
+        "lang": "python",
+        "code": "import pandas as pd\nfrom Bio import SeqIO\n\nrows = []\nfor rec in SeqIO.parse(\"annotation.gbk\", \"genbank\"):\n    for feature in rec.features:\n        if feature.type != \"CDS\":\n            continue\n        rows.append({\n            \"contig\": rec.id,\n            \"locus_tag\": feature.qualifiers.get(\"locus_tag\", [\"\"])[0],\n            \"product\": feature.qualifiers.get(\"product\", [\"\"])[0],\n            \"start\": int(feature.location.start) + 1,     # 转回 1-based\n            \"end\": int(feature.location.end),\n            \"strand\": feature.location.strand,\n            \"length_nt\": len(feature.location),\n        })\n\ndf = pd.DataFrame(rows)\nprint(df[\"product\"].value_counts().head(10).to_string())\ndf.to_csv(\"09_results/features.tsv\", sep=\"\\t\", index=False)"
+      }
+    ],
+    "recipes": {
+      "python": "from pathlib import Path\n\nimport pandas as pd\nfrom Bio import SeqIO\n\nrows = []\nfor path in sorted(Path(\"03_annotation\").glob(\"*.gbk\")):\n    for rec in SeqIO.parse(path, \"genbank\"):\n        for feature in rec.features:\n            if feature.type != \"CDS\":\n                continue\n            rows.append({\n                \"sample\": path.stem,\n                \"contig\": rec.id,\n                \"locus_tag\": feature.qualifiers.get(\"locus_tag\", [\"\"])[0],\n                \"product\": feature.qualifiers.get(\"product\", [\"\"])[0],\n                \"start\": int(feature.location.start) + 1,\n                \"end\": int(feature.location.end),\n                \"strand\": feature.location.strand,\n            })\n\ndf = pd.DataFrame(rows)\ndf.to_csv(\"09_results/features.tsv\", sep=\"\\t\", index=False)\nprint(f\"{len(df)} 个 CDS，来自 {df['sample'].nunique() if len(df) else 0} 个样本\")"
+    },
+    "params": [
+      {
+        "flag": "SeqIO.parse(format)",
+        "default": "无",
+        "note": "必须显式给 'fasta'/'fastq'/'genbank'/'gff'；Biopython 不靠扩展名推断格式"
+      },
+      {
+        "flag": "SeqIO.index / index_db",
+        "default": "—",
+        "note": "需要随机访问大文件里的少数序列时用它，避免全量载入内存"
+      },
+      {
+        "flag": "translate(to_stop)",
+        "default": "False",
+        "note": "只翻译到第一个终止密码子；不设时会一直翻译到序列末端，遇到移码会出现一串无意义氨基酸"
+      },
+      {
+        "flag": "location.start / end",
+        "default": "—",
+        "note": "Biopython 用 0-based 半开区间，GFF 与 GenBank 显示的是 1-based 闭区间，转换必须显式加减 1"
+      }
+    ],
+    "pitfalls": [
+      "坐标体系混淆是这一层最危险的坑：Biopython 内部是 0-based 半开区间，而 GFF/GenBank/论文里都是 1-based 闭区间。漏掉 start - 1 或 end 的差别，会让每个基因都错位一个碱基，翻译出的蛋白在起始处出错——而脚本不会报错。",
+      "反向链的序列必须 reverse_complement 之后再翻译。只取坐标不处理链方向，会得到一段看似合理但完全错误的蛋白序列。",
+      "用 Biopython 解析大文件会极慢。几千条序列以内随便用；几十万条以上应该用 seqkit 或专门工具先筛。",
+      "Biopython 对 GFF3 的支持不完整（GFF3 的层级关系、多值属性容易解析错）。处理复杂 GFF 时用 gffutils 或直接当表格解析更可靠。",
+      "Seq 对象在大序列上做切片与操作会复制数据，循环里反复处理长序列会造成内存急剧膨胀。必要时用 .encode() 转成 bytes 或改用其他工具。",
+      "把 GenBank 文件的注释当作可靠来源。公开数据库里的注释质量参差，很多是自动生成的；引用来源与版本比注释内容本身更重要。"
+    ],
+    "related": [
+      {
+        "id": "util_seqkit",
+        "note": "序列级批量操作应该用它而不是 Biopython"
+      },
+      {
+        "id": "io_gff_convert",
+        "note": "注释格式转换的专门模块"
+      },
+      {
+        "id": "anno_prodigal",
+        "note": "规模化基因预测与翻译的正规工具"
+      },
+      {
+        "id": "py_pysam",
+        "note": "另一个 Python 生信库，处理比对文件；两者常配合使用"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 10 章 下游分析与可视化",
+        "path": "docs/guidebook/10-downstream-analysis-visualization.md"
+      }
+    ]
+  },
+  {
+    "id": "py_pysam",
+    "name": "比对文件读写 (pysam)",
+    "category": "downstream-python",
+    "layer": "downstream",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics"
+    ],
+    "tags": [
+      "python",
+      "pysam",
+      "bam",
+      "vcf",
+      "samtools"
+    ],
+    "summary": "在 Python 里按坐标访问 BAM 与 VCF 文件",
+    "what": [
+      "pysam 是 htslib 的 Python 封装，让 Python 能像操作本地对象一样读写比对文件（BAM/CRAM）、变异文件（VCF/BCF）和索引文件。它的核心优势是按坐标随机访问：有了索引，取某个区域的覆盖度或变异不再需要扫描整个文件。",
+      "它常用于两类任务：一是从比对结果里提取自定义统计量（某个基因区域的深度、某类比对标志的比例、插入片段分布）；二是把比对信息转成表格做下游分析。这类需求往往用 samtools 命令也能做，但涉及分支逻辑或多文件汇总时，Python 的表达能力明显更好。",
+      "需要留意的是它对文件索引状态的强依赖：没有 .bai 索引就无法随机访问，没有 .tbi 索引就无法按区域读 VCF。这类错误信息有时并不直观，因此养成「先建索引再读」的习惯可以省下大量排查时间。"
+    ],
+    "inputs": [
+      {
+        "type": "bam",
+        "name": "已排序的比对文件",
+        "required": true,
+        "note": "必须已排序（samtools sort）；未排序文件无法建索引、无法按坐标访问"
+      },
+      {
+        "type": "reference-genome",
+        "name": "参考基因组",
+        "required": false,
+        "note": "使用 CRAM 压缩格式时必需"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "tsv-table",
+        "name": "提取的区域统计表",
+        "ext": ".region_stats.tsv",
+        "note": "如目标区域的深度、比对率等自定义指标"
+      },
+      {
+        "type": "csv-table",
+        "name": "比对信息统计表",
+        "ext": ".bam_stats.csv",
+        "note": "比对率、插入片段长度、重复率等汇总"
+      },
+      {
+        "type": "vcf",
+        "name": "筛选后的变异集",
+        "ext": ".filtered.vcf.gz",
+        "note": "用 Python 逻辑做复杂筛选，比 bcftools 表达式更灵活"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "pysam",
+        "version": "0.22.x",
+        "access": "python-api",
+        "install": "pip",
+        "note": "封装 htslib；部分功能要求系统已装 samtools 所需库"
+      }
+    ],
+    "feeds": [],
+    "usage": [
+      {
+        "label": "读 BAM 并计算整体比对统计",
+        "lang": "python",
+        "code": "import statistics\n\nimport pysam\n\nbam = pysam.AlignmentFile(\"sorted.bam\", \"rb\")\n\ntotal = mapped = dup = 0\ninsert_sizes = []\nfor read in bam.fetch(until_eof=True):     # 全量遍历用 until_eof\n    total += 1\n    if read.is_unmapped:\n        continue\n    mapped += 1\n    if read.is_duplicate:\n        dup += 1\n    if read.is_proper_pair and 0 < read.template_length < 1000:\n        insert_sizes.append(abs(read.template_length))\n\nprint(f\"总读长 {total:,}  比对率 {mapped/max(total,1):.1%}  重复 {dup/max(mapped,1):.1%}\")\nif insert_sizes:\n    print(f\"插入片段中位数 {statistics.median(insert_sizes):.0f} bp\")\nbam.close()"
+      },
+      {
+        "label": "按坐标取区域深度（需要索引）",
+        "lang": "python",
+        "code": "import pysam\n\n# 先确认索引存在，否则 fetch 指定区域会报错\npysam.index(\"sorted.bam\")            # 生成 sorted.bam.bai\n\nbam = pysam.AlignmentFile(\"sorted.bam\", \"rb\")\ndepths = bam.count_coverage(\"NC_000913.3\", start=1000, end=2000, quality_threshold=20)\ntotal = [a + c + g + t for a, c, g, t in zip(*depths)]\nprint(f\"区域平均深度 {sum(total)/len(total):.1f}x  最低 {min(total)}x  最高 {max(total)}x\")\nbam.close()"
+      },
+      {
+        "label": "用 Python 逻辑筛选 VCF 并写出新的压缩 VCF",
+        "lang": "python",
+        "code": "import pysam\n\nvin = pysam.VariantFile(\"variants.vcf.gz\")\nvout = pysam.VariantFile(\"filtered.vcf.gz\", \"w\", header=vin.header)\n\nkept = dropped = 0\nfor rec in vin:\n    # 自定义筛选：深度足够 + 质量值足够\n    depth = rec.info.get(\"DP\", 0)\n    if depth >= 10 and (rec.qual or 0) >= 30:\n        vout.write(rec)\n        kept += 1\n    else:\n        dropped += 1\n\nvout.close()\nvin.close()\nprint(f\"保留 {kept}  丢弃 {dropped}\")"
+      }
+    ],
+    "recipes": {
+      "python": "import statistics\n\nimport pandas as pd\nimport pysam\n\nbam = pysam.AlignmentFile(\"06_mapping/sorted.bam\", \"rb\")\nrows = []\ntotal = mapped = dup = 0\ninserts = []\nfor read in bam.fetch(until_eof=True):\n    total += 1\n    if read.is_unmapped:\n        continue\n    mapped += 1\n    dup += int(read.is_duplicate)\n    if read.is_proper_pair and 0 < read.template_length < 1000:\n        inserts.append(abs(read.template_length))\n\nrows.append({\n    \"total_reads\": total,\n    \"mapped_rate\": round(mapped / total, 4) if total else 0.0,\n    \"duplicate_rate\": round(dup / mapped, 4) if mapped else 0.0,\n    \"median_insert\": round(statistics.median(inserts), 1) if inserts else None,\n})\nbam.close()\n\npd.DataFrame(rows).to_csv(\"09_results/bam_stats.csv\", index=False)\nprint(rows[0])"
+    },
+    "params": [
+      {
+        "flag": "AlignmentFile(mode)",
+        "default": "'r'",
+        "note": "'rb' 读 BAM、'rc' 读 CRAM、'wbu' 写未压缩 BAM。模式写错会得到难以理解的解析错误"
+      },
+      {
+        "flag": "fetch(until_eof=)",
+        "default": "False",
+        "note": "全量遍历必须设 True。默认 fetch() 只返回有索引的区域内容，无索引时会静默返回空结果"
+      },
+      {
+        "flag": "count_coverage(quality_threshold)",
+        "default": "15",
+        "note": "只统计质量达标的碱基；设 0 会把测序错误的低质量碱基也算进覆盖度，让深度虚高"
+      },
+      {
+        "flag": "VariantFile(mode)",
+        "default": "'r'",
+        "note": "写 VCF 用 'w'；写出的文件默认未压缩，要压缩需 'wz' 并确保 htslib 支持"
+      },
+      {
+        "flag": "pysam.index(path)",
+        "default": "—",
+        "note": "按坐标访问前必须先建索引；这一步常被忘记，报错信息又不够直白"
+      }
+    ],
+    "pitfalls": [
+      "在未排序的 BAM 上按坐标 fetch：BAM 必须先用 samtools sort 排序再索引，未排序文件即使建了索引也会给出错误或空的结果。",
+      "fetch() 不带 until_eof=True 时只返回第一个（或索引覆盖到的）区域的内容，遍历统计会严重偏低而不报错。全量遍历一定要加这个参数。",
+      "count_coverage 的 quality_threshold 默认是 15，不是「全部碱基」。想要原始深度必须显式传 0，但要知道此时包含了测序错误。",
+      "拿 read.template_length 直接当插入片段长度，会把负值（反向链）、0（未配对）和异常大的值也算进去，导致中位数失真。应先按 is_proper_pair 与合理范围过滤。",
+      "忘记 close()。写成 with 语句更安全，否则写出的 BAM 可能缺少文件尾标记而无法读取。",
+      "用 pysam 逐读长遍历大型 BAM 会很慢（Python 层开销大）。要做深度或多文件汇总时，通常 samtools depth、mosdepth 或 samtools flagstat 快几个数量级，pysam 更适合需要复杂逻辑的场景。",
+      "CRAM 格式必须提供参考基因组才能正确解码，否则会读出错误的序列内容。用 CRAM 时务必把参考路径一并记录。"
+    ],
+    "related": [
+      {
+        "id": "util_samtools",
+        "note": "同样功能的命令行版本，通常更快；pysam 适合需要分支逻辑的场景"
+      },
+      {
+        "id": "var_bcftools_call",
+        "note": "变异检出与筛选的命令行方案"
+      },
+      {
+        "id": "io_bam_to_bed",
+        "note": "只需覆盖度区间时的轻量做法"
+      },
+      {
+        "id": "py_biopython",
+        "note": "处理序列与注释；两者常在同一脚本里配合"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 10 章 下游分析与可视化",
+        "path": "docs/guidebook/10-downstream-analysis-visualization.md"
+      }
+    ]
+  },
+  {
+    "id": "py_export_report",
+    "name": "生成表格与报告 (to_csv / Jinja2)",
+    "category": "downstream-python",
+    "layer": "downstream",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics"
+    ],
+    "tags": [
+      "python",
+      "报告",
+      "导出",
+      "excel",
+      "可交付"
+    ],
+    "summary": "把分析结果整理成可交付的表与报告",
+    "what": [
+      "分析做完之后，结果往往散落在几十个文件里：每样本一份日志、每步一个中间表、图表各在一边。这一层的职责是把它们收敛成一份人能读、能复查、能归档的交付物：汇总表（CSV 或 Excel）、图表文件、以及一份说明「这些数字是怎么来的」的报告。",
+      "有一件事值得单独强调：交付物里必须带上下文。一个只有数值的汇总表在三个月后连作者自己都看不懂。每张表至少要能回答：它是哪个样本或基因组、用了什么工具与版本、参数是什么、生成时间。因此导出步骤通常需要把工具版本与命令一并写入报告头部。",
+      "Excel 输出在多工作表场景下比 CSV 好用（一个文件装下所有表），但要注意它带来的隐性风险：Excel 会把形似日期的基因名（如 SEPT1、MARCH1）自动转换，也会把长数字串改写成数值。这些改动发生在打开文件的那一刻，会静默破坏数据。"
+    ],
+    "inputs": [
+      {
+        "type": "dataframe",
+        "name": "最终结果表",
+        "required": true,
+        "note": "已整理、已统计的结果"
+      },
+      {
+        "type": "report",
+        "name": "图表与质控报告",
+        "required": false,
+        "note": "图文件、MultiQC 报告等，作为附件一起交付"
+      },
+      {
+        "type": "stats-result",
+        "name": "统计结果",
+        "required": false,
+        "note": "差异分析等统计表"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "csv-table",
+        "name": "汇总表",
+        "ext": "_summary.csv",
+        "note": "机器可读、无格式歧义，是归档首选"
+      },
+      {
+        "type": "report",
+        "name": "项目报告",
+        "ext": ".report.html",
+        "note": "含方法、参数、版本与结果表格"
+      },
+      {
+        "type": "gene-list",
+        "name": "关键结果清单",
+        "ext": ".key_genes.txt",
+        "note": "需要下游进一步分析或实验验证的条目"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "pandas",
+        "version": "2.2.x",
+        "access": "python-api",
+        "install": "pip",
+        "note": "to_csv / to_excel / ExcelWriter"
+      },
+      {
+        "tool": "openpyxl",
+        "version": "3.1.x",
+        "access": "python-api",
+        "install": "pip",
+        "note": "pandas 写 xlsx 的后端引擎"
+      },
+      {
+        "tool": "Jinja2",
+        "version": "3.1.x",
+        "access": "python-api",
+        "install": "pip",
+        "note": "用模板生成 HTML 报告"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "wf_reproducibility",
+        "viaType": "report",
+        "note": "报告里要记录版本与命令，才能支撑结果可追溯"
+      },
+      {
+        "target": "viz_pub_style",
+        "viaType": "report",
+        "note": "报告里的图通常要按出版规范重绘"
+      },
+      {
+        "target": "util_rename_manifest",
+        "viaType": "gene-list",
+        "note": "关键结果清单常用于后续取子集或发给合作方"
+      }
+    ],
+    "usage": [
+      {
+        "label": "多表写入一个 Excel 文件（并防止基因名被 Excel 改写）",
+        "lang": "python",
+        "code": "import pandas as pd\n\nwith pd.ExcelWriter(\"09_results/project_summary.xlsx\", engine=\"openpyxl\") as writer:\n    summary.to_excel(writer, sheet_name=\"summary\", index=False)\n    stats.to_excel(writer, sheet_name=\"differential\", index=False)\n\n# 提醒：基因名如 SEPT1 / MARCH1 被 Excel 打开时可能被转成日期。\n# 因此同时导出一份 CSV，把它当作权威版本。\nsummary.to_csv(\"09_results/project_summary.csv\", index=False)"
+      },
+      {
+        "label": "把版本与参数写进结果表头部（可追溯性的最小实现）",
+        "lang": "python",
+        "code": "import datetime as dt\nimport platform\n\nprovenance = [\n    f\"# 生成时间: {dt.datetime.now().isoformat(timespec='seconds')}\",\n    f\"# 主机: {platform.node()}  {platform.system()} {platform.release()}\",\n    f\"# Python: {platform.python_version()}\",\n    f\"# pandas: {pd.__version__}\",\n    \"# 上游命令: spades.py --careful -1 clean_R1.fq.gz -2 clean_R2.fq.gz -o 02_assembly\",\n]\n\nwith open(\"09_results/project_summary.csv\", \"w\", encoding=\"utf-8\") as fh:\n    fh.write(\"\\n\".join(provenance) + \"\\n\")\n    summary.to_csv(fh, index=False)"
+      },
+      {
+        "label": "用 Jinja2 生成一份带表格的 HTML 报告",
+        "lang": "python",
+        "code": "import datetime as dt\n\nfrom jinja2 import Template\n\ntemplate = Template(\"\"\"<!DOCTYPE html>\n<html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><title>{{ title }}</title></head>\n<body>\n  <h1>{{ title }}</h1>\n  <p>生成时间：{{ generated_at }}</p>\n  <h2>样本汇总（前 {{ top_n }} 行）</h2>\n  {{ table_html }}\n</body></html>\"\"\")\n\nhtml = template.render(\n    title=\"细菌基因组分析报告\",\n    generated_at=dt.datetime.now().strftime(\"%Y-%m-%d %H:%M\"),\n    top_n=20,\n    table_html=summary.head(20).to_html(index=False, border=1),\n)\nwith open(\"09_results/report.html\", \"w\", encoding=\"utf-8\") as fh:\n    fh.write(html)"
+      }
+    ],
+    "recipes": {
+      "python": "import datetime as dt\nfrom pathlib import Path\n\nimport pandas as pd\n\nRES_DIR = Path(\"09_results\")\nRES_DIR.mkdir(parents=True, exist_ok=True)\n\ntables = {\"summary\": summary, \"differential\": stats}\nwith pd.ExcelWriter(RES_DIR / \"project_summary.xlsx\", engine=\"openpyxl\") as writer:\n    for name, frame in tables.items():\n        frame.to_excel(writer, sheet_name=name[:31], index=False)\n\nheader = [\n    f\"# 生成时间: {dt.datetime.now().isoformat(timespec='seconds')}\",\n    f\"# pandas: {pd.__version__}\",\n    \"# 注意: 本文件为权威版本，xlsx 仅供浏览（Excel 可能改写基因名）\",\n]\nwith open(RES_DIR / \"project_summary.csv\", \"w\", encoding=\"utf-8\") as fh:\n    fh.write(\"\\n\".join(header) + \"\\n\")\n    summary.to_csv(fh, index=False)\n\nprint(\"已导出:\", \", \".join(sorted(p.name for p in RES_DIR.iterdir())))"
+    },
+    "params": [
+      {
+        "flag": "to_csv(encoding)",
+        "default": "'utf-8'",
+        "note": "涉及中文表头或物种中文名时很关键；Windows Excel 直接打开 UTF-8 CSV 可能显示乱码，可加 BOM"
+      },
+      {
+        "flag": "to_csv(index)",
+        "default": "True",
+        "note": "几乎总是要写 index=False，否则多出无名索引列"
+      },
+      {
+        "flag": "to_excel(sheet_name)",
+        "default": "'Sheet1'",
+        "note": "工作表名最长 31 字符且有非法字符限制，中文名过长会被截断"
+      },
+      {
+        "flag": "float_format",
+        "default": "None",
+        "note": "如 '%.4g' 控制有效位数；不设会让浮点结果出现十几位无意义小数"
+      },
+      {
+        "flag": "ExcelWriter(engine)",
+        "default": "自动",
+        "note": "写 xlsx 需要 openpyxl 或 xlsxwriter；显式指定可避免不同环境行为不一致"
+      }
+    ],
+    "pitfalls": [
+      "Excel 会静默改写基因名：SEPT1、MARCH1、DEC1 会被转成日期，长数字 id 会变成科学计数法。这是只在「用 Excel 打开」时发生的破坏，程序读文件看不到。所以权威版本必须是 CSV，xlsx 只作浏览用。",
+      "往 CSV 里写中文但用了非 UTF-8 编码（或被 Windows Excel 打开），会显示乱码。跨平台交付时考虑 UTF-8 with BOM。",
+      "只导出一张「干净的表」，没记录工具版本和参数。三个月后无法确认这个表是哪个版本、什么参数产生的，整个结果就不可复现了。",
+      "把大表（几十万行）写成 Excel，文件会巨大且打开极慢。超过约 100 万单元格就应改用 CSV 或 Parquet。",
+      "报告里的数字与表格是手工填的。手抄数字是引入不一致的最快方式——所有报告内容都必须由代码从结果表生成。",
+      "用相对路径写导出文件，导致从不同工作目录运行时把结果散落到各处。导出路径一律用显式目录变量并先 mkdir。",
+      "把未过滤的完整结果表和过滤后的显著结果表混在一起交付，接收方分不清哪张是结论。命名上要能一眼区分（如 _all 与 _significant）。"
+    ],
+    "related": [
+      {
+        "id": "r_export_table",
+        "note": "R 端的等价导出环节"
+      },
+      {
+        "id": "wf_reproducibility",
+        "note": "报告里的溯源信息是这一步的核心价值"
+      },
+      {
+        "id": "viz_pub_style",
+        "note": "图表规范与报告交付是配套的"
+      },
+      {
+        "id": "io_interop_standard",
+        "note": "数据量或类型复杂时用 Parquet 替代 CSV"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 10 章 下游分析与可视化",
+        "path": "docs/guidebook/10-downstream-analysis-visualization.md"
+      },
+      {
+        "label": "第 11 章 工作流引擎与可重复性",
+        "path": "docs/guidebook/11-workflow-reproducibility.md"
+      }
+    ]
+  },
+  {
+    "id": "py_snakemake_py",
+    "name": "Python 侧流程粘合 (Snakemake rule 片段)",
+    "category": "downstream-python",
+    "layer": "downstream",
+    "kind": "template",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics"
+    ],
+    "tags": [
+      "python",
+      "snakemake",
+      "流程",
+      "粘合",
+      "工程"
+    ],
+    "summary": "用 Python 把多个工具串成可重跑的任务图",
+    "what": [
+      "把分析步骤写成一段几百行的 shell 脚本能跑通一次，但很难跑第二次：改一个参数就要从头再来，中间某步失败要手工判断从哪续跑，样本多了还要自己写循环与日志管理。Snakemake 用「声明式规则 + 依赖图」替换这套手工流程：你只描述每个输出需要什么输入，调度、并行与断点续跑由它负责。",
+      "本模块的定位是模板而非工具：它给出一份可以直接改的最小可用骨架，说明 rule 的输入输出怎么声明、通配符怎么用、每步如何绑定独立环境。它需要按你的项目改写，特别是路径、样本清单与资源参数——因此它的 kind 是 template，接入后必须人工修改。",
+      "判断该不该上工作流引擎的标准很简单：如果你的流程需要重复运行、或步骤超过 5 个、或样本超过 10 个、或需要交接给他人，那就值得花半小时写 Snakemake，而不是继续维护脚本里注释掉的行。反过来，一次性探索性分析用脚本更快。"
+    ],
+    "inputs": [
+      {
+        "type": "script",
+        "name": "已跑通的分析步骤与参数",
+        "required": true,
+        "note": "先手工跑通一次，再把命令抄进 rule；顺序反了会陷入「流程写不对也跑不起来」"
+      },
+      {
+        "type": "tsv-table",
+        "name": "样本清单",
+        "required": true,
+        "note": "每行一个样本及其实验信息，作为通配符展开的依据"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "script",
+        "name": "Snakefile 与规则文件",
+        "ext": "Snakefile",
+        "note": "流程骨架；需要按项目改写"
+      },
+      {
+        "type": "log-report",
+        "name": "运行日志与资源记录",
+        "ext": ".snakemake/",
+        "note": "含每步日志、失败原因与资源用量记录"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "Snakemake",
+        "version": "8.x",
+        "access": "cli",
+        "install": "conda",
+        "note": "Python 编写；可通过 --use-conda 为每个规则绑定独立环境"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "wf_snakemake",
+        "viaType": "script",
+        "note": "本模块提供片段，wf_snakemake 讲完整的工作流工程实践"
+      },
+      {
+        "target": "wf_reproducibility",
+        "viaType": "log-report",
+        "note": "运行日志是结果可追溯的证据链"
+      },
+      {
+        "target": "wf_checkpoint_pipeline",
+        "viaType": "script",
+        "note": "断点续跑依赖规则的输出声明是否准确"
+      },
+      {
+        "target": "wf_conda_env",
+        "viaType": "script",
+        "note": "每个规则的环境声明配合环境锁定"
+      }
+    ],
+    "usage": [
+      {
+        "label": "最小可用骨架：从样本清单驱动的质控 + 组装",
+        "lang": "python",
+        "code": "\"\"\"Snakefile 最小骨架（template，需按项目改写）\"\"\"\nfrom pathlib import Path\n\nRAW = Path(\"00_raw\")\nQC = Path(\"01_clean\")\nASM = Path(\"02_assembly\")\nLOG = Path(\"10_logs\")\nSAMPLES = [line.split()[0] for line in Path(\"samples.tsv\").read_text().splitlines() if line.strip()]\n\nrule all:\n    input:\n        expand(ASM / \"{sample}\" / \"contigs.fasta\", sample=SAMPLES)\n\nrule qc_fastp:\n    input:\n        r1=RAW / \"{sample}_R1.fq.gz\",\n        r2=RAW / \"{sample}_R2.fq.gz\",\n    output:\n        r1=QC / \"{sample}_R1.fq.gz\",\n        r2=QC / \"{sample}_R2.fq.gz\",\n        json=LOG / \"{sample}.fastp.json\",\n    threads: 8\n    log: LOG / \"{sample}.fastp.log\"\n    conda: \"envs/qc.yaml\"\n    shell:\n        \"fastp -i {input.r1} -I {input.r2} -o {output.r1} -O {output.r2} \"\n        \"-w {threads} -j {output.json} 2> {log}\"\n\nrule asm_spades:\n    input:\n        r1=QC / \"{sample}_R1.fq.gz\",\n        r2=QC / \"{sample}_R2.fq.gz\",\n    output:\n        contigs=ASM / \"{sample}\" / \"contigs.fasta\",\n    threads: 16\n    log: LOG / \"{sample}.spades.log\"\n    conda: \"envs/assembly.yaml\"\n    shell:\n        \"spades.py --careful -t {threads} -1 {input.r1} -2 {input.r2} \"\n        \"-o {ASM}/{wildcards.sample} 2> {log} && \"\n        \"mv {ASM}/{wildcards.sample}/contigs.fasta {output.contigs}\""
+      },
+      {
+        "label": "先干跑确认依赖图正确，再真正执行",
+        "lang": "bash",
+        "code": "# 只看计划，不执行。这一步能发现大部分路径与通配符错误\nsnakemake -n -r\n\n# 画出依赖图，确认步骤顺序符合预期\nsnakemake --dag | dot -Tpdf > dag.pdf\n\n# 真正执行：本地 16 核，每步用独立 conda 环境\nsnakemake --cores 16 --use-conda --rerun-incomplete --keep-going"
+      },
+      {
+        "label": "失败后续跑（这是工作流引擎的核心价值）",
+        "lang": "bash",
+        "code": "# 任何一步失败修好后，直接重跑：已完成的步骤会被跳过\nsnakemake --cores 16 --use-conda\n\n# 若某步被中途打断留下了不完整文件\nsnakemake --cores 16 --rerun-incomplete"
+      }
+    ],
+    "recipes": {
+      "bash": "snakemake -n -r                    # 先干跑\nsnakemake --cores 8 --use-conda --rerun-incomplete --keep-going --printshellcmds",
+      "python": "# Snakefile 是声明式文件，不是被 import 的 Python 模块。\n# 但其中的 Python 代码（列表推导、辅助函数）会正常执行，因此可以这样组织配置：\nfrom pathlib import Path\n\nimport pandas as pd\n\nmeta = pd.read_csv(\"samples.tsv\", sep=\"\\t\", dtype=str)\nSAMPLES = meta[\"sample\"].tolist()\nCONDITIONS = dict(zip(meta[\"sample\"], meta[\"group\"]))\n"
+    },
+    "params": [
+      {
+        "flag": "--cores / -j",
+        "default": "1",
+        "note": "本地并行度。不写会串行执行，看不出工作流的价值；集群上用 --executor 或 profile"
+      },
+      {
+        "flag": "-n / --dry-run",
+        "default": "关闭",
+        "note": "只打印将要执行的命令。每次改动规则后都应该先干跑一次"
+      },
+      {
+        "flag": "--use-conda",
+        "default": "关闭",
+        "note": "按规则的 conda 指令创建独立环境；不开启则所有工具共用当前环境"
+      },
+      {
+        "flag": "--rerun-incomplete",
+        "default": "关闭",
+        "note": "清理上次中断留下的不完整输出；不加会因「文件存在但不是有效结果」而卡住"
+      },
+      {
+        "flag": "--keep-going",
+        "default": "关闭",
+        "note": "某条分支失败后继续跑其他样本；批量任务里很有用，否则一个失败会中断全部"
+      },
+      {
+        "flag": "--printshellcmds",
+        "default": "关闭",
+        "note": "打印实际执行的命令，便于核对参数是否如你所想"
+      }
+    ],
+    "pitfalls": [
+      "rule 的 output 必须完整列出所有产物。如果某步实际产出三个文件但只声明了一个，Snakemake 会认为已完成而跳过，导致缺文件却「流程成功」。",
+      "通配符 {sample} 无法从含有特殊字符的样本名展开。样本名里出现连字符、点、空格时通配符匹配会出问题；改名用下划线最省事。",
+      "忘记给命令加 2> {log}，出错信息只留在终端里，批量运行时无从追溯。日志应该在规则里显式声明。",
+      "把 {wildcards.sample} 和 {output} 混用又拼错路径，会让程序在错误的地方找文件而报「缺少输入」——先干跑确认路径。",
+      "在 rule 里写绝对路径或硬编码样本名。这类流程无法移植，也失去了工作流引擎的意义。",
+      "--use-conda 每次运行都重新解析环境，在集群上会显著变慢。可用 --conda-create-envs-only 预建环境。",
+      "误以为 Snakemake 会自动检测外部工具版本变化。它按文件时间戳与内容判断是否需要重跑；升级了工具但输出文件还在，它不会重跑。改环境后要用 --forcerun 显式重跑相关步骤。",
+      "样本数很多时（数千）依赖图构建会明显变慢。此时应改用 --batch 或按批次拆分。"
+    ],
+    "related": [
+      {
+        "id": "wf_snakemake",
+        "note": "完整的工作流工程实践（集群、profile、报告生成）"
+      },
+      {
+        "id": "wf_nextflow",
+        "note": "另一套主流引擎；语法不同，思想相同"
+      },
+      {
+        "id": "wf_dag_rule",
+        "note": "依赖声明与 DAG 的通用概念"
+      },
+      {
+        "id": "wf_checkpoint_pipeline",
+        "note": "断点续跑的机制与注意事项"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 11 章 工作流引擎与可重复性",
+        "path": "docs/guidebook/11-workflow-reproducibility.md"
+      }
+    ]
+  }
+]

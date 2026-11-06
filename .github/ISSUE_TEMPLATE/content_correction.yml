@@ -1,0 +1,74 @@
+name: Content correction / 内容纠错
+description: Report a wrong version, parameter, output name, link or explanation.
+title: "[content] "
+labels:
+  - content
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Content accuracy matters more than volume here. **A correction without evidence may be closed.**
+        内容准确性优先于数量。**没有证据的修改可能不会被采纳。**
+
+        Please link the official documentation, paper or a reproducible command that supports the correction.
+  - type: input
+    id: location
+    attributes:
+      label: Where is it? / 位置
+      description: Module ID, file path or chapter, plus the section or line if possible.
+      placeholder: "e.g. data/modules/taxonomy.json → tax_kraken2; docs/guidebook/05-taxonomy-identification.md §5.3"
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Type of correction / 纠错类型
+      options:
+        - Wrong version number
+        - Wrong parameter name or default
+        - Wrong output file name or extension
+        - Outdated tool / deprecated workflow
+        - Incorrect or misleading explanation
+        - Broken link
+        - Typo or formatting
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: current
+    attributes:
+      label: Current text / 当前内容
+      description: Quote the current wording or value.
+    validations:
+      required: true
+  - type: textarea
+    id: proposed
+    attributes:
+      label: Suggested correction / 建议修改
+      description: Give the exact replacement text or value.
+    validations:
+      required: true
+  - type: input
+    id: evidence
+    attributes:
+      label: Evidence URL / 证据链接
+      description: Official documentation, release notes, paper, or a reproducible command.
+      placeholder: "https://..."
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context / 补充说明
+      description: Version range affected, screenshots, or why the current text is wrong.
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting / 提交前确认
+      options:
+        - label: I verified the evidence against the exact version I am using.
+          required: true
+        - label: I searched existing issues and did not find a duplicate.
+          required: true

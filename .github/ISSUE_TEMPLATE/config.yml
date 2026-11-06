@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Read the contributing guide / 阅读贡献指南
+    url: https://github.com/Indigo-Rain/bioinfo-guidebook/blob/main/docs/CONTRIBUTING.md
+    about: How to add a module, workflow or data type, and how to run the checks.
+  - name: Ask a usage question / 使用问题
+    url: https://github.com/Indigo-Rain/bioinfo-guidebook/discussions
+    about: For questions that are not bug reports or content corrections.

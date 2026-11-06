@@ -1,0 +1,71 @@
+name: Bug report / 缺陷报告
+description: Report a problem with the panel, the build, an export or the tooling.
+title: "[bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a problem.
+
+        感谢反馈。请尽量提供可复现的信息。如果问题是**内容错误**（版本号、参数默认值、输出文件名等），请改用「Content correction」模板，并附上官方文档链接。
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened? / 发生了什么
+      description: Describe the actual behaviour and what you expected instead.
+      placeholder: |
+        Actual:
+        Expected:
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce / 复现步骤
+      description: For panel issues, list the clicks or the preset name. For build issues, paste the exact command.
+      placeholder: |
+        1. Open index.html
+        2. Load preset "..."
+        3. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area / 影响范围
+      options:
+        - Panel interaction (drag, connect, zoom, inspector)
+        - Export (Bash / Python / JSON)
+        - Build or validation script
+        - Documentation or broken link
+        - CI / GitHub Actions
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment / 环境
+      description: OS, browser version, Node.js version (for build issues).
+      placeholder: "e.g. Ubuntu 24.04, Firefox 130, Node.js 22.11"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots / 日志或截图
+      description: Paste relevant output. Do not include secrets or private data.
+      render: shell
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting / 提交前确认
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: I ran `node tools/build.mjs --check` if this is a build or data issue.
+          required: false

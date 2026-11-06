@@ -1,0 +1,654 @@
+[
+  {
+    "id": "asm_spades",
+    "name": "基因组组装：SPAdes",
+    "category": "assembly",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics"],
+    "tags": ["组装", "短读长", "de bruijn", "spades", "细菌基因组"],
+    "summary": "细菌短读长组装的事实标准，适合常规分离株",
+    "what": [
+      "SPAdes 用多组 k-mer 的 de Bruijn 图组装 Illumina 短读长，是细菌分离株从 clean reads 到 draft genome 的默认起点。它的核心设计是多 k 值迭代：先用小 k 建图、再用大 k 解开重复，最后同时给出 contigs.fasta（不含 N）与 scaffolds.fasta（用 N 连接 contig）两套结果；它还会先做一轮读长纠错，因此内存与时间是它的主要成本。",
+      "什么时候用它：常规细菌分离株、覆盖度 50–150x、希望拿到 contig 尽可能长且基因内容完整的草图。什么时候不该用它：宏基因组要用 metaSPAdes（分离株模式会丢掉低丰度物种的 contig）；只有长读长时用 Flye；想要质粒闭环或染色体级结论时用 Unicycler 做混合组装；如果下游主要是 SNP 分型、cgMLST 或耐药基因检出，SKESA 的保守策略往往更合适——宁可多几个 contig，也不要错误的连接。",
+      "调参的收益是有限的：重复区（rRNA 操纵子、IS 元件、转座子）内的塌缩是短读长方法的固有限制，contig 会在此断开。这类瓶颈要么靠长读长/混合组装解决，要么靠足够的覆盖度与合理的 k 值缓解；反复微调 SPAdes 参数通常收效很小。"
+    ],
+    "inputs": [
+      { "type": "clean-reads", "name": "清理后双端读长 (R1/R2)", "required": true, "note": "fastp/Trimmomatic 清理后的 paired 读长；单端数据用 -s" }
+    ],
+    "outputs": [
+      { "type": "contigs", "name": "contig 序列", "ext": ".contigs.fasta", "note": "不含 N；注释、MLST、分型等下游通常用这一份" },
+      { "type": "scaffolds", "name": "scaffold 序列", "ext": ".scaffolds.fasta", "note": "用 N 连接 contig；含 N 区域会被注释工具当作断裂" },
+      { "type": "log-report", "name": "组装日志与参数", "ext": ".spades.log", "note": "同时会写出 params.txt，提交/复现时应一并保留" }
+    ],
+    "provides": [
+      { "tool": "SPAdes", "version": "3.15.x", "access": "cli", "install": "conda", "note": "spades.py；新版本号下部分参数与默认值有调整，以官方文档为准" }
+    ],
+    "feeds": [
+      { "target": "asmqc_quast", "viaType": "contigs", "note": "组装完立刻看统计量，N50 必须与同一阈值下的结果比较" },
+      { "target": "asm_filter_contigs", "viaType": "contigs", "note": "去掉过短与可疑 contig 再进入注释与提交" },
+      { "target": "var_mlst", "viaType": "contigs", "note": "草图最轻量的第一步分型" },
+      { "target": "anno_prokka", "viaType": "contigs", "note": "拿到草图后的常规注释路线" }
+    ],
+    "usage": [
+      {
+        "label": "常规分离株组装",
+        "lang": "bash",
+        "code": "spades.py -1 clean_R1.fq.gz -2 clean_R2.fq.gz -o 02_assembly/sample_spades -t 16"
+      },
+      {
+        "label": "高覆盖度纯培养物：启用更严格的一致性模式",
+        "lang": "bash",
+        "code": "spades.py --isolate -1 clean_R1.fq.gz -2 clean_R2.fq.gz \\\n  -o 02_assembly/sample_spades -t 16"
+      },
+      {
+        "label": "只做统计核对",
+        "lang": "bash",
+        "code": "seqkit stats -a 02_assembly/sample_spades/contigs.fasta\nseqkit stats -a 02_assembly/sample_spades/scaffolds.fasta"
+      }
+    ],
+    "recipes": {
+      "bash": "spades.py -1 01_clean/${SAMPLE}_R1.fq.gz -2 01_clean/${SAMPLE}_R2.fq.gz \\\n  -o 02_assembly/${SAMPLE}_spades -t ${THREADS} --isolate 2> 10_logs/${SAMPLE}.spades.err\nseqkit stats -a 02_assembly/${SAMPLE}_spades/contigs.fasta > 10_logs/${SAMPLE}.spades.stats.tsv",
+      "python": "run([\n    \"spades.py\",\n    \"-1\", str(QC_DIR / f\"{sample}_R1.fq.gz\"),\n    \"-2\", str(QC_DIR / f\"{sample}_R2.fq.gz\"),\n    \"-o\", str(ASM_DIR / f\"{sample}_spades\"),\n    \"-t\", str(THREADS),\n    \"--isolate\",\n])"
+    },
+    "params": [
+      { "flag": "-k", "default": "多组自动（常见为 21,33,55,77）", "note": "k 必须明显小于读长；改变 k 列表会让结果与既有流程不可直接比较，跨样本务必固定" },
+      { "flag": "--isolate", "default": "关闭", "note": "针对单一分离株的严格模式，建议高覆盖度纯培养物开启；与宏基因组模式的选项不能混用" },
+      { "flag": "--careful", "default": "关闭", "note": "减少最终 contig 中的错配与短 indel，以运行时间为代价；它与 --isolate 的关系以官方文档为准" },
+      { "flag": "--cov-cutoff", "default": "关闭", "note": "按覆盖度丢弃低覆盖 contig，可选 auto 或具体数值；污染或杂音多时有用，但会误删低拷贝质粒" },
+      { "flag": "--only-assembler", "default": "关闭", "note": "跳过读长纠错，省内存省时间但保留更多错误碱基；只在内存实在不足时使用" },
+      { "flag": "-m / --memory", "default": "不限制", "note": "内存上限（GB）；设得过小不会自动降级，而是直接失败" },
+      { "flag": "-t", "default": "16", "note": "线程数；务必按机器核数显式设置" }
+    ],
+    "pitfalls": [
+      "重复区塌缩是短读长组装的固有限制：rRNA 操纵子、IS 元件处 contig 必然断开，N50 的上限由此决定。如果瓶颈正是这些区域，正确做法是上长读长/混合组装，而不是继续调 SPAdes 参数。",
+      "SPAdes 拒绝把结果写进非空输出目录，重跑会直接报错退出。要么换 -o 目录、要么清空旧目录，或用续跑参数从某个 k 值继续（确切用法以官方文档为准）。",
+      "contigs.fasta 与 scaffolds.fasta 不要混用。scaffolds 用 N 连接，注释与部分比对工具会把 N 区当作断裂；做注释、提交 NCBI、算覆盖度通常用 contigs，只有在明确需要更长结构单元时才用 scaffolds。",
+      "contig 名里的 cov_ 是 k-mer 覆盖度的近似值，不等于比对得到的真实覆盖度。用它判断质粒拷贝数或筛污染会偏，真实覆盖度必须把读长回贴后再算。",
+      "--meta 与 --isolate/--careful 是两套完全不同的模式。把宏基因组喂给分离株模式（或反过来）不会报错，但结果会系统性变差：前者丢掉低丰度物种，后者留下大量嵌合 contig。",
+      "不要指望用同一批短读长再抛光一次来「提升」SPAdes 结果：没有新信息，只会把序列换成另一套，让前后结果不可比。短读长抛光只对长读长组装有意义（见 asm_short_polish）。"
+    ],
+    "related": [
+      { "id": "asm_skesa", "note": "同为短读长组装：SKESA 更快更省内存、结果更保守；下游是 SNP 分型/耐药检出时优先考虑" },
+      { "id": "asm_unicycler", "note": "有长读长数据时改用混合组装，可拿到闭环质粒与更完整的染色体" },
+      { "id": "meta_metaspades", "note": "宏基因组数据必须换用它（即 SPAdes 的 --meta 模式）" },
+      { "id": "asmqc_quast", "note": "组装后立刻评估；注意 --min-contig 阈值要与对比对象一致" },
+      { "id": "asm_short_polish", "note": "短读长抛光的正确适用对象是长读长组装，不要用在本模块的产物上" }
+    ],
+    "docs": [
+      { "label": "第 3 章 基因组组装", "path": "docs/guidebook/03-genome-assembly.md" }
+    ]
+  },
+  {
+    "id": "asm_skesa",
+    "name": "基因组组装：SKESA",
+    "category": "assembly",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "active",
+    "domains": ["genomics"],
+    "tags": ["组装", "短读长", "ncbi", "skesa", "批量"],
+    "summary": "NCBI 的保守型短读长组装器，快且省内存",
+    "what": [
+      "SKESA 是 NCBI 为高通量测序数据开发的短读长组装器：用固定的一组 k-mer 建图，并在每一步选择最保守的延伸路径。结果是它的 contig 数通常比 SPAdes 多、N50 更低，但错误连接更少；它不做读长纠错，也不用配对信息做 scaffold。",
+      "典型适用场景有两个：一是要批量组装成百上千个分离株（单样本耗时以分钟计、内存以 GB 计），二是下游关心的是序列正确性而非连续性——SNP 分型、cgMLST、耐药基因检出都属于这一类，contig 碎一点不影响结论，但一个错误的连接会让整段基因内容错位。",
+      "它的局限也很明确：不能闭环质粒、不解析长重复区、不适用于宏基因组。因此把 SKESA 出来的草图用于「基因组完成度」类结论（染色体结构、复制子个数、是否闭环）是不合适的，那些结论需要长读长或混合组装。"
+    ],
+    "inputs": [
+      { "type": "clean-reads", "name": "清理后双端读长 (R1/R2)", "required": true, "note": "以逗号分隔的读长文件列表喂给 --reads；单端亦可" }
+    ],
+    "outputs": [
+      { "type": "contigs", "name": "contig 序列", "ext": ".contigs.fasta", "note": "建议用 --contigs_out 显式命名，避免批量运行时互相覆盖" },
+      { "type": "log-report", "name": "组装日志", "ext": ".skesa.log", "note": "含参数与运行信息；批量项目应统一保存" }
+    ],
+    "provides": [
+      { "tool": "SKESA", "version": "4.5.x", "access": "cli", "install": "conda", "note": "NCBI 维护；依赖少，适合放进批量流程" }
+    ],
+    "feeds": [
+      { "target": "asmqc_quast", "viaType": "contigs", "note": "与 SPAdes 结果并排比较时，务必都用 contig 级序列" },
+      { "target": "var_mlst", "viaType": "contigs", "note": "草图上的常规分型" },
+      { "target": "var_amrfinder", "viaType": "contigs", "note": "耐药基因与点突变检出；contig 碎不影响基因级结论" },
+      { "target": "var_typing_cgmlst", "viaType": "contigs", "note": "批量分型的常见输入；注意碎片化会增加位点未检出比例" }
+    ],
+    "usage": [
+      {
+        "label": "基本用法（多文件读长用逗号分隔）",
+        "lang": "bash",
+        "code": "skesa --reads clean_R1.fq.gz,clean_R2.fq.gz --cores 8 \\\n  --contigs_out 02_assembly/sample.skesa.fasta"
+      },
+      {
+        "label": "批量组装时固定输出名与日志",
+        "lang": "bash",
+        "code": "for s in $(cat samples.txt); do\n  skesa --reads clean/${s}_R1.fq.gz,clean/${s}_R2.fq.gz --cores 8 \\\n        --contigs_out 02_assembly/${s}.skesa.fasta > 10_logs/${s}.skesa.log 2>&1\ndone"
+      },
+      {
+        "label": "核对统计量",
+        "lang": "bash",
+        "code": "seqkit stats -a 02_assembly/sample.skesa.fasta"
+      }
+    ],
+    "recipes": {
+      "bash": "skesa --reads 01_clean/${SAMPLE}_R1.fq.gz,01_clean/${SAMPLE}_R2.fq.gz \\\n  --cores ${THREADS} --contigs_out 02_assembly/${SAMPLE}.skesa.fasta \\\n  > 10_logs/${SAMPLE}.skesa.log 2>&1",
+      "python": "run([\n    \"skesa\",\n    \"--reads\", f\"{QC_DIR}/{sample}_R1.fq.gz,{QC_DIR}/{sample}_R2.fq.gz\",\n    \"--cores\", str(THREADS),\n    \"--contigs_out\", str(ASM_DIR / f\"{sample}.skesa.fasta\"),\n])"
+    },
+    "params": [
+      { "flag": "--reads", "default": "必填", "note": "逗号分隔的读长文件列表；gzip 可直接读，不必先解压" },
+      { "flag": "--cores", "default": "以版本为准", "note": "线程数；显式设置，否则批量流程会低估资源需求" },
+      { "flag": "--contigs_out", "default": "默认文件名（以官方文档为准）", "note": "务必显式指定：默认名固定，串行脚本里极易被下一个样本覆盖" },
+      { "flag": "--memory", "default": "以官方文档为准", "note": "内存上限；单位与是否强制以官方文档为准，给太小会直接失败" },
+      { "flag": "--kmer", "default": "以官方文档为准（常见为 21,41,61）", "note": "k-mer 列表随读长与版本变化；批量项目必须固定并记录" },
+      { "flag": "最小 contig 长度相关选项", "default": "以官方文档为准", "note": "调高只是不输出短 contig，不改变组装本身；过滤更建议在组装后用 asm_filter_contigs 统一做" }
+    ],
+    "pitfalls": [
+      "SKESA 的结果更碎不是缺陷。用它做 SNP 分型、cgMLST 或耐药检出时 contig 数几乎不影响结论；但如果拿它去展示「基因组完成度」，数字会明显低于 SPAdes——这是工具定位差异，不是数据质量问题，报告里要说清楚。",
+      "它不做读长纠错也不 scaffold，因此对输入质量更敏感：低质量数据下它的保守优势会消失，错误碱基直接进入 contig。先做严格的 fastp 质控比调 SKESA 参数有效得多。",
+      "不能闭环质粒、也不能解析长重复区。复制子个数、质粒是否成环、染色体结构这类结论必须用长读长或混合组装来支撑。",
+      "批量脚本里不写 --contigs_out 是最常见的自伤：默认输出文件名固定，样本一多就会互相覆盖，而且往往到分析末期才发现少了文件。",
+      "超高高覆盖度（数百 x）不会让它更好，只会更慢。需要削减数据量时应按碱基覆盖度下采样，而不是按读长条数。",
+      "不要用它组装宏基因组或含多个菌株的混合样本：SKESA 面向单一基因组，群落数据请用 MEGAHIT / metaSPAdes。"
+    ],
+    "related": [
+      { "id": "asm_spades", "note": "contig 更长、基因内容更全；需要更完整草图或做注释展示时切换" },
+      { "id": "asm_unicycler", "note": "需要闭环质粒或染色体级结构时改用混合组装" },
+      { "id": "asmqc_quast", "note": "与 SPAdes 比较时必须都用 contig 级序列，并统一 --min-contig" },
+      { "id": "var_typing_cgmlst", "note": "SKESA 草图是 cgMLST 的常见输入；碎片化会抬高「位点未检出」比例" },
+      { "id": "meta_megahit", "note": "宏基因组组装的对应工具" }
+    ],
+    "docs": [
+      { "label": "第 3 章 基因组组装", "path": "docs/guidebook/03-genome-assembly.md" }
+    ]
+  },
+  {
+    "id": "asm_flye",
+    "name": "长读长组装：Flye",
+    "category": "assembly",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "active",
+    "domains": ["genomics"],
+    "tags": ["长读长", "nanopore", "pacbio", "重复图", "组装"],
+    "summary": "长读长从头组装，细菌染色体常一次成环",
+    "what": [
+      "Flye 用长读长的重复图（repeat graph）做从头组装，不依赖短读长。对细菌基因组，它常常直接给出单条染色体 contig 并标记为闭环，同时把「哪些重复区无法唯一解析」显式记录在 assembly_info.txt 与组装图里——也就是说，它的断点是有解释的，而不是黑箱结果。",
+      "选对预设是这一步最关键的操作：Nanopore 早期数据用 --nano-raw、Q20+（如 R10.4 的 SUP 碱基识别）用 --nano-hq、PacBio CLR 用 --pacbio-raw、HiFi 用 --pacbio-hifi。预设选错通常不会报错，只会得到更碎的组装与更多小 indel——这是 Flye 最常见的失败模式。",
+      "它假设输入来自单一基因组。宏基因组/菌群样本要用 --meta 模式；把多个菌株或含污染的读长一起组装，会得到嵌合基因组，而且统计量看起来还非常漂亮（单条长 contig）。--genome-size 用于覆盖度估计与重复解析，给错会改变哪些重复被判为可解析。"
+    ],
+    "inputs": [
+      { "type": "long-reads", "name": "过滤后长读长", "required": true, "note": "Nanopore fastq 或 PacBio HiFi/CLR；预设必须与数据类型匹配" }
+    ],
+    "outputs": [
+      { "type": "contigs", "name": "组装序列", "ext": ".flye.assembly.fasta", "note": "含染色体与质粒 contig；contig 名带长度与覆盖度信息" },
+      { "type": "tsv-table", "name": "contig 结构信息", "ext": ".flye.assembly_info.txt", "note": "记录长度、覆盖度、是否 circular、是否为 repeat 等；判断结构必看" },
+      { "type": "log-report", "name": "组装日志", "ext": ".flye.log", "note": "含预设、覆盖度估计与各阶段耗时" }
+    ],
+    "provides": [
+      { "tool": "Flye", "version": "2.9.x", "access": "cli", "install": "conda", "note": "重复图组装；细菌基因组常用 --nano-hq / --pacbio-hifi" }
+    ],
+    "feeds": [
+      { "target": "asm_medaka_polish", "viaType": "contigs", "note": "长读长组装几乎总要接一步共识抛光，修同聚物区 indel" },
+      { "target": "asmqc_quast", "viaType": "contigs", "note": "看结构指标；长读长组装即使没有参考也应至少报告统计量" },
+      { "target": "asm_filter_contigs", "viaType": "contigs", "note": "去掉污染或过短的 contig 再进入注释" },
+      { "target": "anno_prokka", "viaType": "contigs", "note": "拿到染色体级草图后的常规注释" }
+    ],
+    "usage": [
+      {
+        "label": "Nanopore Q20+ 数据",
+        "lang": "bash",
+        "code": "flye --nano-hq ont.filt.fq.gz --genome-size 5m \\\n  --out-dir 02_assembly/sample_flye --threads 16"
+      },
+      {
+        "label": "PacBio HiFi 数据",
+        "lang": "bash",
+        "code": "flye --pacbio-hifi hifi.fq.gz --genome-size 5m \\\n  --out-dir 02_assembly/sample_hifi --threads 16"
+      },
+      {
+        "label": "先看结构：环化与重复标记",
+        "lang": "bash",
+        "code": "head 02_assembly/sample_flye/assembly_info.txt\n# 关注每行的长度、覆盖度、是否 circular、是否 repeat"
+      }
+    ],
+    "recipes": {
+      "bash": "flye --nano-hq ${LONG_READS} --genome-size ${GENOME_SIZE:-5m} \\\n  --out-dir 02_assembly/${SAMPLE}_flye --threads ${THREADS} \\\n  > 10_logs/${SAMPLE}.flye.log 2>&1\nhead -20 02_assembly/${SAMPLE}_flye/assembly_info.txt > 10_logs/${SAMPLE}.flye.contig_info.txt",
+      "python": "run([\n    \"flye\",\n    \"--nano-hq\", str(LONG_READS),\n    \"--genome-size\", os.environ.get(\"GENOME_SIZE\", \"5m\"),\n    \"--out-dir\", str(ASM_DIR / f\"{sample}_flye\"),\n    \"--threads\", str(THREADS),\n])"
+    },
+    "params": [
+      { "flag": "--nano-hq / --nano-raw / --pacbio-hifi / --pacbio-raw", "default": "必选其一", "note": "必须与碱基识别与平台匹配；选错不报错但结果系统性变差" },
+      { "flag": "--genome-size", "default": "raw 模式必填", "note": "用于覆盖度估计与重复解析，可写 5m / 4.6m；错一倍会影响重复区判断，建议先用 Mash 估一个数量级正确的值并记录" },
+      { "flag": "--asm-coverage", "default": "自动", "note": "限制用于组装的覆盖度以省时间；降得太多会削弱重复解析（以官方文档为准）" },
+      { "flag": "-i / --iterations", "default": "1", "note": "内置抛光轮数；Flye 的共识精度不足以替代 Medaka/Pilon，不要靠调它代替抛光" },
+      { "flag": "--meta", "default": "关闭", "note": "宏基因组模式；单一分离株样本不要开启" },
+      { "flag": "-t / --threads", "default": "以版本为准", "note": "线程数；显式设置并记录，长读长组装的耗时对线程很敏感" }
+    ],
+    "pitfalls": [
+      "预设选错是头号问题：Q20+ 数据用 --nano-raw、或老 R9.4 数据用 --nano-hq，通常都能跑完，只是组装更碎、小 indel 更多，而且没有任何警告。记录预设与碱基识别版本是这一步的强制项。",
+      "circular=true 不等于序列完美。它只说明两端能重叠成环，同聚物区的 indel 依然存在；质粒这类小复制子在环化后仍需要抛光与人工核对起点/终点。",
+      "长读长的错误以同聚物区 indel 为主。只要下游涉及编码区（基因注释、耐药点突变、移码判断），就应该接 asm_medaka_polish，必要时再叠一层短读长抛光。",
+      "基因组大小给错（把质粒算漏、或按近缘物种估）会改变覆盖度归一化，进而影响重复解析与 contig 断点。建议先用 Mash/k-mer 估一下，并把最终填入的值写进方法。",
+      "把多个菌株或含污染的读长一起组装会得到嵌合基因组，而统计量看起来最好（单条长 contig、无碎片）。组装前先做分类筛查（如 Kraken 2）比事后返工便宜得多。",
+      "rRNA 操纵子等长重复区仍可能打断染色体 contig；这些断点会体现在 assembly_info 的 repeat 标记与组装图里。以「完成图」为目标时，需要额外的数据或平台来闭环验证。"
+    ],
+    "related": [
+      { "id": "asm_medaka_polish", "note": "几乎必然的下一步：长读长组装的碱基级错误靠它修正" },
+      { "id": "asm_unicycler", "note": "同时有高质量短读长时，混合组装可能得到更可靠的闭环结构" },
+      { "id": "asm_short_polish", "note": "长读长抛光之后再叠短读长抛光，适合对编码区准确性要求高的场景" },
+      { "id": "qc_quality_trim_long", "note": "上游的长读长过滤；过滤太狠会砍掉跨越重复区的长读长" },
+      { "id": "meta_metaspades", "note": "宏基因组样本应改用宏基因组组装路线，不要用 Flye 的分离株预设" }
+    ],
+    "docs": [
+      { "label": "第 3 章 基因组组装", "path": "docs/guidebook/03-genome-assembly.md" }
+    ]
+  },
+  {
+    "id": "asm_unicycler",
+    "name": "混合组装：Unicycler",
+    "category": "assembly",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics"],
+    "tags": ["混合组装", "短读长", "长读长", "质粒", "完成图"],
+    "summary": "短读长加长读长混合组装，力求质粒闭环",
+    "what": [
+      "Unicycler 内部先跑 SPAdes 得到短读长组装图，再用长读长把图桥接成更完整的结构，最后用 Pilon（短读长）抛光，输出 assembly.fasta 与 assembly.gfa。它的目标是细菌基因组的完成图：单条染色体、每个质粒各自闭环——这也是它在公共卫生与质粒研究里难以被替代的原因。",
+      "三种模式是它最重要的取舍：conservative（默认）只接受证据充分的桥接，可能留下多个 contig；moderate 与 bold 越来越激进，闭环更多但错误连接的风险升高。默认模式下的碎片不是失败；在打算切到 bold 之前，应该先检查长读长覆盖度与重复结构，而不是为了让 contig 数变少而切模式。",
+      "代价是慢与依赖多：它需要 spades.py、racon、pilon（Java）、bowtie2、samtools、BLAST+ 等一整套外部程序，缺一个就会失败；运行时间通常是单跑 SPAdes 的数倍。只有短读长数据时，Unicycler 相比直接用 SPAdes 没有实质优势。"
+    ],
+    "inputs": [
+      { "type": "clean-reads", "name": "清理后双端读长 (R1/R2)", "required": true, "note": "用于建图与最终抛光；质量直接影响闭环与纠错" },
+      { "type": "long-reads", "name": "过滤后长读长", "required": false, "note": "桥接与闭环的关键；只给短读长时结果接近 SPAdes，收益有限" }
+    ],
+    "outputs": [
+      { "type": "contigs", "name": "最终组装序列", "ext": ".unicycler.assembly.fasta", "note": "染色体与质粒的完成/近完成序列；建议同时保留 GFA 以便回查结构" },
+      { "type": "log-report", "name": "运行日志", "ext": ".unicycler.log", "note": "含各阶段桥接与抛光信息；排查错误连接时要看它" }
+    ],
+    "provides": [
+      { "tool": "Unicycler", "version": "0.5.x", "access": "cli", "install": "conda", "note": "内部依赖 spades.py / racon / pilon / bowtie2 / samtools / BLAST+" },
+      { "tool": "Pilon", "version": "1.2x", "access": "cli", "install": "conda", "note": "Unicycler 内部的短读长抛光步骤；需要 Java 运行环境" }
+    ],
+    "feeds": [
+      { "target": "asmqc_quast", "viaType": "contigs", "note": "核对最终结构与 contig 数是否符合预期" },
+      { "target": "asmqc_ideel", "viaType": "contigs", "note": "闭环与桥接都可能引入局部错误，用短读长证据复核" },
+      { "target": "asm_filter_contigs", "viaType": "contigs", "note": "去掉残余碎片后再做注释与比较" },
+      { "target": "res_plasmidfinder", "viaType": "contigs", "note": "质粒闭环正是本模块最有价值的产物，接下来通常做复制子分型" },
+      { "target": "anno_prokka", "viaType": "contigs", "note": "拿到完成图后的常规注释" }
+    ],
+    "usage": [
+      {
+        "label": "短读长 + 长读长混合组装（默认保守模式）",
+        "lang": "bash",
+        "code": "unicycler -1 clean_R1.fq.gz -2 clean_R2.fq.gz -l ont.filt.fq.gz \\\n  -o 02_assembly/sample_unicycler -t 16"
+      },
+      {
+        "label": "只有短读长（退化为 SPAdes + 桥接）",
+        "lang": "bash",
+        "code": "unicycler -1 clean_R1.fq.gz -2 clean_R2.fq.gz \\\n  -o 02_assembly/sample_unicycler -t 16"
+      },
+      {
+        "label": "保留中间文件以便回查（磁盘占用明显增加）",
+        "lang": "bash",
+        "code": "unicycler -1 clean_R1.fq.gz -2 clean_R2.fq.gz -l ont.filt.fq.gz \\\n  -o 02_assembly/sample_unicycler -t 16 --keep"
+      }
+    ],
+    "recipes": {
+      "bash": "unicycler -1 01_clean/${SAMPLE}_R1.fq.gz -2 01_clean/${SAMPLE}_R2.fq.gz \\\n  -l 01_clean/${SAMPLE}.filtlong.fq.gz \\\n  -o 02_assembly/${SAMPLE}_unicycler -t ${THREADS} \\\n  > 10_logs/${SAMPLE}.unicycler.log 2>&1",
+      "python": "run([\n    \"unicycler\",\n    \"-1\", str(QC_DIR / f\"{sample}_R1.fq.gz\"),\n    \"-2\", str(QC_DIR / f\"{sample}_R2.fq.gz\"),\n    \"-l\", str(QC_DIR / f\"{sample}.filtlong.fq.gz\"),\n    \"-o\", str(ASM_DIR / f\"{sample}_unicycler\"),\n    \"-t\", str(THREADS),\n])"
+    },
+    "params": [
+      { "flag": "--mode", "default": "conservative", "note": "conservative/moderate/bold 三档；越激进闭环越多、错误连接风险越高。默认档留下来的碎片通常反映数据不足，而不是参数不够猛" },
+      { "flag": "--no_pilon", "default": "关闭", "note": "跳过最终的短读长抛光；数据量大或短读长质量差时可先跑通结构，再单独评估是否需要抛光" },
+      { "flag": "--keep", "default": "关闭", "note": "保留中间文件（SPAdes 图、桥接过程等）；排查可疑连接时几乎必需，但磁盘占用成倍增加" },
+      { "flag": "-l / --long", "default": "无", "note": "长读长输入；给不给决定了这是混合组装还是「SPAdes + 桥接」" },
+      { "flag": "-t", "default": "以版本为准", "note": "线程数；Unicycler 的总耗时由多个内部步骤共同决定" }
+    ],
+    "pitfalls": [
+      "默认 conservative 模式留下多个 contig 是正常结果。在没有新增数据的情况下切到 --bold，只是把不确定性变成看不见的错误连接——统计量变好，结论却可能完全错。",
+      "混合组装的结果必须复核结构：一个错误连接会让整条染色体 contig 的注释、共线性与分型全部偏移，而它在统计上只表现为「一个更长的 contig」。建议用 asmqc_ideel 或把读长回贴看覆盖度是否在某处断裂。",
+      "依赖缺失会以奇怪的报错形式出现（找不到 spades.py / java / makeblastdb）。容器化运行比逐个 conda 安装省事得多，尤其 Pilon 需要匹配的 Java。",
+      "长读长覆盖度不足（例如 < 20x）时桥接不可靠，结果会退化成接近 SPAdes 的水平。这种情况应补数据，而不是反复调参数。",
+      "它只针对细菌这类小基因组。真菌、大型真核基因组、宏基因组都不适用；宏基因组请走 MEGAHIT / metaSPAdes + 分箱路线。",
+      "抛光步骤会改动序列：报告里要写明最终提交/分析用的是哪一个版本（assembly.fasta 还是某轮中间产物），同一菌株的不同版本不可互换。"
+    ],
+    "related": [
+      { "id": "asm_spades", "note": "只有短读长时的默认选择；Unicycler 内部也依赖它" },
+      { "id": "asm_flye", "note": "只有长读长时改用 Flye；两者都追求完成图但策略不同" },
+      { "id": "asm_hic_scaffold", "note": "长读长不足以闭环多条染色体时，Hi-C 可提供额外的顺序与定向证据" },
+      { "id": "asmqc_ideel", "note": "专门用来复核桥接与闭环引入的局部错误" },
+      { "id": "res_plasmidfinder", "note": "质粒闭环后的常规下游" }
+    ],
+    "docs": [
+      { "label": "第 3 章 基因组组装", "path": "docs/guidebook/03-genome-assembly.md" }
+    ]
+  },
+  {
+    "id": "asm_short_polish",
+    "name": "短读长抛光长读长组装 (Pilon / POLCA)",
+    "category": "assembly",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics"],
+    "tags": ["抛光", "pilon", "polca", "indel", "短读长"],
+    "summary": "用短读长抛光长读长组装，修正 indel 错误",
+    "what": [
+      "长读长组装的价值在结构（跨越重复区、闭环），但碱基级错误集中在同聚物区的插入/缺失，会让编码区出现假移码与提前终止。短读长抛光就是用高准确度的 Illumina 读长把这些 indel 修回来：Pilon 更老、被大量既有流程沿用且对局部错误更激进；POLCA 更快、更保守，还能一次给多个候选组装打分。",
+      "前提是读长必须回贴到当前的组装上：抛光 → 重新比对 → 再抛光。迭代两轮左右是常见做法；如果第二轮沿用了旧的比对文件，等于把第一轮又算了一遍还多改了一次序列。这一步的输入是「读长 + 组装」，任何一侧换了都必须重新比对。",
+      "判断抛光是否成功不能靠感觉：要比较抛光前后的 contig 数、总长度与 BUSCO/QUAST 指标，并确认变化方向一致（例如移码基因减少、总长度小幅收缩）。并不是轮数越多越好——低覆盖度或读长来源不一致时，抛光会把真实变异或噪声固化成错误。"
+    ],
+    "inputs": [
+      { "type": "contigs", "name": "待抛光的长读长组装", "required": true, "note": "通常是 Flye/Medaka 之后的草图；先记录它的 md5 以便追溯" },
+      { "type": "clean-reads", "name": "清理后短读长 (R1/R2)", "required": true, "note": "必须与组装来自同一菌株/同一样本；混杂样本会让抛光固化错误" }
+    ],
+    "outputs": [
+      { "type": "contigs", "name": "抛光后组装", "ext": ".polished.fasta", "note": "最终用于注释、比较与提交的版本；务必保留未抛光版本" },
+      { "type": "tsv-table", "name": "改动清单", "ext": ".pilon.changes", "note": "Pilon 的逐位点改动记录；用于核查改了什么、改得是否合理" },
+      { "type": "log-report", "name": "抛光日志", "ext": ".polish.log", "note": "含每轮命令与统计；迭代轮次必须可追溯" }
+    ],
+    "provides": [
+      { "tool": "Pilon", "version": "1.2x", "access": "cli", "install": "conda", "note": "Java 实现；2019 年后基本停更，但仍是大量既有流程的默认" },
+      { "tool": "POLCA", "version": "4.x", "access": "cli", "install": "conda", "note": "随 MaSuRCA 发布；速度快、策略保守，可对多个候选组装打分" },
+      { "tool": "BWA-MEM2", "version": "2.2.x", "access": "cli", "install": "conda", "note": "把短读长回贴到当前组装；每轮抛光前都要重跑" }
+    ],
+    "feeds": [
+      { "target": "asmqc_quast", "viaType": "contigs", "note": "抛光前后对比 contig 数、总长度与 N50，确认变化方向合理" },
+      { "target": "asmqc_busco", "viaType": "contigs", "note": "移码与截断被修正后，完整基因数应略有回升" },
+      { "target": "asm_filter_contigs", "viaType": "contigs", "note": "抛光后清理残余碎片再进入注释" },
+      { "target": "anno_prokka", "viaType": "contigs", "note": "编码区准确性提升后注释更可靠" },
+      { "target": "asm_hic_scaffold", "viaType": "contigs", "note": "结构稳定的 contig 再挂载到染色体，避免把上游错误放大" }
+    ],
+    "usage": [
+      {
+        "label": "Pilon 第一轮：先比对，再抛光",
+        "lang": "bash",
+        "code": "bwa index draft.fasta\nbwa mem -t 16 draft.fasta clean_R1.fq.gz clean_R2.fq.gz | \\\n  samtools sort -@ 8 -o round1.bam -\nsamtools index round1.bam\npilon --genome draft.fasta --frags round1.bam --output round1 \\\n  --outdir pilon_r1 --changes --threads 16"
+      },
+      {
+        "label": "Pilon 第二轮：必须把读长重新贴回第一轮的结果",
+        "lang": "bash",
+        "code": "bwa index pilon_r1/round1.fasta\nbwa mem -t 16 pilon_r1/round1.fasta clean_R1.fq.gz clean_R2.fq.gz | \\\n  samtools sort -@ 8 -o round2.bam -\nsamtools index round2.bam\npilon --genome pilon_r1/round1.fasta --frags round2.bam --output round2 \\\n  --outdir pilon_r2 --changes --threads 16"
+      },
+      {
+        "label": "POLCA：更快的一条命令路线",
+        "lang": "bash",
+        "code": "polca.sh -a draft.fasta -r \"clean_R1.fq.gz clean_R2.fq.gz\" -t 16\n# 输出文件名以官方文档为准；可把多个候选组装一起交给 -a 让它按证据排序"
+      }
+    ],
+    "recipes": {
+      "bash": "bwa index 02_assembly/${SAMPLE}_draft.fasta\nbwa mem -t ${THREADS} 02_assembly/${SAMPLE}_draft.fasta \\\n  01_clean/${SAMPLE}_R1.fq.gz 01_clean/${SAMPLE}_R2.fq.gz | \\\n  samtools sort -@ ${THREADS} -o 02_assembly/${SAMPLE}.polish.bam -\nsamtools index 02_assembly/${SAMPLE}.polish.bam\npilon --genome 02_assembly/${SAMPLE}_draft.fasta --frags 02_assembly/${SAMPLE}.polish.bam \\\n  --output ${SAMPLE}_polished --outdir 02_assembly/${SAMPLE}_pilon --changes --threads ${THREADS}",
+      "python": "run(f\"bwa index {ASM_DIR}/{sample}_draft.fasta\")\nrun(f\"bwa mem -t {THREADS} {ASM_DIR}/{sample}_draft.fasta \"\n    f\"{QC_DIR}/{sample}_R1.fq.gz {QC_DIR}/{sample}_R2.fq.gz | \"\n    f\"samtools sort -@ {THREADS} -o {ASM_DIR}/{sample}.polish.bam -\")\nrun(f\"samtools index {ASM_DIR}/{sample}.polish.bam\")\nrun([\n    \"pilon\",\n    \"--genome\", str(ASM_DIR / f\"{sample}_draft.fasta\"),\n    \"--frags\", str(ASM_DIR / f\"{sample}.polish.bam\"),\n    \"--output\", f\"{sample}_polished\",\n    \"--outdir\", str(ASM_DIR / f\"{sample}_pilon\"),\n    \"--changes\",\n    \"--threads\", str(THREADS),\n])"
+    },
+    "params": [
+      { "flag": "Pilon --frags / --jumps / --unpaired", "default": "按文库类型选择", "note": "PE 文库用 --frags；类型给错会得到错误的插入片段模型，改动结果不可信" },
+      { "flag": "Pilon --changes", "default": "关闭", "note": "输出逐位点改动清单；必须开启，否则无法核查抛光改了什么" },
+      { "flag": "Pilon --threads", "default": "以版本为准", "note": "线程数；Java 堆内存的调整方式以官方文档为准，大基因组用默认堆会 OutOfMemory" },
+      { "flag": "POLCA -a / -r", "default": "必填", "note": "-a 可给多个候选组装，它会按 k-mer 证据打分并指出最优者（输出与判据以官方文档为准）" },
+      { "flag": "迭代轮数", "default": "1–2 轮", "note": "第 1 轮收益最大，第 2 轮之后通常进入噪声范围；过度抛光可能引入新错误" },
+      { "flag": "读长过滤强度", "default": "轻度", "note": "抛光需要足够的读长证据；大幅下采样会让低覆盖区域被错误改动" }
+    ],
+    "pitfalls": [
+      "比对文件必须是「读长对当前组装」的比对。第二轮抛光前忘记重新比对，等于把第一轮重复计算一次并再次改动序列，结果无法解释。",
+      "覆盖度过低（经验上低于约 20x）时抛光不可靠：证据不足的位点会按统计倾向被改动。低覆盖数据应先补测序，而不是靠抛光「救回来」。",
+      "HiFi（Q30+）或高精度长读长组装通常不需要短读长抛光：收益很小，还可能引入新的不一致。是否抛光应由 QUAST/BUSCO 前后对比决定，而不是按惯例。",
+      "抛光会改变总长度、contig 边界，甚至把 contig 连接或拆分。因此必须保留未抛光版本、记录每轮命令，并在报告里说明分析与提交用的是哪一版。",
+      "若抛光用的短读长来自不同批次、不同文库，或混有污染，抛光会把污染等位基因固化进基因组。抛光前先确认读长的物种纯度与来源一致性。",
+      "PCR 重复会放大 Pilon 的证据强度，让某些位点被过度「修正」。覆盖度异常高的数据建议先去重（见 qc_dedup_reads）再抛光。"
+    ],
+    "related": [
+      { "id": "asm_medaka_polish", "note": "长读长共识抛光；与本模块互补，通常先做它再做短读长抛光" },
+      { "id": "asm_flye", "note": "最常被抛光的上游组装器" },
+      { "id": "asmqc_quast", "note": "抛光前后的结构指标对比" },
+      { "id": "asmqc_busco", "note": "用完整基因数判断 indel 是否被有效修正" },
+      { "id": "qc_dedup_reads", "note": "高覆盖度数据抛光前先去重，避免证据强度被高估" }
+    ],
+    "docs": [
+      { "label": "第 3 章 基因组组装", "path": "docs/guidebook/03-genome-assembly.md" }
+    ]
+  },
+  {
+    "id": "asm_medaka_polish",
+    "name": "长读长共识抛光 (Medaka / Racon)",
+    "category": "assembly",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "active",
+    "domains": ["genomics"],
+    "tags": ["抛光", "medaka", "racon", "nanopore", "共识"],
+    "summary": "长读长共识抛光，修正同聚物区 indel",
+    "what": [
+      "Medaka 与 Racon 都是长读长共识抛光工具：把同一平台的长读长再次比对到 draft 上，用比对堆叠重新决定每个位点的碱基。它们修正的主要是长读长特有的同聚物区 indel，而不是结构错误或嵌合——后者必须在组装与结构验证阶段解决。",
+      "两者分工明确：Racon 通用（ONT/PacBio 都可用，需要 minimap2 产生重叠或比对），速度快、模型简单；Medaka 专用于 Nanopore，用神经网络模型，通常能把共识精度推得更高，但必须选与碱基识别软件、flowcell 与化学版本匹配的模型，模型不匹配时结果可能比 Racon 还差。",
+      "轮数通常 1–2 轮就收敛：Racon 第 1 轮提升最大，之后边际收益迅速下降，过度抛光反而会偏离真实序列。抛光应使用完整或轻度过滤的长读长，不能用大幅下采样后的子集；如果对碱基级准确性要求很高，长读长抛光之后再叠一层短读长抛光。"
+    ],
+    "inputs": [
+      { "type": "contigs", "name": "待抛光的长读长组装", "required": true, "note": "Flye 等组装器的输出；先记录其 md5" },
+      { "type": "long-reads", "name": "长读长（同平台同批次）", "required": true, "note": "必须与组装来自同一样本与同一次碱基识别；过滤过狠会削弱抛光效果" }
+    ],
+    "outputs": [
+      { "type": "contigs", "name": "共识抛光后序列", "ext": ".consensus.fasta", "note": "称为 consensus 以区别于组装器的原始输出" },
+      { "type": "log-report", "name": "抛光日志", "ext": ".medaka.log", "note": "必须记录模型名/参数与轮数，否则结果无法复现" }
+    ],
+    "provides": [
+      { "tool": "Medaka", "version": "1.1x", "access": "cli", "install": "conda", "note": "仅适用于 Nanopore；模型必须与碱基识别版本匹配，新版本子命令与模型命名有调整（以官方文档为准）" },
+      { "tool": "Racon", "version": "1.5.x", "access": "cli", "install": "conda", "note": "通用的长读长共识抛光；需要 minimap2 产生的重叠/比对" },
+      { "tool": "minimap2", "version": "2.2x", "access": "cli", "install": "conda", "note": "为 Racon 生成比对；预设要与平台匹配" }
+    ],
+    "feeds": [
+      { "target": "asmqc_quast", "viaType": "contigs", "note": "核对抛光后 contig 数与总长度变化是否在合理范围" },
+      { "target": "asm_short_polish", "viaType": "contigs", "note": "还需要碱基级最高准确度时，叠一层短读长抛光" },
+      { "target": "asmqc_busco", "viaType": "contigs", "note": "同聚物区 indel 被修正后，完整基因数应略有改善" },
+      { "target": "anno_prokka", "viaType": "contigs", "note": "编码区更可靠之后再注释" }
+    ],
+    "usage": [
+      {
+        "label": "Medaka：模型必须与数据匹配",
+        "lang": "bash",
+        "code": "# 先列出可用模型，选与 basecaller / flowcell / 化学版本匹配的那一个\nmedaka tools list_models\nmedaka_consensus -i ont.filt.fq.gz -d draft.fasta -o 02_assembly/sample_medaka \\\n  -t 16 -m <model_name>"
+      },
+      {
+        "label": "Racon：两轮，第二轮必须重新比对",
+        "lang": "bash",
+        "code": "minimap2 -x map-ont -t 16 draft.fasta ont.filt.fq.gz > overlaps.paf\nracon -t 16 ont.filt.fq.gz overlaps.paf draft.fasta > racon1.fasta\n# 第二轮：把读长重新比回 racon1.fasta 再跑一次\nminimap2 -x map-ont -t 16 racon1.fasta ont.filt.fq.gz > overlaps2.paf\nracon -t 16 ont.filt.fq.gz overlaps2.paf racon1.fasta > racon2.fasta"
+      },
+      {
+        "label": "对比抛光前后的统计量",
+        "lang": "bash",
+        "code": "seqkit stats -a draft.fasta racon2.fasta"
+      }
+    ],
+    "recipes": {
+      "bash": "minimap2 -x map-ont -t ${THREADS} 02_assembly/${SAMPLE}_flye/assembly.fasta \\\n  01_clean/${SAMPLE}.filtlong.fq.gz > 02_assembly/${SAMPLE}.overlaps.paf\nracon -t ${THREADS} 01_clean/${SAMPLE}.filtlong.fq.gz \\\n  02_assembly/${SAMPLE}.overlaps.paf \\\n  02_assembly/${SAMPLE}_flye/assembly.fasta > 02_assembly/${SAMPLE}.racon1.fasta",
+      "python": "run(f\"minimap2 -x map-ont -t {THREADS} {ASM_DIR}/{sample}_flye/assembly.fasta \"\n    f\"{QC_DIR}/{sample}.filtlong.fq.gz > {ASM_DIR}/{sample}.overlaps.paf\")\nrun(f\"racon -t {THREADS} {QC_DIR}/{sample}.filtlong.fq.gz \"\n    f\"{ASM_DIR}/{sample}.overlaps.paf \"\n    f\"{ASM_DIR}/{sample}_flye/assembly.fasta > {ASM_DIR}/{sample}.racon1.fasta\")"
+    },
+    "params": [
+      { "flag": "medaka -m / --model", "default": "必须显式指定", "note": "如 r1041_e82_400bps_sup_* 系列；确切名称以 medaka tools list_models 的输出为准。模型与数据不匹配是这一步最常见的失败原因" },
+      { "flag": "racon 比对预设", "default": "map-ont（ONT）/ map-pb（PacBio）", "note": "预设与平台不匹配会显著降低比对率，抛光效果随之变差" },
+      { "flag": "Racon -t", "default": "以版本为准", "note": "线程数；Racon 单轮很快，瓶颈常在 minimap2" },
+      { "flag": "抛光轮数", "default": "1–2 轮", "note": "第 2 轮之后提升通常已在噪声范围内；过度抛光可能引入新错误，需用 BUSCO/参考比对确认收敛" },
+      { "flag": "读长过滤强度", "default": "轻度或无过滤", "note": "抛光需要覆盖全部组装区域；大幅削减后的子集会让部分区域被改动而缺乏证据" }
+    ],
+    "pitfalls": [
+      "Medaka 模型与数据不匹配是最难察觉的错误：流程不报错也能跑完，但共识质量可能低于 Racon。记录碱基识别版本与模型名是强制项。",
+      "Racon 的比对必须针对当前序列。第二轮要把读长比回新共识再跑，复用旧 PAF 等于重复第一轮，是常见且不易发现的错误。",
+      "抛光不修结构错误。如果草图的染色体结构本身是错的（嵌合、错误连接），抛光只会把错误序列打磨得更「干净」；结构问题要靠读长回贴覆盖度与更上游的组装判断。",
+      "长读长共识不能纠正系统性的同聚物长度偏差。对编码区敏感的结论（移码、提前终止、耐药点突变）建议再叠一层短读长抛光，或在结论中明确说明不确定性。",
+      "抛光后总长度通常略减（多余的小 indel 被修正），contig 数也可能变化。若总长度大幅缩短（例如超过 5%），应回头检查组装本身而不是继续抛光。",
+      "Medaka 只适用于 Nanopore。PacBio 数据请用 Racon（或该平台自带的共识流程）；把 PacBio 读长喂给 Medaka 不会得到有意义的结果。"
+    ],
+    "related": [
+      { "id": "asm_flye", "note": "最常见的前一步；Flye 的内置抛光不足以替代本模块" },
+      { "id": "asm_short_polish", "note": "长读长抛光之后叠一层短读长抛光，进一步修正同聚物区误差" },
+      { "id": "qc_quality_trim_long", "note": "上游过滤；过滤过狠会削弱抛光证据" },
+      { "id": "asmqc_ideel", "note": "抛光之后用来核查是否还残留可疑 indel" },
+      { "id": "asmqc_busco", "note": "用完整基因数判断抛光是否真的改善了编码区" }
+    ],
+    "docs": [
+      { "label": "第 3 章 基因组组装", "path": "docs/guidebook/03-genome-assembly.md" }
+    ]
+  },
+  {
+    "id": "asm_hic_scaffold",
+    "name": "Hi-C 挂载到染色体 (YaHS / SALSA2)",
+    "category": "assembly",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "active",
+    "domains": ["genomics"],
+    "tags": ["hi-c", "scaffold", "染色体", "yahs", "salsa2"],
+    "summary": "Hi-C 读长把 contig 排序定向到染色体级别",
+    "what": [
+      "Hi-C 用染色质构象捕获给出「哪些序列在三维空间上彼此靠近」的信号，把已经组装好的 contig 排序、定向并连接成染色体级别的 scaffold，同时把属于同一复制子（染色体或质粒）的 contig 聚在一起。常用实现是 YaHS 与 SALSA2，流程都是「Hi-C 读长比回 contig → 组装 scaffold → 用接触图核查」。",
+      "它只解决顺序与方向，不修正 contig 内部的错误，也不创造新序列。因此错误的 contig（嵌合、污染、重复区塌缩）会被固化并被连接放大——一处局部错误会升级成整条染色体的结构问题。正确顺序是先做组装质量与污染检验（QUAST / BUSCO / CheckM2 / GUNC / IDEEL），再做挂载。",
+      "结果必须用接触图人工核查：染色体条数是否符合该物种的预期、是否有明显的越界连接、复制终止区附近是否出现反常强信号。只看 scaffold 数量变少、N50 变高就宣布成功，是这一类分析里最危险的用法。"
+    ],
+    "inputs": [
+      { "type": "contigs", "name": "已通过质量检验的 contig", "required": true, "note": "污染与错误连接必须先排查；Hi-C 会把上游错误放大" },
+      { "type": "hic-reads", "name": "Hi-C 双端读长", "required": true, "note": "同一菌株的 Hi-C 文库；有效配对比例决定结果是否可用" }
+    ],
+    "outputs": [
+      { "type": "scaffolds", "name": "染色体级 scaffold", "ext": ".scaffolds.fa", "note": "含 gap（N）；连接与定向由 Hi-C 信号决定" },
+      { "type": "tsv-table", "name": "挂载描述文件", "ext": ".scaffolds.agp", "note": "记录每个 scaffold 由哪些 contig 以何方向组成；核查与回退都靠它" },
+      { "type": "log-report", "name": "挂载日志", "ext": ".yahs.log", "note": "含参数与接触信号统计" }
+    ],
+    "provides": [
+      { "tool": "YaHS", "version": "1.2.x", "access": "cli", "install": "conda", "note": "输出可接入 juicer 生态生成接触图；酶切位点相关参数在新版本中已简化" },
+      { "tool": "SALSA2", "version": "2.3", "access": "cli", "install": "conda", "note": "需要酶切位点与 samtools faidx 生成的 .fai" },
+      { "tool": "bwa", "version": "0.7.17", "access": "cli", "install": "conda", "note": "Hi-C 读长比对；Hi-C 专用参数以官方文档为准" }
+    ],
+    "feeds": [
+      { "target": "asmqc_quast", "viaType": "scaffolds", "note": "挂载前后的结构指标对比（注意 N 会让 N50 变好，不代表信息变多）" },
+      { "target": "asmqc_busco", "viaType": "scaffolds", "note": "确认挂载过程没有引入序列错误或丢失基因内容" },
+      { "target": "anno_prokka", "viaType": "scaffolds", "note": "染色体级坐标下的注释；坐标体系必须与挂载后版本一致" },
+      { "target": "viz_circos", "viaType": "scaffolds", "note": "染色体级组装适合做环形基因组图" }
+    ],
+    "usage": [
+      {
+        "label": "YaHS：先比对（按读长名排序），再挂载",
+        "lang": "bash",
+        "code": "bwa index contigs.fa\nbwa mem -t 16 contigs.fa hic_R1.fq.gz hic_R2.fq.gz | \\\n  samtools sort -n -@ 8 -o hic.namesorted.bam -\nyahs contigs.fa hic.namesorted.bam -o yahs_out\n# 接触图需要 juicer 工具链，命令以官方文档为准"
+      },
+      {
+        "label": "SALSA2：需要酶切位点与 .fai",
+        "lang": "bash",
+        "code": "samtools faidx contigs.fa\npython run_pipeline.py -a contigs.fa -l contigs.fa.fai \\\n  -b hic.namesorted.bam -e GATC -o salsa_out -m yes"
+      },
+      {
+        "label": "核查挂载描述文件",
+        "lang": "bash",
+        "code": "head yahs_out_scaffolds_final.agp\n# 每个 scaffold 由哪些 contig、以什么方向组成，逐条核对是否与接触图一致"
+      }
+    ],
+    "recipes": {
+      "bash": "bwa index 02_assembly/${SAMPLE}.filtered.fasta\nbwa mem -t ${THREADS} 02_assembly/${SAMPLE}.filtered.fasta \\\n  00_raw/${SAMPLE}_hic_R1.fq.gz 00_raw/${SAMPLE}_hic_R2.fq.gz | \\\n  samtools sort -n -@ ${THREADS} -o 02_assembly/${SAMPLE}.hic.bam -\nyahs 02_assembly/${SAMPLE}.filtered.fasta 02_assembly/${SAMPLE}.hic.bam \\\n  -o 02_assembly/${SAMPLE}_yahs > 10_logs/${SAMPLE}.yahs.log 2>&1",
+      "python": "run(f\"bwa index {ASM_DIR}/{sample}.filtered.fasta\")\nrun(f\"bwa mem -t {THREADS} {ASM_DIR}/{sample}.filtered.fasta \"\n    f\"{RAW_DIR}/{sample}_hic_R1.fq.gz {RAW_DIR}/{sample}_hic_R2.fq.gz | \"\n    f\"samtools sort -n -@ {THREADS} -o {ASM_DIR}/{sample}.hic.bam -\")\nrun(f\"yahs {ASM_DIR}/{sample}.filtered.fasta {ASM_DIR}/{sample}.hic.bam \"\n    f\"-o {ASM_DIR}/{sample}_yahs\")"
+    },
+    "params": [
+      { "flag": "酶切位点（SALSA2 -e；YaHS 相关选项）", "default": "SALSA2 必填 / YaHS 新版已简化", "note": "必须与建库所用的限制酶一致（如 GATC）；给错会让连接信号无法解析。YaHS 的处理方式以官方文档为准" },
+      { "flag": "contig 级纠错开关（YaHS 的 --no-contig-ec 等）", "default": "默认开启纠错", "note": "内置纠错会改动 contig 序列；若要与未挂载版本严格比较，应确认这些开关的状态（参数名以官方文档为准）" },
+      { "flag": "比对排序方式", "default": "按读长名排序", "note": "Hi-C 需要配对的两端信息，排序方式给错会导致没有可用连接" },
+      { "flag": "最小 contig 长度", "default": "先过滤", "note": "过短的 contig 在 Hi-C 中几乎没有信号，通常先用 asm_filter_contigs 过滤再挂载" },
+      { "flag": "Juicer 接触图", "default": "建议必做", "note": "生成 .hic 后可在 Juicebox 中人工核查；命令与版本以官方文档为准" }
+    ],
+    "pitfalls": [
+      "Hi-C 会把上游错误固化：一条嵌合 contig 被挂进染色体后，问题从「一个 contig 的错误」升级为「染色体结构错误」，而且很难回溯。挂载前必须完成污染与错误检验。",
+      "必须人工看接触图。scaffold 数量正常但内部顺序错乱的情况很常见，只有接触图能识别；只看 N50 提升会得出完全错误的结论。",
+      "结果质量取决于建库：交联效率低、有效配对比例低或测序量不足时，挂载接近随机。先统计有效配对比例与覆盖度，再决定是否采用这批数据。",
+      "不能用于混合样本或多个菌株。Hi-C 假设所有 contig 来自同一个细胞群体，混样会得到「融合染色体」。",
+      "细菌染色体条数因物种而异（多数为单条环状染色体，也有双染色体与大型质粒）。判断 scaffold 划分对不对，需要该物种的预期结构作为对照，不能只看数量。",
+      "挂载后的坐标体系与挂载前不同（序列被重排、插入 N）。注释与比较分析必须统一用挂载后的 FASTA 重做，混用两套坐标会让基因位置与共线性结论互相矛盾。"
+    ],
+    "related": [
+      { "id": "asm_filter_contigs", "note": "挂载前的清理：过短与可疑 contig 先去干净" },
+      { "id": "asmqc_ideel", "note": "挂载前用它确认 contig 内部没有残留错误" },
+      { "id": "asmqc_gunc", "note": "挂载前排除跨类群污染，否则会被连进染色体" },
+      { "id": "asm_unicycler", "note": "长读长足以闭环时优先用它；Hi-C 更适合长读长无法解析的多复制子结构" },
+      { "id": "comp_syri", "note": "染色体级组装后的共线性比较对象" },
+      { "id": "viz_circos", "note": "把染色体级组装画成环形图" }
+    ],
+    "docs": [
+      { "label": "第 3 章 基因组组装", "path": "docs/guidebook/03-genome-assembly.md" }
+    ]
+  },
+  {
+    "id": "asm_filter_contigs",
+    "name": "contig 过滤与精简 (seqkit / seqtk)",
+    "category": "assembly",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics", "metagenomics"],
+    "tags": ["过滤", "长度阈值", "污染", "seqkit", "seqtk"],
+    "summary": "按长度与证据精简 contig，去掉碎片与污染",
+    "what": [
+      "组装输出里通常混着三类东西：真正属于目标基因组的 contig、过短而无法支撑任何分析的碎片、以及来自污染或嵌合的序列。过滤这一步就是把它们分开：先按长度（可选再按覆盖度）去掉碎片，再按比对或分类证据剔除不属于目标物种的 contig。",
+      "长度阈值不是随手定的：NCBI 提交时会剔除短于 200 bp 的 contig，注释工具也需要足够长的序列才能可靠预测基因，而 MAG 分析常用 500–1000 bp 起的阈值。更关键的是，过滤会改变所有组装统计量（contig 数、N50、总长度），所以过滤前后的指标都要记录，报告里说清用的是哪一版。",
+      "覆盖度过滤要特别小心：质粒的拷贝数与染色体不同（高拷贝质粒覆盖度远高于染色体，大型低拷贝质粒则接近甚至低于染色体），按覆盖度一刀切会优先删掉真正的质粒，或保留污染。去污染应结合分类证据、GC 与覆盖度是否落在主群之外综合判断，而不是只看一个数值。"
+    ],
+    "inputs": [
+      { "type": "contigs", "name": "待过滤的组装", "required": true, "note": "SPAdes/SKESA/Flye 等输出；建议直接用 contig 级序列" },
+      { "type": "tsv-table", "name": "per-contig 覆盖度或分类表", "required": false, "note": "由读长回贴或分类工具生成；用于比单纯长度更精细的筛选" }
+    ],
+    "outputs": [
+      { "type": "contigs", "name": "过滤后组装", "ext": ".filtered.fasta", "note": "下游统一使用这一份；务必保留过滤前版本以便追溯" },
+      { "type": "log-report", "name": "过滤统计", "ext": ".filter_stats.txt", "note": "记录阈值、被删 contig 数与前后指标，是报告里的必要证据" },
+      { "type": "tsv-table", "name": "per-contig 统计表", "ext": ".contig_stats.tsv", "note": "长度、GC、覆盖度等；便于人工判断异常 contig" }
+    ],
+    "provides": [
+      { "tool": "seqkit", "version": "2.9.x", "access": "cli", "install": "conda", "note": "Go 实现，流式低内存；seq/stats 子命令覆盖大部分过滤需求" },
+      { "tool": "seqtk", "version": "1.4", "access": "cli", "install": "conda", "note": "更轻量的经典选择；长选项较少但足够做长度过滤" },
+      { "tool": "SAMtools", "version": "1.1x", "access": "cli", "install": "conda", "note": "从比对结果算真实覆盖度（idxstats/depth），不要用 k-mer 覆盖度代替" }
+    ],
+    "feeds": [
+      { "target": "asmqc_quast", "viaType": "contigs", "note": "过滤后的统计量必须重算，并写清用的是哪一版序列" },
+      { "target": "asmqc_checkm2", "viaType": "contigs", "note": "过滤掉污染 contig 后再评估完整度与污染度" },
+      { "target": "anno_prokka", "viaType": "contigs", "note": "注释前的标准清理，避免把污染基因注释进来" },
+      { "target": "tax_gtdbtk", "viaType": "contigs", "note": "分类注释前去掉碎片可提高标记基因命中的稳定性" }
+    ],
+    "usage": [
+      {
+        "label": "按长度过滤（seqkit）",
+        "lang": "bash",
+        "code": "seqkit seq -m 500 -w 0 02_assembly/sample.contigs.fasta \\\n  -o 02_assembly/sample.filtered.fasta"
+      },
+      {
+        "label": "等价做法（seqtk，更轻量）",
+        "lang": "bash",
+        "code": "seqtk seq -L 500 02_assembly/sample.contigs.fasta > 02_assembly/sample.filtered.fasta"
+      },
+      {
+        "label": "记录过滤前后的指标变化",
+        "lang": "bash",
+        "code": "seqkit stats -a -T 02_assembly/sample.contigs.fasta \\\n  02_assembly/sample.filtered.fasta > 10_logs/sample.filter_stats.tsv\n# 报告里应同时给出过滤前后的 contig 数、总长度与 N50"
+      }
+    ],
+    "recipes": {
+      "bash": "seqkit seq -m ${MIN_CONTIG:-500} -w 0 02_assembly/${SAMPLE}.contigs.fasta \\\n  -o 02_assembly/${SAMPLE}.filtered.fasta\nseqkit stats -a -T 02_assembly/${SAMPLE}.contigs.fasta \\\n  02_assembly/${SAMPLE}.filtered.fasta > 10_logs/${SAMPLE}.filter_stats.tsv",
+      "python": "run([\"seqkit\", \"seq\", \"-m\", os.environ.get(\"MIN_CONTIG\", \"500\"), \"-w\", \"0\",\n     str(ASM_DIR / f\"{sample}.contigs.fasta\"),\n     \"-o\", str(ASM_DIR / f\"{sample}.filtered.fasta\")])\nwith open(LOG_DIR / f\"{sample}.filter_stats.tsv\", \"w\", encoding=\"utf-8\") as fh:\n    subprocess.run([\"seqkit\", \"stats\", \"-a\", \"-T\",\n                    str(ASM_DIR / f\"{sample}.contigs.fasta\"),\n                    str(ASM_DIR / f\"{sample}.filtered.fasta\")], check=True, stdout=fh)"
+    },
+    "params": [
+      { "flag": "seqkit -m", "default": "建议 500", "note": "最小长度；NCBI 提交的下限是 200 bp，注释与 MAG 分析常用 500–1000 bp。阈值必须在项目内统一" },
+      { "flag": "seqkit -w 0", "default": "60", "note": "不换行输出序列；部分老工具对多行 FASTA 的处理有差异，统一成单行更省事" },
+      { "flag": "seqtk -L", "default": "0", "note": "与 seqkit -m 等价的最小长度选项；seqtk 更轻量但参数更少" },
+      { "flag": "覆盖度阈值", "default": "无通用值", "note": "先看 per-contig 覆盖度分布（双峰常意味着污染或质粒），再决定阈值；不要直接套用别人的数字" },
+      { "flag": "分类证据过滤", "default": "—", "note": "按比对/分类结果剔除明显不属于目标类群的 contig；所用数据库与版本必须与结果一起记录" },
+      { "flag": "输入序列版本", "default": "contigs", "note": "优先过滤 contig 级序列；含 N 的 scaffold 会让长度统计虚高" }
+    ],
+    "pitfalls": [
+      "过滤会改变 N50 与总长度。把「过滤后的 N50」和「过滤前的总长度」放在同一张表里比较是最常见的报告错误——统计量必须来自同一份序列，并且注明是哪一版。",
+      "按覆盖度过滤会误删质粒。高拷贝质粒的覆盖度可以是染色体的数倍，低拷贝大质粒则可能低于染色体；判断是否保留应看复制子与接合转移相关基因，而不是只看覆盖度数值。",
+      "短 contig 里可能有完整的重要基因（单个耐药基因、小质粒、IS 元件）。阈值越高越容易丢掉这类结论；研究问题涉及可移动元件或耐药基因时应降低阈值并单独记录。",
+      "用「无比对命中就删」做去污染会误删新物种或参考库缺代表的环境菌序列。更稳妥的是结合 GC、覆盖度与分类归属综合判断，并保留被删序列清单以便复核。",
+      "过滤前后必须留下明确的版本关系（文件名、md5、命令与日志）。下游一旦混用两个版本，基因坐标与注释会互相矛盾，而且极难追查。",
+      "把过滤当作「提升组装质量」的手段是本末倒置：如果大量 contig 因低覆盖被删，问题通常在测序深度或污染，而不是阈值设得不够漂亮。"
+    ],
+    "related": [
+      { "id": "asmqc_quast", "note": "过滤后重跑统计，避免版本混用" },
+      { "id": "anno_prokka", "note": "过滤后进入注释的标准路线" },
+      { "id": "util_seqkit", "note": "更通用的序列文件操作模块；本模块只聚焦过滤这一步" },
+      { "id": "asmqc_checkm2", "note": "去污染后用完整度/污染度确认效果" },
+      { "id": "asm_hic_scaffold", "note": "Hi-C 挂载前通常先做长度过滤" }
+    ],
+    "docs": [
+      { "label": "第 3 章 基因组组装", "path": "docs/guidebook/03-genome-assembly.md" }
+    ]
+  }
+]

@@ -1,0 +1,1454 @@
+[
+  {
+    "id": "r_read_import",
+    "name": "结果表读入与清洗 (readr / readxl)",
+    "category": "downstream-r",
+    "layer": "downstream",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics"
+    ],
+    "tags": [
+      "R",
+      "readr",
+      "readxl",
+      "导入",
+      "列类型"
+    ],
+    "summary": "把测序与统计结果表读进 R 并显式声明列类型",
+    "what": [
+      "R 侧分析的第一步几乎总是把结果表读进来。readr 的 read_tsv 与 read_csv 比 base R 的 read.table 快得多，并且默认不把字符列自动转成因子（stringsAsFactors 的老坑），这两点让它成为现代 R 流程的默认选择。读 Excel 则需要 readxl。",
+      "与 Python 侧同理，导入阶段最容易出的问题是列类型被猜错：样本名里的连字符会被解析成日期、基因 id 被转成数值、缺失值表示不统一。readr 的价值在于它会**用一句提示告诉你猜了什么类型**，而 read_table 是静默的。认真看一眼这行提示，能省掉后面几小时的排查。",
+      "读入之后立刻做三件事：确认行数列数、确认关键列的类型、确认缺失值数量。这三步各只需一行代码，却能在源头拦住绝大多数「结果不对劲」的问题。"
+    ],
+    "inputs": [
+      {
+        "type": "tsv-table",
+        "name": "工具输出表",
+        "required": true,
+        "note": "QUAST、CheckM2、featureCounts、Kraken 汇总等"
+      },
+      {
+        "type": "csv-table",
+        "name": "样本元数据表",
+        "required": true,
+        "note": "含分组、批次等设计信息"
+      },
+      {
+        "type": "log-report",
+        "name": "质控汇总输出",
+        "required": false,
+        "note": "如 MultiQC 的 multiqc_data.json；读入后作为指标表使用，注意列类型需显式声明"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "dataframe",
+        "name": "R 数据框（tibble）",
+        "ext": "(内存对象)",
+        "note": "同一 R 会话内继续做统计与绘图"
+      },
+      {
+        "type": "csv-table",
+        "name": "清洗后的表",
+        "ext": ".cleaned.csv",
+        "note": "统一列名与缺失值表示，供后续脚本复用"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "readr",
+        "version": "2.1.x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "tidyverse 的读表组件"
+      },
+      {
+        "tool": "readxl",
+        "version": "1.4.x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "读 .xlsx / .xls，无需 Java"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "r_tidyverse",
+        "viaType": "dataframe",
+        "note": "读进来之后进入 dplyr 的处理链"
+      },
+      {
+        "target": "r_vegan_diversity",
+        "viaType": "dataframe",
+        "note": "丰度矩阵进入群落多样性分析"
+      },
+      {
+        "target": "r_matrix_stats",
+        "viaType": "dataframe",
+        "note": "数值矩阵进入距离与排序计算"
+      },
+      {
+        "target": "viz_ggplot2",
+        "viaType": "dataframe",
+        "note": "整理好的表可直接用于 ggplot2 绘图"
+      }
+    ],
+    "usage": [
+      {
+        "label": "读 TSV 并显式声明列类型",
+        "lang": "r",
+        "code": "library(readr)\n\nstats <- read_tsv(\n  \"09_results/all_stats.tsv\",\n  col_types = cols(\n    sample = col_character(),        # 样本名一律字符，防被当日期/数值\n    genome_size = col_double(),\n    contigs = col_integer(),\n    .default = col_guess()\n  ),\n  na = c(\"\", \"NA\", \"-\", \"N/A\")\n)\n\ndim(stats)\nglimpse(stats)"
+      },
+      {
+        "label": "读 Excel 的指定工作表",
+        "lang": "r",
+        "code": "library(readxl)\n\n# 先看有哪些工作表，再按名字读，避免读错 sheet\nprint(excel_sheets(\"project_summary.xlsx\"))\n\nmeta <- read_excel(\"project_summary.xlsx\", sheet = \"metadata\")\n# readxl 不会猜列类型，字符列保持字符，这一点比 read_csv 更省心\nsapply(meta, class)"
+      },
+      {
+        "label": "批量读多个同类文件并合并",
+        "lang": "r",
+        "code": "library(fs)\nlibrary(purrr)\nlibrary(readr)\n\nfiles <- dir_ls(\"03_annotation\", glob = \"*.stats.tsv\")\n\ntidy <- map_dfr(files, function(path) {\n  read_tsv(path, col_types = cols(.default = col_guess())) |>\n    mutate(sample = path_file(path) |> str_remove(\"\\\\.stats\\\\.tsv$\"))\n})\n\nnrow(tidy); n_distinct(tidy$sample)"
+      }
+    ],
+    "recipes": {
+      "bash": "Rscript -e 'library(readr); d <- read_tsv(\"09_results/all_stats.tsv\"); print(dim(d)); print(sapply(d, class))'",
+      "r": "library(readr)\n\nraw <- read_tsv(\"09_results/all_stats.tsv\", na = c(\"\", \"NA\", \"-\"))\n\n# 三个必做的健全性检查\ncat(\"维度：\", nrow(raw), \"x\", ncol(raw), \"\\n\")\ncat(\"关键列类型：\\n\"); print(sapply(raw, class))\ncat(\"每列缺失数：\\n\"); print(colSums(is.na(raw)))\n\nwrite_csv(raw, \"09_results/cleaned.csv\")"
+    },
+    "params": [
+      {
+        "flag": "col_types",
+        "default": "col_guess()",
+        "note": "显式声明关键列；id 与样本名列必须是 col_character()，否则会被猜成日期或数值"
+      },
+      {
+        "flag": "na",
+        "default": "c(\"\", \"NA\")",
+        "note": "补上工具特有的缺失写法（'-'、'N/A'）。不补会让这些值变成字符串，分组时出现诡异的 '-' 组"
+      },
+      {
+        "flag": "locale",
+        "default": "系统默认",
+        "note": "涉及小数点与千分位符号时很重要；欧洲区域设置会把 1,5 当小数，读出的数值会错"
+      },
+      {
+        "flag": "skip / comment",
+        "default": "0 / \"\"",
+        "note": "跳过注释行；QUAST 等工具的报告表头不在第一行"
+      },
+      {
+        "flag": "readxl::read_excel(col_types)",
+        "default": "自动",
+        "note": "readxl 虽然不猜字符/数值，但对列本身类型仍需确认日期列"
+      }
+    ],
+    "pitfalls": [
+      "readr 打印的类型提示常被忽略。当它提示 `col_character() -> col_double()` 之类的猜测时，先停下来确认，否则样本名里的 `Sample-1` 会被解析成日期，后续所有合并都失败。",
+      "用 `read.table(..., stringsAsFactors = TRUE)` 的老习惯（R 4.0 之前是默认值）会把所有文本列变成因子。因子参与合并时会按内部整数编码匹配，产生完全错误的结果而不报错。readr 默认不会这样，但如果你还在用 read.table，务必显式 `stringsAsFactors = FALSE`。",
+      "Excel 读入的列名可能含空格与特殊字符，`$` 引用会变成反引号地狱。读入后统一 `janitor::clean_names()` 或 `rename_with()` 改名，比在代码里到处写反引号省事。",
+      "`col_guess()` 为了猜类型会先扫描若干行。文件前几千行全是 `NA` 而后面才有数值时，该列会被猜成 logical。大文件建议显式给 col_types。",
+      "把丰度表用 `read_csv` 读进来后再做 `as.matrix()`，如果表里混了非数值列（如注释列），会得到字符矩阵而所有数值运算静默变成字符串拼接。转矩阵前先确认每列都是数值。",
+      "文件路径用反斜杠（Windows 习惯）在 R 里会被当转义字符。用正斜杠或 `file.path()` 拼接，跨平台更稳。"
+    ],
+    "related": [
+      {
+        "id": "py_pandas_io",
+        "note": "Python 端的等价步骤；两个语言的导入约定最好保持一致"
+      },
+      {
+        "id": "r_tidyverse",
+        "note": "导入之后紧接着的整理步骤"
+      },
+      {
+        "id": "io_table_to_phylip",
+        "note": "从表格转到建树输入格式的专门模块"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 10 章 下游分析与可视化",
+        "path": "docs/guidebook/10-downstream-analysis-visualization.md"
+      }
+    ]
+  },
+  {
+    "id": "r_tidyverse",
+    "name": "R 数据整形 (tidyverse / dplyr)",
+    "category": "downstream-r",
+    "layer": "downstream",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics"
+    ],
+    "tags": [
+      "R",
+      "tidyverse",
+      "dplyr",
+      "tidyr",
+      "数据整形"
+    ],
+    "summary": "用管道语法做筛选、分组汇总与长宽表转换",
+    "what": [
+      "tidyverse 是一组共享数据约定与语法的 R 包，核心是 dplyr（筛选、分组汇总、连接）与 tidyr（长宽表转换）。它把数据分析写成一条从左到右的管道：先取子集、再分组、再汇总、再排序，每一步读起来就像在描述分析意图。",
+      "与 Python 侧 pandas 的分工基本相同，但 R 在统计学与绘图生态上的连贯性更强：同样的数据从 dplyr 处理完可以直接交给 ggplot2 绘图，分组变量在两层之间自然传递，不需要反复转换数据结构。这是很多人把下游统计与作图放在 R 里的主要原因。",
+      "需要注意的概念性差异：tidyverse 的分组（group_by）是**数据框上的一种元数据状态**，它会一直生效到被 summarise 或 ungroup 消耗掉。忘记 ungroup 会让后续意外地按残留分组运算，这是 dplyr 最经典的坑。"
+    ],
+    "inputs": [
+      {
+        "type": "dataframe",
+        "name": "待整理的 R 数据框",
+        "required": true,
+        "note": "来自 readr 读入或上游 R 包的分析结果"
+      },
+      {
+        "type": "csv-table",
+        "name": "样本元数据表",
+        "required": true,
+        "note": "分组、批次等设计变量"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "dataframe",
+        "name": "长表（tidy 形态）",
+        "ext": "(内存对象)",
+        "note": "每行一个观测，可直接送入 ggplot2 或统计模型"
+      },
+      {
+        "type": "csv-table",
+        "name": "整理后的表",
+        "ext": ".tidy.csv",
+        "note": "作为绘图与统计脚本的稳定输入"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "dplyr",
+        "version": "1.1.x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "筛选、变形、分组汇总与表连接"
+      },
+      {
+        "tool": "tidyr",
+        "version": "1.3.x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "pivot_longer / pivot_wider 长宽表转换"
+      },
+      {
+        "tool": "janitor",
+        "version": "2.2.x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "clean_names 与列联表；导入后清理列名很好用"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "viz_ggplot2",
+        "viaType": "dataframe",
+        "note": "ggplot2 直接吃 tidy 长表（分组列用 colour/facet 表达）"
+      },
+      {
+        "target": "r_vegan_diversity",
+        "viaType": "dataframe",
+        "note": "整理后的丰度矩阵进入多样性计算"
+      },
+      {
+        "target": "r_limma_stats",
+        "viaType": "dataframe",
+        "note": "需要建模时把长表转成所需的矩阵布局"
+      },
+      {
+        "target": "r_export_table",
+        "viaType": "csv-table",
+        "note": "整理结果导出为交付表"
+      }
+    ],
+    "usage": [
+      {
+        "label": "分组汇总并检查分组样本数（老手都会做的一步）",
+        "lang": "r",
+        "code": "library(dplyr)\n\nsummary_tbl <- stats |>\n  left_join(meta, by = \"sample\") |>        # 连接元数据拿分组\n  group_by(group) |>\n  summarise(\n    n = n(),                               # 每组样本数：必须看，n=2 组没有统计意义\n    mean_size = mean(genome_size, na.rm = TRUE),\n    sd_size = sd(genome_size, na.rm = TRUE),\n    .groups = \"drop\"                       # 显式丢弃分组，避免残留分组状态\n  )\n\nprint(summary_tbl)\nwarning(\"若 n < 3 的组不应参与统计检验，应先在结果里标注\")"
+      },
+      {
+        "label": "宽表转长表（丰度矩阵转 ggplot 可用格式）",
+        "lang": "r",
+        "code": "library(tidyr)\n\nlong <- abundance |>                       # 物种 x 样本 的宽表\n  tibble::rownames_to_column(\"species\") |>\n  pivot_longer(\n    cols = -species,\n    names_to = \"sample\",\n    values_to = \"abundance\"\n  ) |>\n  left_join(meta, by = \"sample\")\n\nhead(long)\ntable(long$group)"
+      },
+      {
+        "label": "按条件筛选与重编码（把工具输出的编码变成可读标签）",
+        "lang": "r",
+        "code": "clean <- long |>\n  filter(!is.na(group), abundance > 0) |>\n  mutate(\n    group = factor(group, levels = c(\"control\", \"treat\")),   # 固定顺序，否则作图顺序随机\n    log_abund = log10(abundance + 1e-6)\n  ) |>\n  arrange(group, desc(abundance))\n\n# 检查分组顺序是否如预期（作图顺序全靠它）\nlevels(clean$group)"
+      }
+    ],
+    "recipes": {
+      "bash": "Rscript -e 'library(dplyr); library(tidyr); library(readr); a <- read_csv(\"09_results/abundance.csv\"); m <- read_csv(\"sample_metadata.csv\"); l <- a |> pivot_longer(-1, names_to=\"sample\", values_to=\"abundance\") |> left_join(m, by=\"sample\"); print(count(l, group)); write_csv(l, \"09_results/abundance_long.csv\")'",
+      "r": "library(dplyr)\nlibrary(readr)\nlibrary(tidyr)\n\nabundance <- read_csv(\"09_results/abundance.csv\")\nmeta <- read_csv(\"sample_metadata.csv\", col_types = cols(sample = col_character()))\n\nlong <- abundance |>\n  pivot_longer(-1, names_to = \"sample\", values_to = \"abundance\") |>\n  left_join(meta, by = \"sample\")\n\n# 关键校验：合并后不应丢样本，也不应出现未匹配\ndiff <- setdiff(meta$sample, unique(long$sample))\nif (length(diff)) warning(\"未匹配的样本：\", paste(diff, collapse = \", \"))\nprint(count(long, group))\n\nwrite_csv(long, \"09_results/abundance_long.csv\")"
+    },
+    "params": [
+      {
+        "flag": ".groups",
+        "default": "\"drop_last\"（会警告）",
+        "note": "summarise 后是否保留分组。显式写 \"drop\" 最安全，否则残留分组会让后续操作意外按组进行"
+      },
+      {
+        "flag": "left_join vs inner_join",
+        "default": "left_join",
+        "note": "inner_join 会静默丢样本；整理阶段用 left_join，再用 is.na 检查没匹配上的行"
+      },
+      {
+        "flag": "na.rm",
+        "default": "FALSE",
+        "note": "mean/sum 遇到 NA 会返回 NA。要忽略缺失必须显式 na.rm = TRUE，并且清楚自己忽略了什么"
+      },
+      {
+        "flag": "factor(levels =)",
+        "default": "字母序",
+        "note": "ggplot2 的分面与配色顺序由因子水平决定。不显式设 levels，图例顺序会是字母序而不是实验顺序"
+      },
+      {
+        "flag": "pivot_longer(cols)",
+        "default": "必填",
+        "note": "用 -species 这种排除式写法最不易出错；显式列举列名在列变化时会静默失效"
+      }
+    ],
+    "pitfalls": [
+      "忘记 ungroup 或没写 `.groups`。残留的分组状态会让后面的 mutate、count 甚至 filter 都按组进行，结果看起来「多了几行」而原因极难定位。每次 summarise 都显式 `groups = \"drop\"`。",
+      "用 `inner_join` 合并元数据而不检查行数，静默丢失样本。一个「组间差异显著」的结论可能只是因为某个组被丢掉了大半。连接后一律用 `setdiff` 或 `anti_join` 检查未匹配项。",
+      "分组变量的类型不一致导致连接失败：一边是字符 `\"1\"`，一边是数值 `1`。dplyr 的连接会给出警告（joining by different types），但很容易被忽略。连接前统一类型。",
+      "`summarise(mean(x))` 而不写 `.groups` 会得到一条提示信息，多数人直接忽略。这条提示正是提醒你分组状态会残留。",
+      "用 `filter(x > 0)` 之后直接算相对丰度，相当于改变了「总和为 1」的前提。组成性数据上的任何筛选都要重新归一化，并记录这一步。",
+      "把管道写成超长的单链（几十步）而不落盘中间结果。一旦结果异常，无法判断是哪一步出了问题。复杂处理应分几段，中间结果 `write_csv` 保存。"
+    ],
+    "related": [
+      {
+        "id": "py_pandas_tidy",
+        "note": "Python 端的等价操作；概念一一对应"
+      },
+      {
+        "id": "r_read_import",
+        "note": "上游的导入步骤"
+      },
+      {
+        "id": "viz_ggplot2",
+        "note": "整理后的长表是 ggplot2 的标准输入"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 10 章 下游分析与可视化",
+        "path": "docs/guidebook/10-downstream-analysis-visualization.md"
+      }
+    ]
+  },
+  {
+    "id": "r_vegan_diversity",
+    "name": "群落多样性与排序 (vegan)",
+    "category": "downstream-r",
+    "layer": "downstream",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "metagenomics"
+    ],
+    "tags": [
+      "R",
+      "vegan",
+      "alpha 多样性",
+      "beta 多样性",
+      "PCoA",
+      "NMDS"
+    ],
+    "summary": "计算多样性与群落结构，做约束与非约束排序",
+    "what": [
+      "vegan 是微生物群落生态学分析的标准 R 包，提供 alpha 多样性（Shannon、Simpson、Chao1 等）、beta 多样性（Bray-Curtis、UniFrac 接口、Jaccard 等距离）以及排序方法（PCoA、NMDS、CAP、CCA/RDA）。它把「群落数据 → 距离矩阵 → 排序坐标 → 统计检验」这条标准链条完整封装起来。",
+      "使用它的关键在于理解两条链的分工：alpha 多样性描述单个样本内部的分明度（richness 与 evenness 的组合），beta 多样性描述样本之间的差异程度。用于检验两组样本群落是否不同的 PERMANOVA（adonis2）属于 beta 侧，它检验的是**组间与组内距离的相对大小**，而不是任何单个物种的丰度差异。",
+      "最常见的误用有两个：一是**在测序深度不一致的样本间直接比较 alpha 多样性**（深度低会系统性低估 richness，趋势几乎完全由深度驱动）；二是**把 PERMANOVA 的显著当成「找到了差异物种」**（它只说群落整体结构有差异，且对组内离散度不均极敏感，需要额外做 betadisper 检查）。"
+    ],
+    "inputs": [
+      {
+        "type": "abundance-table",
+        "name": "丰度矩阵",
+        "required": true,
+        "note": "物种/ASV × 样本；行是特征、列是样本（vegan 的约定，与 tidy 表相反）"
+      },
+      {
+        "type": "feature-table",
+        "name": "ASV/OTU 特征表",
+        "required": false,
+        "note": "扩增子项目通常是原始计数表"
+      },
+      {
+        "type": "tree",
+        "name": "系统发育树",
+        "required": false,
+        "note": "计算 UniFrac 类距离时需要"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "dataframe",
+        "name": "多样性与排序坐标",
+        "ext": ".diversity.csv",
+        "note": "含各样本的 alpha 指数与 PCoA/NMDS 坐标，供绘图"
+      },
+      {
+        "type": "cluster-dist",
+        "name": "样本距离矩阵与分组",
+        "ext": ".dist.csv",
+        "note": "beta 多样性距离矩阵，可用于聚类或后续检验"
+      },
+      {
+        "type": "stats-result",
+        "name": "群落差异检验结果",
+        "ext": ".permanova.tsv",
+        "note": "PERMANOVA 的 R²、F 值与 p 值，需连同离散度检验一起报告"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "vegan",
+        "version": "2.6-x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "多样性与排序的标准实现"
+      },
+      {
+        "tool": "phyloseq",
+        "version": "1.4x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "把丰度表、注释表、元数据与树打包成统一对象"
+      },
+      {
+        "tool": "ape",
+        "version": "5.8",
+        "access": "r-api",
+        "install": "cran",
+        "note": "读树与树运算，UniFrac 依赖它"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "viz_alpha_beta",
+        "viaType": "cluster-dist",
+        "note": "样本距离矩阵与排序坐标画成 PCoA/NMDS 图"
+      },
+      {
+        "target": "viz_heatmap",
+        "viaType": "cluster-dist",
+        "note": "样本间距离矩阵可画成热图"
+      },
+      {
+        "target": "r_export_table",
+        "viaType": "stats-result",
+        "note": "PERMANOVA 等检验结果进交付表"
+      },
+      {
+        "target": "py_export_report",
+        "viaType": "dataframe",
+        "note": "多样性与排序坐标表进报告"
+      }
+    ],
+    "usage": [
+      {
+        "label": "alpha 与 beta 多样性一次性算完",
+        "lang": "r",
+        "code": "library(vegan)\n\n# vegan 的行必须是样本、列是特征\nmat <- t(as.matrix(abundance[, -1]))\nrownames(mat) <- abundance$sample\n\n# alpha：同时算 richness 与 evenness 两类\nalpha <- data.frame(\n  sample     = rownames(mat),\n  observed   = rowSums(mat > 0),\n  shannon    = diversity(mat, index = \"shannon\"),\n  simpson    = diversity(mat, index = \"simpson\"),\n  chao1      = estimateR(mat)[\"S.chao1\", ]\n)\n\n# beta：Bray-Curtis 距离\ndist_bc <- vegdist(mat, method = \"bray\")\n\n# 排序：PCoA（对任意距离都适用，NMDS 在距离较大时会扭曲）\npcoa <- cmdscale(dist_bc, k = 2, eig = TRUE)\ncoords <- as.data.frame(pcoa$points)\ncolnames(coords) <- c(\"Axis1\", \"Axis2\")\ncoords$sample <- rownames(coords)\n\n# 报告前两轴解释的方差比例——低于 ~20% 时二维图不足代表数据结构\npct <- round(pcoa$eig / sum(pcoa$eig[pcoa$eig > 0]) * 100, 1)\ncat(\"Axis1:\", pct[1], \"%  Axis2:\", pct[2], \"%\\n\")"
+      },
+      {
+        "label": "PERMANOVA + 离散度检验（两者必须一起报）",
+        "lang": "r",
+        "code": "library(vegan)\n\n# 先用 betadisper 检查组内离散度是否相当\nbd <- betadisper(dist_bc, meta$group)\nprint(anova(bd))        # 显著 => 组内离散度不等，PERMANOVA 结果要谨慎解读\n\n# PERMANOVA：检验组间群落结构差异\nad <- adonis2(dist_bc ~ group, data = meta, permutations = 999)\nprint(ad)               # 关注 R2（解释的方差比例）与 p 值\n\n# 若同时有协变量（批次），应纳入模型并报告各项的边际效应\n# adonis2(dist_bc ~ group + batch, data = meta, by = \"margin\")"
+      },
+      {
+        "label": "深度归一化后再比较 alpha 多样性（重要前提）",
+        "lang": "r",
+        "code": "# 直接比较不同深度的样本 alpha 多样性是常见错误：\n# 测序深度低会系统性低估 richness，趋势由深度而非生物学驱动。\n\ndepth <- rowSums(mat)\nsummary(depth)                 # 先看深度差异有多大\n\n# 做法：稀释到统一深度（会丢数据但可比），或使用对深度稳健的指数。\n# 稀释前必须确认最小深度是否足够——过度稀释等于把数据扔掉。\nset.seed(42)                   # 稀释是随机的，必须固定种子\nmin_depth <- min(depth)\ncat(\"最小深度:\", min_depth, \"\\n\")\n\nrarefied <- rrarefy(mat, sample = min_depth)\nalpha$shannon_rare <- diversity(rarefied, index = \"shannon\")\n\ncat(\"稀释前后相关:\", cor(alpha$shannon, alpha$shannon_rare), \"\\n\")\ncat(\"注释：稀释会损失数据，也可改用覆盖率或对深度稳健的指数\\n\")"
+      }
+    ],
+    "recipes": {
+      "bash": "Rscript -e 'library(vegan); m <- as.matrix(read.csv(\"09_results/abundance.csv\", row.names=1)); mat <- t(m); d <- vegdist(mat, method=\"bray\"); p <- cmdscale(d, k=2, eig=TRUE); print(round(p$eig/sum(p$eig[p$eig>0])*100, 1)[1:2]); print(adonis2(d ~ group, data=read.csv(\"sample_metadata.csv\"), permutations=999))'",
+      "r": "library(vegan)\n\nabundance <- read.csv(\"09_results/abundance.csv\", row.names = 1, check.names = FALSE)\nmeta <- read.csv(\"sample_metadata.csv\", stringsAsFactors = FALSE)\nmat <- t(as.matrix(abundance))                     # 样本 x 特征\n\nstopifnot(identical(rownames(mat), meta$sample))   # 顺序必须严格一致\n\ndist_bc <- vegdist(mat, method = \"bray\")\n\npcoa <- cmdscale(dist_bc, k = 2, eig = TRUE)\nvar_pct <- round(pcoa$eig / sum(pcoa$eig[pcoa$eig > 0]) * 100, 1)\n\nout <- data.frame(sample = rownames(mat),\n                  Axis1 = pcoa$points[, 1],\n                  Axis2 = pcoa$points[, 2],\n                  shannon = diversity(mat, index = \"shannon\"),\n                  observed = rowSums(mat > 0))\nout <- merge(out, meta, by = \"sample\")\n\nwrite.csv(out, \"09_results/diversity_pcoa.csv\", row.names = FALSE)\ncat(\"Axis1/Axis2 解释度:\", var_pct[1], \"%/\", var_pct[2], \"%\\n\")\n\ncat(\"\\n--- PERMANOVA ---\\n\")\nprint(adonis2(dist_bc ~ group, data = meta, permutations = 999))\ncat(\"\\n--- 组内离散度检验（必做的伴随检查）---\\n\")\nprint(anova(betadisper(dist_bc, meta$group)))"
+    },
+    "params": [
+      {
+        "flag": "vegdist(method)",
+        "default": "\"bray\"",
+        "note": "Bray-Curtis 对丰度敏感且常用；存在大量双零（两样本都没有该物种）时 Jaccard 更合适"
+      },
+      {
+        "flag": "adonis2(permutations)",
+        "default": "999",
+        "note": "置换次数决定 p 值的最小可分辨值。999 次最小 p ≈ 0.001；样本少时想要更小 p 需要更多置换"
+      },
+      {
+        "flag": "adonis2(by)",
+        "default": "\"terms\"（顺序检验）",
+        "note": "多因素时用 \"margin\" 才是各项的边际效应；默认的顺序检验结果依赖公式里变量的排列顺序"
+      },
+      {
+        "flag": "diversity(index)",
+        "default": "\"shannon\"",
+        "note": "Shannon 对稀有物种更敏感，Simpson 更侧重优势物种；报哪个应先说清，两者常给出方向不同的结论"
+      },
+      {
+        "flag": "rrarefy(sample)",
+        "default": "—",
+        "note": "稀释到统一深度；随机过程必须 set.seed 固定，且会丢数据，不是无代价的"
+      }
+    ],
+    "pitfalls": [
+      "**在未归一化的深度下比较 alpha 多样性**。测序深度低会系统性低估 richness，让「组间差异」变成深度差异的伪影。要么稀释到统一深度，要么使用对深度稳健的指标，并明确说明做法。",
+      "**只报 PERMANOVA 的 p 值不报 betadisper 结果**。PERMANOVA 检验的是组间与组内距离的相对大小；如果各组内部离散度差别很大，即使没有真实的结构差异，它也会给出显著结果。两个检验必须一起报。",
+      "把 PERMANOVA 显著当成「找到了差异物种」。它只说群落整体结构有差异，不指向任何具体物种。要找出差异特征应做差异丰度分析（ANCOM-BC / ALDEx2 等）。",
+      "vegan 的行列约定与其他工具相反：**行是样本、列是特征**。直接把「物种 × 样本」的丰度表传进去会得到看起来能跑但完全错位的结果。转置这一步要写进代码并加 `stopifnot` 校验。",
+      "`cmdscale` 在距离矩阵不满足欧氏距离时会给出负特征值。PCoA 允许这一点（这也是它比 PCA 更适合群落数据的原因），但**计算解释度时必须排除负特征值**，否则百分比没有意义。",
+      "NMDS 的 stress 值大于 0.2 时结果基本不可用，但软件不会阻止你画图并解读它。报 NMDS 必须同时报 stress。",
+      "样本名顺序在丰度矩阵与元数据表之间不一致，而 R 按位置而不是按名字对齐（merge 之外的操作尤其如此）。任何进入 vegan 的矩阵都要先 `stopifnot(identical(...))` 校验顺序。",
+      "忽略组成性：Bray-Curtis 是相对丰度距离，一个高丰度物种的变化会改变所有样本间的距离。涉及具体物种增减的结论应回到差异丰度分析，而不是从排序图推断。"
+    ],
+    "related": [
+      {
+        "id": "amplicon_phyloseq",
+        "note": "把丰度表、注释与树打包成统一对象，vegan 的输入常由此而来"
+      },
+      {
+        "id": "viz_alpha_beta",
+        "note": "多样性与排序结果的标准绘图方式"
+      },
+      {
+        "id": "py_sklearn_cluster",
+        "note": "Python 侧的降维与聚类；PCoA 与 PCA 的区别要分清"
+      },
+      {
+        "id": "amplicon_qiime2_diversity",
+        "note": "QIIME 2 的等价多样性分析流程"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 8 章 宏基因组与微生物组",
+        "path": "docs/guidebook/08-metagenome-microbiome.md"
+      },
+      {
+        "label": "第 10 章 下游分析与可视化",
+        "path": "docs/guidebook/10-downstream-analysis-visualization.md"
+      }
+    ]
+  },
+  {
+    "id": "r_matrix_stats",
+    "name": "矩阵运算与距离计算 (base R / ape)",
+    "category": "downstream-r",
+    "layer": "downstream",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "phylogenetics"
+    ],
+    "tags": [
+      "R",
+      "矩阵",
+      "距离",
+      "ape",
+      "统计"
+    ],
+    "summary": "用 R 做矩阵代数、距离矩阵与树运算",
+    "what": [
+      "base R 的矩阵运算与 Python/NumPy 处于同一层次，但它的优势在于**生态连贯**：同一份数据结构可以无缝传给 ape 做树运算、传给 vegan 算距离、传给 stats 做模型。对于以比较基因组或系统发育为主线的项目，把矩阵与距离运算放在 R 里能减少语言间搬运。",
+      "ape 是这个任务里的关键包：它负责读写 Newick/Nexus 树、计算成对距离（包括基于树的 patristic 距离）、操作拓扑与比较树形。当研究问题涉及「基因组间的遗传距离」或「树上的进化距离」时，ape 提供的 cophenetic 距离与 dist.dna 是最直接的入口。",
+      "这一层最需要警惕的是**缺失值的传播**与**距离度量的可解释性**。R 的矩阵运算遇到 NA 会传染整行整列，必须显式处理；而距离度量选择（欧氏 vs 曼哈顿 vs 相关系数距离）会实质改变聚类与排序结果，没有「默认正确」的选项。"
+    ],
+    "inputs": [
+      {
+        "type": "dataframe",
+        "name": "数值矩阵",
+        "required": true,
+        "note": "基因 × 样本或特征 × 基因组"
+      },
+      {
+        "type": "tree",
+        "name": "系统发育树",
+        "required": false,
+        "note": "需要算树上距离或比较拓扑时提供"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "cluster-dist",
+        "name": "距离矩阵",
+        "ext": ".dist.csv",
+        "note": "成对距离，可用于聚类、排序或网络分析"
+      },
+      {
+        "type": "tree",
+        "name": "由距离构建的树",
+        "ext": ".nj.tree",
+        "note": "邻接法（NJ）快速树，常用于探索性比较而非最终结论"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "base R",
+        "version": "4.4.x",
+        "access": "r-api",
+        "install": "builtin",
+        "note": "矩阵代数、dist、hclust、cmdscale 均内置"
+      },
+      {
+        "tool": "ape",
+        "version": "5.8",
+        "access": "r-api",
+        "install": "cran",
+        "note": "树读写、树上距离、拓扑比较"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "viz_heatmap",
+        "viaType": "cluster-dist",
+        "note": "距离矩阵是聚类热图的输入"
+      },
+      {
+        "target": "phy_tree_compare",
+        "viaType": "tree",
+        "note": "由距离构建的树可拿去与参考树比较拓扑"
+      },
+      {
+        "target": "r_export_table",
+        "viaType": "cluster-dist",
+        "note": "距离矩阵导出为结果表"
+      },
+      {
+        "target": "viz_tree_plot",
+        "viaType": "tree",
+        "note": "NJ 探索树可以画出来初步看结构"
+      }
+    ],
+    "usage": [
+      {
+        "label": "距离矩阵 + 层次聚类 + NJ 树（一条常见链路）",
+        "lang": "r",
+        "code": "library(ape)\n\n# 1. 距离：按需选度量，不要用默认值凑合\nm <- as.matrix(features)\nd_euclid <- dist(m, method = \"euclidean\")\nd_cor    <- as.dist(1 - cor(t(m)))          # 相关系数距离，常用于表达谱\nd_bc     <- vegan::vegdist(m, method = \"bray\")\n\ncat(\"欧氏距离范围:\", round(range(d_euclid), 3), \"\\n\")\ncat(\"相关系数距离范围:\", round(range(d_cor), 3), \"\\n\")\n\n# 2. 层次聚类（average linkage 比 single 稳健）\nhc <- hclust(d_cor, method = \"average\")\nplot(hc, main = \"样本聚类\", xlab = \"\")\n\n# 3. NJ 树（探索用，不应作为最终进化结论）\ntree <- nj(d_cor)\nwrite.tree(tree, \"09_results/nj_tree.nwk\")"
+      },
+      {
+        "label": "树上的成对距离与拓扑比较",
+        "lang": "r",
+        "code": "library(ape)\n\nt1 <- read.tree(\"tree_iqtree.nwk\")\nt2 <- read.tree(\"tree_raxml.nwk\")\n\n# 树上（patristic）距离：两两叶节点沿树的距离\npd <- cophenetic(t1)\ncat(\"树上距离范围:\", round(range(pd), 4), \"\\n\")\n\n# 拓扑比较需要同一组叶节点；先确认一致\ncat(\"叶节点数:\", length(t1$tip.label), length(t2$tip.label), \"\\n\")\ncommon <- intersect(t1$tip.label, t2$tip.label)\nif (length(common) == length(t1$tip.label)) {\n  # 比较拓扑（需先去掉分支长度信息）\n  cat(\"Robinson-Foulds 距离:\", dist.topo(unroot(t1), unroot(t2)), \"\\n\")\n  cat(\"注释：RF 距离为 0 表示拓扑完全相同；最大值随叶节点数增长\\n\")\n}"
+      },
+      {
+        "label": "安全处理缺失值（不要让它传染）",
+        "lang": "r",
+        "code": "m <- as.matrix(features)\n\ncat(\"缺失值总数:\", sum(is.na(m)), \"\\n\")\ncat(\"含缺失的行数:\", sum(!complete.cases(m)), \"\\n\")\n\n# 方案 A：删掉含缺失的行（代价是丢样本，要报告丢了几个）\nm_a <- m[complete.cases(m), , drop = FALSE]\n\n# 方案 B：按列中位数填补（会人为压缩方差，需在方法里说明）\nm_b <- m\nfor (j in seq_len(ncol(m_b))) {\n  m_b[is.na(m_b[, j]), j] <- median(m_b[, j], na.rm = TRUE)\n}\n\ncat(\"原始\", nrow(m), \"行 -> 删除法\", nrow(m_a), \"行\\n\")\ncat(\"两种方案的成对相关:\", cor(as.vector(dist(m_a[, seq_len(min(50, ncol(m_a)))])),\n                              as.vector(dist(m_b[, seq_len(min(50, ncol(m_b)))]))), \"\\n\")"
+      }
+    ],
+    "recipes": {
+      "r": "library(ape)\n\nfeatures <- read.csv(\"09_results/features.csv\", row.names = 1, check.names = FALSE)\nm <- as.matrix(features)\n\nna_count <- sum(is.na(m))\nif (na_count > 0) {\n  warning(sprintf(\"矩阵含 %d 个缺失值，已按行中位数填补（需在方法中说明）\", na_count))\n  for (j in seq_len(ncol(m))) {\n    idx <- is.na(m[, j])\n    if (any(idx)) m[idx, j] <- median(m[, j], na.rm = TRUE)\n  }\n}\n\nd <- dist(m, method = \"euclidean\")\n\nmds <- cmdscale(d, k = 2, eig = TRUE)\nvar_pct <- round(mds$eig / sum(mds$eig[mds$eig > 0]) * 100, 1)\n\ncoords <- data.frame(label = labels(d)[seq_along(mds$points[, 1])],\n                     Axis1 = mds$points[, 1], Axis2 = mds$points[, 2])\nwrite.csv(coords, \"09_results/mds_coords.csv\", row.names = FALSE)\n\nhc <- hclust(d, method = \"average\")\nnj_tree <- nj(d)\nwrite.tree(nj_tree, \"09_results/nj_tree.nwk\")\n\ncat(\"Axis1/Axis2 解释度:\", var_pct[1], \"%/\", var_pct[2], \"%\\n\")\ncat(\"写出:\", \"mds_coords.csv, nj_tree.nwk\", \"\\n\")"
+    },
+    "params": [
+      {
+        "flag": "dist(method)",
+        "default": "\"euclidean\"",
+        "note": "欧氏距离对量纲与量级敏感；高维稀疏数据上曼哈顿或相关系数距离往往更合适，必须明确选择理由"
+      },
+      {
+        "flag": "hclust(method)",
+        "default": "\"complete\"",
+        "note": "single 有链式效应、complete 偏向紧凑簇、average 折中、ward.D2 最小化簇内方差但要求欧氏距离"
+      },
+      {
+        "flag": "cmdscale(eig)",
+        "default": "FALSE",
+        "note": "必须设 TRUE 才能拿到特征值算解释度；距离非欧氏时会有负特征值，计算百分比时要排除"
+      },
+      {
+        "flag": "read.tree vs read.nexus",
+        "default": "按格式",
+        "note": "读错格式会把树解析成完全不同的结构而不一定报错；读入后检查 tip.label 数量"
+      },
+      {
+        "flag": "scale()",
+        "default": "不做",
+        "note": "变量量纲差异大时必须标准化；不标准化等于隐含「大数值变量更重要」"
+      }
+    ],
+    "pitfalls": [
+      "**距离度量的选择决定结论**。同一份数据用欧氏、Bray-Curtis、Jaccard 距离会得到不同的聚类与排序结果，而且没有「哪个更对」。必须根据数据性质（是否组成性、是否稀疏、量纲要紧吗）明确选择并把理由写进方法。",
+      "NA 会传染：`dist()` 遇到任一 NA 会抛错，`rowMeans()` 遇到 NA 返回 NA。不要用 `na.rm = TRUE` 掩盖问题——先统计缺失比例，缺失太多说明数据本身有问题，补值只是让流程能跑下去。",
+      "`hclust` 要求输入是 `dist` 对象。直接传一个方阵（`as.matrix` 的结果）会被当作「距离观测值向量」静默处理，得到完全错误的树。转距离时不要中途 `as.matrix`。",
+      "`cmdscale` 的负特征值被忽略后仍算百分比，会得到大于 100% 或含义不明的解释度。正确做法是只对正特征值求和。",
+      "用 NJ 树作为最终进化结论。NJ 是快速距离法，在长枝吸引与不完全谱系分选下会给出错误拓扑。它适合探索与快速比较，发表级结论应用最大似然或贝叶斯方法。",
+      "`cor(t(m))` 在某个变量方差为 0 时会返回 NaN（0 除以 0）。常量列要先剔除，否则相关系数距离矩阵里会出现 NaN 并污染聚类。",
+      "样本顺序在矩阵、距离矩阵、元数据之间不一致，而 `dist`/`hclust` 只按位置对齐。任何进入这一层的矩阵都要用 `stopifnot(identical(rownames(m), meta$sample))` 校验。"
+    ],
+    "related": [
+      {
+        "id": "py_numpy_arrays",
+        "note": "Python 侧的矩阵与距离计算"
+      },
+      {
+        "id": "r_vegan_diversity",
+        "note": "群落生态学专用距离与排序；比通用距离更贴近微生物组问题"
+      },
+      {
+        "id": "phy_tree_compare",
+        "note": "树拓扑比较的专门模块"
+      },
+      {
+        "id": "viz_heatmap",
+        "note": "距离矩阵的主要可视化方式"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 10 章 下游分析与可视化",
+        "path": "docs/guidebook/10-downstream-analysis-visualization.md"
+      },
+      {
+        "label": "第 7 章 比较基因组与泛基因组",
+        "path": "docs/guidebook/07-comparative-pangenome.md"
+      }
+    ]
+  },
+  {
+    "id": "r_limma_stats",
+    "name": "线性模型差异分析 (limma)",
+    "category": "downstream-r",
+    "layer": "downstream",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "transcriptomics",
+      "genomics",
+      "metagenomics"
+    ],
+    "tags": [
+      "R",
+      "limma",
+      "线性模型",
+      "协变量",
+      "批次效应"
+    ],
+    "summary": "用线性模型做差异分析并校正协变量",
+    "what": [
+      "limma 原本为微阵列数据设计，其核心贡献是**经验贝叶斯收缩**：在特征数远多于样本数时，用所有特征的方差信息来稳定单个特征的方差估计。这让它在小样本（n = 3~6）场景下的统计效力明显优于逐特征做 t 检验，也因此成为 RNA-seq 与其他高通量差异分析的常用工具（配合 voom 变换处理计数数据）。",
+      "它真正的价值在于**设计矩阵（design matrix）**：把实验设计显式表达成 `~ 0 + group + batch` 这样的公式，一次性估计所有效应。相比「逐对做 t 检验」，这种做法能同时校正批次、配对、协变量，并给出统一的对照比较（contrast），是处理复杂设计的正确方式。",
+      "判断该用 limma 还是 DESeq2/edgeR 的依据是数据性质：计数数据（RNA-seq 原始 reads）通常用负二项模型的 DESeq2/edgeR，或 limma-voom；连续型数据（如 log 转换后的丰度、蛋白丰度、代谢组强度）直接用 limma 更自然。两者都会给出 log2 fold change 与校正后 p 值，差异在模型假设而不在界面。"
+    ],
+    "inputs": [
+      {
+        "type": "count-matrix",
+        "name": "表达或丰度矩阵",
+        "required": true,
+        "note": "特征 × 样本；计数数据应先做 voom 变换或改用 DESeq2"
+      },
+      {
+        "type": "csv-table",
+        "name": "样本设计表",
+        "required": true,
+        "note": "含分组、批次、配对等变量，是构建设计矩阵的依据"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "stats-result",
+        "name": "差异分析结果表",
+        "ext": ".limma.tsv",
+        "note": "含 log2FC、平均丰度、t 值、原始 p 值与校正后 adj.P.Val"
+      },
+      {
+        "type": "dataframe",
+        "name": "结果数据框（内存对象）",
+        "ext": "(内存对象)",
+        "note": "可直接送入 ggplot2 画火山图或热图"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "limma",
+        "version": "3.5x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "经验贝叶斯线性模型；limma-voom 用于计数数据"
+      },
+      {
+        "tool": "edgeR",
+        "version": "4.x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "提供 DGEList 与 voom 所需的计数数据结构"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "viz_volcano_ma",
+        "viaType": "stats-result",
+        "note": "差异结果的标准可视化"
+      },
+      {
+        "target": "tran_go_enrich",
+        "viaType": "stats-result",
+        "note": "进入富集分析"
+      },
+      {
+        "target": "r_export_table",
+        "viaType": "stats-result",
+        "note": "差异表导出"
+      }
+    ],
+    "usage": [
+      {
+        "label": "连续型数据的标准差异分析（含批次校正）",
+        "lang": "r",
+        "code": "library(limma)\n\n# 1. 设计矩阵：~0 + group 意味着「每个组一个系数」，便于直接比较任意两组\ndesign <- model.matrix(~ 0 + group + batch, data = meta)\ncolnames(design) <- make.names(colnames(design))\n\n# 2. 拟合线性模型 + 经验贝叶斯收缩\nfit <- lmFit(expr, design)\n\n# 3. 定义对照（这是关键：对照组 vs 处理组）\ncontrast <- makeContrasts(group_treat - group_control, levels = design)\nfit2 <- contrasts.fit(fit, contrast)\nfit2 <- eBayes(fit2)\n\n# 4. 取出全部结果（不要一开始就过滤，否则无法做多重校正）\nres <- topTable(fit2, number = Inf, sort.by = \"P\")\nres$feature <- rownames(res)\n\ncat(\"检验特征数:\", nrow(res), \"\\n\")\ncat(\"adj.P.Val < 0.05 且 |logFC| > 1 的数量:\",\n    sum(res$adj.P.Val < 0.05 & abs(res$logFC) > 1), \"\\n\")"
+      },
+      {
+        "label": "计数数据用 voom（或明确改用 DESeq2）",
+        "lang": "r",
+        "code": "library(limma)\nlibrary(edgeR)\n\n# 计数数据先过滤极低表达特征，否则会严重拖累校正\nkeep <- rowSums(counts >= 10) >= min(table(meta$group))\ncounts_f <- counts[keep, ]\ncat(\"过滤掉\", nrow(counts) - nrow(counts_f), \"个低表达特征\\n\")\n\n# voom：把计数转成带权重的对数表达，使线性模型适用于计数数据\ndge <- DGEList(counts = counts_f)\ndge <- calcNormFactors(dge)                    # TMM 归一化\nv <- voom(dge, design, plot = FALSE)\n\nfit <- lmFit(v, design)\nfit2 <- contrasts.fit(fit, makeContrasts(group_treat - group_control, levels = design))\nfit2 <- eBayes(fit2)\nres <- topTable(fit2, number = Inf)\n\ncat(\"TMM 归一化因子:\", round(dge$samples$norm.factors, 3), \"\\n\")"
+      },
+      {
+        "label": "看诊断图再决定是否相信结果",
+        "lang": "r",
+        "code": "par(mfrow = c(1, 2))\n\n# 1. MDS 图：看样本是否按预期分组聚在一起\nplotMDS(v, col = as.integer(factor(meta$group)), pch = 19,\n        main = \"MDS：样本结构\")\nlegend(\"topright\", legend = levels(factor(meta$group)),\n       col = seq_along(levels(factor(meta$group))), pch = 19)\n\n# 2. p 值直方图：应偏向左端而不是接近均匀\nhist(res$P.Value, breaks = 50, col = \"grey70\",\n     main = \"p 值分布\", xlab = \"p\")\n\ncat(\"注释：p 值近似均匀分布 => 几乎没有真实差异信号，\\n\")\ncat(\"      此时任何「显著」结果都更可能是假阳性。\\n\")"
+      }
+    ],
+    "recipes": {
+      "bash": "Rscript -e 'library(limma); m <- as.matrix(read.csv(\"09_results/expr.csv\", row.names=1)); meta <- read.csv(\"sample_metadata.csv\"); d <- model.matrix(~0+group, data=meta); f <- eBayes(contrasts.fit(lmFit(m, d), makeContrasts(group_treat-group_control, levels=d))); r <- topTable(f, number=Inf); write.csv(r, \"09_results/limma_diff.csv\"); cat(\"显著:\", sum(r$adj.P.Val<0.05), \"\\n\")'",
+      "r": "library(limma)\n\nmeta <- read.csv(\"sample_metadata.csv\", stringsAsFactors = FALSE)\nexpr <- as.matrix(read.csv(\"09_results/expr.csv\", row.names = 1, check.names = FALSE))\n\nstopifnot(identical(colnames(expr), meta$sample))   # 顺序必须一致\n\ndesign <- model.matrix(~ 0 + group, data = meta)\ncolnames(design) <- make.names(colnames(design))\ncat(\"设计矩阵（\", nrow(design), \"样本 x\", ncol(design), \"参数）:\\n\")\nprint(design)\n\nfit <- lmFit(expr, design)\nfit <- eBayes(contrasts.fit(fit, makeContrasts(group_treat - group_control, levels = design)))\n\nres <- topTable(fit, number = Inf, sort.by = \"P\")\nres$feature <- rownames(res)\nres <- res[, c(\"feature\", \"logFC\", \"AveExpr\", \"t\", \"P.Value\", \"adj.P.Val\")]\n\nwrite.csv(res, \"09_results/limma_diff.csv\", row.names = FALSE)\ncat(\"\\n检验\", nrow(res), \"个特征；adj.P.Val<0.05 的\", sum(res$adj.P.Val < 0.05), \"个\\n\")\ncat(\"提示：先看 p 值直方图是否左偏，再决定是否解读显著结果\\n\")"
+    },
+    "params": [
+      {
+        "flag": "design (~0 + group)",
+        "default": "—",
+        "note": "用 `~0 +` 去掉截距让每个组一个系数，对照表达式最直观；用默认截距写法容易搞错对照方向"
+      },
+      {
+        "flag": "makeContrasts",
+        "default": "—",
+        "note": "写清「谁减谁」。方向写反会让所有 logFC 符号颠倒，而且从数值上看不出错"
+      },
+      {
+        "flag": "eBayes(trend, robust)",
+        "default": "FALSE, FALSE",
+        "note": "trend=TRUE 允许方差随丰度变化，robust=TRUE 对离群特征更稳健；高维数据上通常都建议开启"
+      },
+      {
+        "flag": "topTable(number)",
+        "default": "10",
+        "note": "**默认只返回前 10 行**。取完整结果必须写 number = Inf，否则后续多重校正只针对这 10 个做，完全错误"
+      },
+      {
+        "flag": "voom(plot)",
+        "default": "TRUE",
+        "note": "建议先设 TRUE 看 mean-variance 趋势图：理想情况应是一条相对平缓的曲线，明显上翘说明权重不合适"
+      },
+      {
+        "flag": "lmFit(block, correlation)",
+        "default": "无",
+        "note": "配对或重复测量设计必须用 block 参数（duplicateCorrelation），否则把相关样本当独立处理会高估显著性"
+      }
+    ],
+    "pitfalls": [
+      "**topTable 默认只返回 10 行**。这是最经典的错误：后续基于这个结果的任何统计（包括多重校正）都只针对 10 个特征，而结果看起来完全正常。取全部结果必须 `number = Inf`。",
+      "对照方向写反（`group_control - group_treat` 而不是反过来），所有 logFC 符号颠倒。写 makeContrasts 时务必对照实验设计文档确认，并在结果里抽查一个已知基因的方向。",
+      "把计数数据直接喂给 lmFit。计数数据的方差随均值增长（异方差），线性模型假设方差不齐就不成立。必须先用 voom 变换（或改用 DESeq2/edgeR）。",
+      "没有过滤低表达特征。大量全为 0 或个位数的特征会拖累方差估计与多重校正，让真正的信号被埋掉。应先按「至少在最小分组规模个样本中达到阈值」过滤。",
+      "忘记校正批次，或者把批次与生物学分组混杂（batch 与 group 完全共线）。后者无法在统计上区分，必须回到实验设计层面解决。",
+      "样本量每组 2 个就做差异分析。经验贝叶斯能改善方差估计，但无法凭空创造信息；n=2 的结果极不稳定，应如实说明局限而不是报 p 值。",
+      "`expr` 矩阵的列顺序与 `meta` 的行顺序不一致。limma 完全按位置对齐，顺序错了会把样本标签整体错配，得到看似合理但完全错误的结果。必须 `stopifnot(identical(colnames(expr), meta$sample))`。",
+      "只报 adj.P.Val 不报 logFC。统计学显著的微小变化在生物学上可能毫无意义；筛选阈值应同时考虑两者并说明理由。"
+    ],
+    "related": [
+      {
+        "id": "tran_deseq2",
+        "note": "计数数据的首选；模型假设更贴合 RNA-seq"
+      },
+      {
+        "id": "tran_edger",
+        "note": "同为负二项模型；小样本与特定设计下与 DESeq2 略有差异"
+      },
+      {
+        "id": "tran_batch_correct",
+        "note": "在校正批次时与本模块配合使用"
+      },
+      {
+        "id": "viz_volcano_ma",
+        "note": "差异结果的标准可视化"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 9 章 转录组与差异表达",
+        "path": "docs/guidebook/09-transcriptome-differential-expression.md"
+      }
+    ]
+  },
+  {
+    "id": "r_export_table",
+    "name": "R 结果导出与表格生成 (write_csv / flextable)",
+    "category": "downstream-r",
+    "layer": "downstream",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics"
+    ],
+    "tags": [
+      "R",
+      "导出",
+      "报告",
+      "flextable",
+      "gt"
+    ],
+    "summary": "把 R 里的结果导出为可交付的表与文档表格",
+    "what": [
+      "R 的分析结果最终要离开 R 会话：导出成 CSV 供归档与复用，或渲染成 Word/HTML 表格直接放进论文与报告。这一层看起来琐碎，但它决定了结果「能不能被别人复查」——一个没有留下中间表、只存在于会话内存里的分析，等同于不可复现。",
+      "write_csv 与 write.csv 的区别值得说清楚：readr 的 write_csv 不写行名、不会给字符串加引号、默认 UTF-8，行为更可预测；base R 的 write.csv 默认写行名并可能按区域设置改写小数分隔符。跨平台交付时前者明显更省事。",
+      "格式化表格（flextable、gt）则是另一类需求：它关心的是三线表、小数位数、脚注、列组标题这些排版细节。这类包的价值在于让表格**由数据生成**而不是手工抄进 Word——手工抄写是引入数字不一致的最快方式。"
+    ],
+    "inputs": [
+      {
+        "type": "dataframe",
+        "name": "结果数据框",
+        "required": true,
+        "note": "已整理、已统计的结果"
+      },
+      {
+        "type": "stats-result",
+        "name": "统计结果表",
+        "required": false,
+        "note": "差异分析、多样性检验等结果"
+      },
+      {
+        "type": "tsv-table",
+        "name": "待附带的明细表",
+        "required": false,
+        "note": "补充材料性质的中间结果表"
+      },
+      {
+        "type": "log-report",
+        "name": "溯源信息",
+        "required": false,
+        "note": "软件版本、命令、校验和等；导出时应写入 CSV 头部，使交付物自带来源"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "csv-table",
+        "name": "导出表",
+        "ext": "_results.csv",
+        "note": "UTF-8、无行名，机器可读且跨平台"
+      },
+      {
+        "type": "report",
+        "name": "格式化表格文档",
+        "ext": ".docx",
+        "note": "论文级表格，可直接插入稿件"
+      },
+      {
+        "type": "figure-vector",
+        "name": "配套图件",
+        "ext": ".pdf",
+        "note": "与表一起交付的图；统一字体与配色"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "readr",
+        "version": "2.1.x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "write_csv：无行名、UTF-8 的可靠导出"
+      },
+      {
+        "tool": "flextable",
+        "version": "0.9.x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "生成 Word/PowerPoint 可用的三线表"
+      },
+      {
+        "tool": "openxlsx",
+        "version": "4.2.x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "多工作表 xlsx 导出，无需 Java"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "wf_reproducibility",
+        "viaType": "csv-table",
+        "note": "导出的中间表是可追溯链条的组成部分"
+      },
+      {
+        "target": "viz_pub_style",
+        "viaType": "report",
+        "note": "表与图需要统一的出版规范"
+      },
+      {
+        "target": "py_export_report",
+        "viaType": "csv-table",
+        "note": "若报告由 Python 侧生成，R 负责提供数据表"
+      }
+    ],
+    "usage": [
+      {
+        "label": "导出 CSV（不带行名的可靠版本）",
+        "lang": "r",
+        "code": "library(readr)\n\n# write_csv：不写行名、不加多余引号、UTF-8\nwrite_csv(res, \"09_results/limma_diff.csv\")\n\n# 需要带 BOM 以便 Windows Excel 正确识别中文时：\n# readr::write_excel_csv(res, \"09_results/limma_diff.csv\")\n\n# 需要写入注释行（溯源信息）时用 writeLines + write_csv\ncon <- file(\"09_results/limma_diff.csv\", \"w\", encoding = \"UTF-8\")\nwriteLines(c(\n  paste0(\"# 生成时间: \", format(Sys.time(), \"%Y-%m-%d %H:%M:%S\")),\n  paste0(\"# R 版本: \", R.version.string),\n  paste0(\"# limma: \", as.character(packageVersion(\"limma\"))),\n  \"# 对照: group_treat - group_control\",\n  \"# 注意: 本文件为权威版本，xlsx 仅供浏览\"\n), con)\nwrite_csv(res, con)\nclose(con)"
+      },
+      {
+        "label": "多工作表 xlsx（一个文件装下所有结果表）",
+        "lang": "r",
+        "code": "library(openxlsx)\n\nwb <- createWorkbook()\nfor (nm in names(tables)) {\n  addWorksheet(wb, substr(nm, 1, 31))          # 工作表名上限 31 字符\n  writeData(wb, substr(nm, 1, 31), tables[[nm]])\n  freezePane(wb, substr(nm, 1, 31), firstRow = TRUE)\n}\nsaveWorkbook(wb, \"09_results/project_summary.xlsx\", overwrite = TRUE)\n\n# 提醒：xlsx 会被 Excel 改写基因名（SEPT1 -> 日期），权威版本仍是 CSV"
+      },
+      {
+        "label": "生成论文级三线表（Word 可插入）",
+        "lang": "r",
+        "code": "library(flextable)\n\nft <- res |>\n  head(20) |>\n  select(feature, logFC, AveExpr, P.Value, adj.P.Val) |>\n  flextable() |>\n  set_header_labels(\n    feature = \"基因\", logFC = \"log2FC\", AveExpr = \"平均丰度\",\n    P.Value = \"p 值\", adj.P.Val = \"校正后 p 值\"\n  ) |>\n  colformat_double(digits = 3) |>\n  bold(part = \"header\") |>\n  autofit() |>\n  set_caption(\"表 1. 显著差异表达基因（前 20 位）\")\n\nsave_as_docx(ft, path = \"09_results/table1.docx\")\nprint(ft)"
+      }
+    ],
+    "recipes": {
+      "r": "library(openxlsx)\nlibrary(readr)\n\nres_dir <- \"09_results\"\ndir.create(res_dir, showWarnings = FALSE, recursive = TRUE)\n\ntables <- list(differential = res, diversity = div, stats = stats)\n\nwb <- createWorkbook()\nfor (nm in names(tables)) {\n  sheet <- substr(nm, 1, 31)\n  addWorksheet(wb, sheet)\n  writeData(wb, sheet, tables[[nm]])\n  freezePane(wb, sheet, firstRow = TRUE)\n}\nsaveWorkbook(wb, file.path(res_dir, \"project_summary.xlsx\"), overwrite = TRUE)\n\n# CSV 是权威版本：带溯源注释、无行名\ncon <- file(file.path(res_dir, \"differential.csv\"), \"w\", encoding = \"UTF-8\")\nwriteLines(c(\n  paste0(\"# 生成时间: \", format(Sys.time(), \"%Y-%m-%d %H:%M:%S\")),\n  paste0(\"# R: \", R.version.string),\n  paste0(\"# limma: \", as.character(packageVersion(\"limma\")))\n), con)\nwrite_csv(res, con)\nclose(con)\n\ncat(\"已导出:\", paste(list.files(res_dir), collapse = \", \"), \"\\n\")"
+    },
+    "params": [
+      {
+        "flag": "write_csv(na)",
+        "default": "\"NA\"",
+        "note": "缺失值写法；跨语言交换时建议显式写成空字符串或统一为 NA，避免下游把它当字符串类别"
+      },
+      {
+        "flag": "write_excel_csv",
+        "default": "—",
+        "note": "写 UTF-8 BOM，让 Windows Excel 正确识别中文；代价是部分工具会把 BOM 当数据的一部分"
+      },
+      {
+        "flag": "write.csv(row.names)",
+        "default": "TRUE",
+        "note": "base R 默认写行名，会多出一列无名列。用 write_csv 或显式 row.names = FALSE"
+      },
+      {
+        "flag": "addWorksheet 名称",
+        "default": "—",
+        "note": "工作表名上限 31 字符且不能含 : \\ / ? * [ ]，中文名过长会被截断或报错"
+      },
+      {
+        "flag": "colformat_double(digits)",
+        "default": "3",
+        "note": "控制小数位数；不设会让表格出现 15 位无意义小数"
+      },
+      {
+        "flag": "save_as_docx(path)",
+        "default": "必填",
+        "note": "flextable 导出 Word 需要显式给路径；默认不落盘只打印"
+      }
+    ],
+    "pitfalls": [
+      "base R 的 `write.csv` 默认写行名，导出的表多一列无名列，下次读入时又变成一列数据。除非确实依赖行名，一律 `row.names = FALSE` 或直接用 `readr::write_csv`。",
+      "Windows 上的 `write.csv` 可能按区域设置把小数点写成逗号（或反过来），在别的机器上读进来数值全错。跨平台交付一律显式指定编码与 separators，或统一用 readr。",
+      "把 Excel 当权威版本。Excel 打开时会静默改写形似日期的基因名与长数字 id。CSV 必须是权威版本，xlsx 只作浏览用。",
+      "中文表头或不写编码声明的导出，在另一台机器上打开变成乱码。需要兼容 Windows Excel 时用 `write_excel_csv`（带 BOM）。",
+      "手工把数字抄进 Word 表格。这是引入不一致的最快方式，而且事后无法发现。表格必须由代码从结果数据框生成（flextable/gt）。",
+      "只导出最终「干净」的表，不导出中间步骤的结果。半年后需要重跑或核对某一步时，无法确认它当时是怎么算的。关键中间表都应落盘。",
+      "把几百行的大表塞进 Word 文档。这类表应放补充材料 CSV；正文表格只保留筛选后的关键行，并在标题里说明筛选条件。"
+    ],
+    "related": [
+      {
+        "id": "py_export_report",
+        "note": "Python 端的等价导出环节"
+      },
+      {
+        "id": "r_tidyverse",
+        "note": "导出前通常还需要整理列名与顺序"
+      },
+      {
+        "id": "wf_reproducibility",
+        "note": "导出物里的溯源信息支撑可重复性"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 10 章 下游分析与可视化",
+        "path": "docs/guidebook/10-downstream-analysis-visualization.md"
+      },
+      {
+        "label": "第 11 章 工作流引擎与可重复性",
+        "path": "docs/guidebook/11-workflow-reproducibility.md"
+      }
+    ]
+  },
+  {
+    "id": "r_deseq2_object",
+    "name": "DESeq2 对象与差异表",
+    "category": "downstream-r",
+    "layer": "downstream",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "transcriptomics",
+      "metagenomics"
+    ],
+    "tags": [
+      "R",
+      "DESeq2",
+      "负二项",
+      "差异表达",
+      "计数数据"
+    ],
+    "summary": "用负二项模型处理计数数据的差异分析",
+    "what": [
+      "DESeq2 专门为计数数据设计：它假设每个特征的计数服从负二项分布（方差随均值增长，并有一个额外的离散度参数），并用所有特征的信息来稳定离散度的估计。这一步「跨特征借信息」是它小样本下仍可用的关键，也是它与普通 t 检验、与假设正态的 limma 的本质区别。",
+      "它的归一化方式（median-of-ratios size factor）值得理解：不是简单除以总计数，而是先估计每个样本相对「假想参考样本」的缩放因子。这样即使少数几个高丰度特征在某个样本里暴涨，也不会把该样本所有其他特征的相对丰度都压下去——用 CPM 归一化时就会发生这种失真。",
+      "使用它的正确姿势包含三类前置判断：样本量（每组至少 3，理想 4~6）、低表达过滤（先去掉几乎不表达的特征）、以及设计公式是否含协变量。做完之后必须看诊断图（MDS 图与 p 值直方图），否则无法判断结果是否可信。"
+    ],
+    "inputs": [
+      {
+        "type": "count-matrix",
+        "name": "整数计数矩阵",
+        "required": true,
+        "note": "特征 × 样本，**必须是原始整数计数**，不能是 TPM/FPKM/相对丰度"
+      },
+      {
+        "type": "csv-table",
+        "name": "样本设计表",
+        "required": true,
+        "note": "含分组与协变量；行顺序必须与计数矩阵的列顺序一致"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "stats-result",
+        "name": "差异分析结果表",
+        "ext": ".deseq2.tsv",
+        "note": "含 log2FC、标准误、统计量、原始与校正后 p 值、独立过滤后 p 值"
+      },
+      {
+        "type": "dataframe",
+        "name": "归一化后的表达矩阵",
+        "ext": ".vst.csv",
+        "note": "VST/rlog 变换后的矩阵，用于聚类、热图与 PCA"
+      },
+      {
+        "type": "report",
+        "name": "诊断图（MDS 与 p 值分布）",
+        "ext": "_diagnostics.pdf",
+        "note": "判断结果可否解读的依据"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "DESeq2",
+        "version": "1.4x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "负二项广义线性模型；需通过 Bioconductor 安装"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "viz_volcano_ma",
+        "viaType": "stats-result",
+        "note": "火山图与 MA 图需要 log2FC 与校正后 p 值"
+      },
+      {
+        "target": "tran_go_enrich",
+        "viaType": "stats-result",
+        "note": "差异结果进入富集分析"
+      },
+      {
+        "target": "r_export_table",
+        "viaType": "stats-result",
+        "note": "差异表导出为补充材料"
+      },
+      {
+        "target": "r_survival_meta",
+        "viaType": "stats-result",
+        "note": "跨研究的效应量合并需要各研究的效应量与标准误"
+      }
+    ],
+    "usage": [
+      {
+        "label": "标准流程：从计数矩阵到差异表",
+        "lang": "r",
+        "code": "library(DESeq2)\n\nmeta <- read.csv(\"sample_metadata.csv\", row.names = 1, stringsAsFactors = FALSE)\ncounts <- as.matrix(read.csv(\"09_results/counts.csv\", row.names = 1, check.names = FALSE))\n\nstopifnot(identical(colnames(counts), rownames(meta)))\nstopifnot(all(counts == floor(counts)))     # 必须是整数计数\n\n# 低表达过滤：至少在最小分组规模个样本中达到 10 个计数\nkeep <- rowSums(counts >= 10) >= min(table(meta$group))\ncat(\"过滤低表达特征:\", nrow(counts) - sum(keep), \"个\\n\")\ncounts <- counts[keep, ]\n\n# 构建设计：分组 + 批次（若有）\ndds <- DESeqDataSetFromMatrix(counts, meta, design = ~ batch + group)\n\n# 设定对照水平：结果表里的 log2FC 方向由它决定\nlevels(dds$group)\ndds$group <- relevel(dds$group, ref = \"control\")\n\n# 运行\nif (!interactive()) options(warn = 1)\ndds <- DESeq(dds)\nres <- results(dds, alpha = 0.05)\n\ncat(\"检验特征:\", nrow(res), \"\\n\")\nprint(summary(res))"
+      },
+      {
+        "label": "结果整理：同时保留普通 p 值与独立过滤后 p 值",
+        "lang": "r",
+        "code": "# DESeq2 提供两种校正后 p 值：\n#   padj     —— BH 校正\n#   svalue / 独立过滤 —— 更保守，且只在 padj 不可算时才有意义\nres_df <- as.data.frame(res)\nres_df$feature <- rownames(res_df)\nres_df <- res_df[order(res_df$padj), ]\n\ncat(\"padj < 0.05 且 |log2FC| > 1:\",\n    sum(res_df$padj < 0.05 & abs(res_df$log2FoldChange) > 1, na.rm = TRUE), \"\\n\")\ncat(\"padj 为 NA（被独立过滤剔除）:\", sum(is.na(res_df$padj)), \"\\n\")\n\n# 关键提醒：不要简单地把 padj 为 NA 的行删掉当作「不显著」——\n# 被独立过滤剔除意味着这些特征的统计检验不具可比性，方法里必须说明。\n\nwrite.csv(res_df, \"09_results/deseq2_diff.csv\", row.names = FALSE)"
+      },
+      {
+        "label": "必须看的诊断：样本结构与 p 值分布",
+        "lang": "r",
+        "code": "vsd <- vst(dds, blind = FALSE)\n\npar(mfrow = c(1, 2))\nplotPCA(vsd, intgroup = \"group\", main = \"PCA：样本是否按分组分开\")\n\nhist(res$p.value, breaks = 50, col = \"grey75\", main = \"p 值分布\", xlab = \"p\")\n\ncat(\"判读标准:\\n\")\ncat(\"  PCA 里分组不分离 => 分组变量可能没有真实效应\\n\")\ncat(\"  p 值近似均匀分布 => 几乎没有差异信号，显著结果应存疑\\n\")\ncat(\"  p 值左偏且有峰 => 存在真实差异信号，可继续解读\\n\")"
+      }
+    ],
+    "recipes": {
+      "bash": "Rscript -e 'library(DESeq2); m <- read.csv(\"meta.csv\", row.names=1); c <- as.matrix(read.csv(\"counts.csv\", row.names=1)); keep <- rowSums(c>=10) >= min(table(m$group)); d <- DESeqDataSetFromMatrix(c[keep,], m, ~group); d <- DESeq(d); r <- as.data.frame(results(d, alpha=0.05)); write.csv(r, \"deseq2_diff.csv\"); print(summary(results(d)))'",
+      "r": "library(DESeq2)\n\nmeta <- read.csv(\"sample_metadata.csv\", row.names = 1, stringsAsFactors = FALSE)\ncounts <- as.matrix(read.csv(\"09_results/counts.csv\", row.names = 1, check.names = FALSE))\n\nstopifnot(identical(colnames(counts), rownames(meta)))\nif (any(counts != floor(counts))) {\n  stop(\"计数矩阵含非整数——DESeq2 需要原始计数，不能使用 TPM/FPKM/相对丰度\")\n}\n\nkeep <- rowSums(counts >= 10) >= min(table(meta$group))\ncounts <- counts[keep, , drop = FALSE]\ncat(\"保留\", nrow(counts), \"个特征\\n\")\n\ndds <- DESeqDataSetFromMatrix(counts, meta, design = ~ group)\ndds$group <- relevel(dds$group, ref = \"control\")\ndds <- DESeq(dds, quiet = TRUE)\n\nres <- results(dds, alpha = 0.05)\nres_df <- as.data.frame(res)\nres_df$feature <- rownames(res_df)\nres_df <- res_df[order(res_df$padj), ]\nwrite.csv(res_df, \"09_results/deseq2_diff.csv\", row.names = FALSE)\n\nvsd <- vst(dds, blind = FALSE)\nwrite.csv(assay(vsd), \"09_results/vst.csv\")\n\ncat(\"\\n--- 结果摘要 ---\\n\")\nprint(summary(res))\ncat(\"\\n显著（padj<0.05 且 |log2FC|>1）:\",\n    sum(res_df$padj < 0.05 & abs(res_df$log2FoldChange) > 1, na.rm = TRUE), \"\\n\")\ncat(\"提示：先看 p 值直方图与 PCA，再解读显著结果\\n\")"
+    },
+    "params": [
+      {
+        "flag": "design",
+        "default": "~ group",
+        "note": "协变量（批次、性别等）应写进公式；把 design 设为 ~1 只会做归一化不做检验，是常见的误解"
+      },
+      {
+        "flag": "relevel(ref)",
+        "default": "字母序第一个",
+        "note": "对照水平决定 log2FC 的方向。不显式设定时默认按字母序，很容易把方向搞反"
+      },
+      {
+        "flag": "results(alpha)",
+        "default": "0.1",
+        "note": "同时用于独立过滤与结果表阈值；常用 0.05，需与方法里报告的阈值一致"
+      },
+      {
+        "flag": "results(lfcThreshold)",
+        "default": "0",
+        "note": "对 log2FC 做统计检验而非仅事后筛选，结论更严格；代价是功效下降"
+      },
+      {
+        "flag": "vst(blind)",
+        "default": "TRUE",
+        "note": "blind=TRUE 表示变换时不使用设计信息，适合做无偏的样本质控；画分组图时通常设 FALSE"
+      },
+      {
+        "flag": "DESeq(normalizationFactors)",
+        "default": "自动估计",
+        "note": "特殊设计（如 spike-in 定量）需要手工提供；默认的 median-of-ratios 在少数特征暴涨时更稳健"
+      }
+    ],
+    "pitfalls": [
+      "**把 TPM/FPKM/相对丰度喂给 DESeq2**。它需要原始整数计数：归一化数据不服从负二项假设，会让离散度估计与 p 值都失去意义。代码里应加整数校验（见 recipes）。",
+      "样本列顺序与元数据行顺序不一致。DESeq2 完全按位置对齐，错配后所有样本标签都错，结果看起来合理但完全错误。必须 `identical(colnames(counts), rownames(meta))`。",
+      "**不做低表达过滤**。大量近零特征会大幅降低检验功效并影响多重校正。过滤阈值与依据必须写进方法。",
+      "把 `padj` 为 NA 的行当作「不显著」删掉。NA 来自独立过滤，含义是「该特征的信息量不足以做出可比判断」，与「检验后不显著」不是一回事。",
+      "每组只有 2 个样本就做差异分析。DESeq2 能跑出结果，但离散度估计极不稳定，结论不可靠。这种规模的分析应视为探索而非结论，必须明说。",
+      "只看结果表不看诊断图。PCA 上分组根本不分离、或 p 值直方图接近均匀分布时，任何「显著」列表都更可能是噪声，而不是发现。",
+      "把批次与生物学分组完全共线（同一批次里只有一个组）。此时设计矩阵秩亏，DESeq2 会报错或给出无法解释的结果——这是实验设计问题，统计上无解。",
+      "用 padj 阈值筛完就结束，不报告效应量。log2FC 很小而 padj 显著的特征在生物学上可能毫无意义，筛选应同时考虑两者并在方法中说明。"
+    ],
+    "related": [
+      {
+        "id": "tran_deseq2",
+        "note": "转录组场景下的完整用法与上下游衔接"
+      },
+      {
+        "id": "tran_edger",
+        "note": "同为负二项模型；小样本或特定设计下结果可能略有不同"
+      },
+      {
+        "id": "r_limma_stats",
+        "note": "连续型数据、或需要复杂协变量结构时的替代方案"
+      },
+      {
+        "id": "viz_volcano_ma",
+        "note": "差异结果的标配可视化"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 9 章 转录组与差异表达",
+        "path": "docs/guidebook/09-transcriptome-differential-expression.md"
+      }
+    ]
+  },
+  {
+    "id": "r_survival_meta",
+    "name": "效应量合并与元分析 (metafor / survival)",
+    "category": "downstream-r",
+    "layer": "downstream",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": [
+      "genomics",
+      "metagenomics",
+      "transcriptomics"
+    ],
+    "tags": [
+      "R",
+      "metafor",
+      "元分析",
+      "效应量",
+      "生存分析"
+    ],
+    "summary": "把多个研究或队列的效应量合并成一个总体估计",
+    "what": [
+      "单个研究的结论往往受样本量与批次限制。元分析（meta-analysis）的做法是：把每个研究的结果换算成一个**统一的效应量**（如 log 优势比、Hedges' g、风险比），再按各研究的精度加权合并，同时估计研究间的异质性。它回答的是「把这些研究放在一起看，效应到底存不存在、有多大」。",
+      "metafor 是 R 里做这件事的标准包：`escalc()` 负责把各种报告形式（均值±标准差、2×2 表、相关系数等）统一成效应量，`rma()` 做随机效应或固定效应模型合并，并给出 I² 与 τ² 这两个异质性指标。",
+      "在微生物组与基因组学里，它最实际的用途不是「做一篇元分析论文」，而是**跨队列验证自己的发现**：把本次研究的效应量与已发表研究的效应量放在一起，看方向是否一致、异质性是否过大。如果 I² 很高（例如 > 75%），说明各研究的结果差异不足以用一个共同效应概括，此时「合并后的 p 值」没有意义。"
+    ],
+    "inputs": [
+      {
+        "type": "stats-result",
+        "name": "各研究的效应量与标准误",
+        "required": true,
+        "note": "至少需要效应量与其标准误（或可算出标准误的原始统计量）"
+      },
+      {
+        "type": "tsv-table",
+        "name": "研究层面的协变量",
+        "required": false,
+        "note": "地区、人群、测序平台等，用于亚组分析或元回归"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "stats-result",
+        "name": "合并效应量与异质性",
+        "ext": ".meta.tsv",
+        "note": "含总体效应量、95% 置信区间、p 值、I²、τ² 与 Q 检验"
+      },
+      {
+        "type": "figure-vector",
+        "name": "森林图与漏斗图",
+        "ext": ".pdf",
+        "note": "森林图展示各研究效应量与合并结果；漏斗图用于检查发表偏倚"
+      }
+    ],
+    "provides": [
+      {
+        "tool": "metafor",
+        "version": "4.6-x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "效应量换算、模型合并与异质性估计"
+      },
+      {
+        "tool": "survival",
+        "version": "3.6-x",
+        "access": "r-api",
+        "install": "builtin",
+        "note": "生存分析（K-M 曲线、Cox 模型）"
+      },
+      {
+        "tool": "survminer",
+        "version": "0.4.x",
+        "access": "r-api",
+        "install": "cran",
+        "note": "生存曲线与风险表的绘图"
+      }
+    ],
+    "feeds": [
+      {
+        "target": "viz_ggplot2",
+        "viaType": "stats-result",
+        "note": "森林图与异质性图的绘制"
+      },
+      {
+        "target": "r_export_table",
+        "viaType": "stats-result",
+        "note": "合并结果与异质性指标进交付表"
+      },
+      {
+        "target": "py_export_report",
+        "viaType": "figure-vector",
+        "note": "森林图作为报告附件"
+      }
+    ],
+    "usage": [
+      {
+        "label": "从「均值 ± 标准差 + 两组样本量」换算效应量并合并",
+        "lang": "r",
+        "code": "library(metafor)\n\n# 各研究的原始统计量（或直接从结果表读入）\ndat <- data.frame(\n  study  = c(\"A\", \"B\", \"C\", \"D\"),\n  n1 = c(24, 31, 18, 52), m1 = c(3.8, 4.1, 3.5, 3.9), sd1 = c(1.2, 1.4, 1.1, 1.3),\n  n2 = c(22, 30, 20, 50), m2 = c(2.9, 3.6, 2.8, 3.4), sd2 = c(1.1, 1.3, 1.0, 1.2)\n)\n\n# 换算成标准化均值差（Hedges' g），escalc 会同时给出抽样方差\n dat_es <- escalc(measure = \"SMD\",\n                  m1i = m1, sd1i = sd1, n1i = n1,\n                  m2i = m2, sd2i = sd2, n2i = n2,\n                  data = dat)\n\nprint(dat_es[, c(\"study\", \"yi\", \"vi\")])\n\n# 随机效应模型：允许各研究的真实效应不同（生物异质性普遍存在）\nres <- rma(yi, vi, data = dat_es, method = \"REML\")\nprint(res)\n\ncat(\"\\nI² =\", round(res$I2, 1), \"%   τ² =\", round(res$tau2, 4), \"\\n\")\ncat(\"判读: I² > 75% 说明研究间差异过大，合并后的单一效应意义有限\\n\")"
+      },
+      {
+        "label": "森林图与发表偏倚检查",
+        "lang": "r",
+        "code": "library(metafor)\n\n# 森林图：展示每个研究的效应量与合并结果\npdf(\"09_results/forest.pdf\", width = 7, height = 4.4)\nforest(res,\n       slab = dat_es$study,\n       xlab = \"标准化均值差 (Hedges' g)\",\n       header = c(\"研究\", \"效应量 [95% CI]\"),\n       refline = 0, digits = 2)\ndev.off()\n\n# 漏斗图 + Egger 检验：检查小样本研究是否系统性地报告更大效应（发表偏倚）\nif (nrow(dat_es) >= 10) {\n  pdf(\"09_results/funnel.pdf\", width = 5.4, height = 4.6)\n  funnel(res, main = \"漏斗图\", xlab = \"效应量\")\n  dev.off()\n  print(regtest(res))          # Egger 回归检验\n} else {\n  cat(\"研究数 < 10，漏斗图与 Egger 检验的效力不足，不建议据此判断发表偏倚\\n\")\n}\n\n# 亚组分析或元回归：检验某个研究层面变量是否解释异质性\n# res_mod <- rma(yi, vi, mods = ~ platform, data = dat_es)\n# print(res_mod)"
+      },
+      {
+        "label": "生存分析（同一份数据里的时间-事件结局）",
+        "lang": "r",
+        "code": "library(survival)\nlibrary(survminer)\n\n# 需要 time（随访时长）与 status（0=删失, 1=事件）\nfit <- survfit(Surv(time, status) ~ group, data = cohort)\nprint(fit)\n\np <- ggsurvplot(fit, data = cohort, pval = TRUE, risk.table = TRUE,\n                conf.int = TRUE, palette = \"Set2\",\n                xlab = \"随访时间\", ylab = \"生存概率\")\n\n# 关键前提：比例风险假设。必须检验，不检验就不能用 Cox 模型系数直接解读\ncox <- coxph(Surv(time, status) ~ group + age + sex, data = cohort)\nprint(summary(cox))\ncoxtest <- cox.zph(cox)\nprint(coxtest)\ncat(\"判读: cox.zph 的全局 p < 0.05 说明比例风险假设不成立，\")\ncat(\"此时 HR 不能作为「随时间恒定的风险比」解读，应改用分层模型或时依系数\\n\")\n\npdf(\"09_results/cox_zph.pdf\", width = 7, height = 4)\nplot(coxtest)\ndev.off()"
+      }
+    ],
+    "recipes": {
+      "bash": "Rscript -e 'library(metafor); d <- read.csv(\"09_results/study_effects.csv\"); r <- rma(yi, vi, data=d, method=\"REML\"); s <- summary(r); cat(\"合并效应量:\", round(s$beta[1],3), \" [\", round(s$ci.lb,3), \",\", round(s$ci.ub,3), \"]\\n\", sep=\"\"); cat(\"p =\", format.pval(s$pval, digits=3), \"  I2 =\", round(r$I2,1), \"%  tau2 =\", round(r$tau2,4), \"\\n\"); write.csv(data.frame(estimate=s$beta[1], ci_lb=s$ci.lb, ci_ub=s$ci.ub, p=s$pval, I2=r$I2, tau2=r$tau2, k=r$k), \"09_results/meta_result.csv\", row.names=FALSE)'",
+      "r": "library(metafor)\n\n# 期望输入：每行一个研究，含效应量 yi 与其方差 vi（用 escalc 从原始统计量换算而来）\ndat <- read.csv(\"09_results/study_effects.csv\", stringsAsFactors = FALSE)\nstopifnot(all(c(\"study\", \"yi\", \"vi\") %in% names(dat)))\n\nk <- nrow(dat)\ncat(\"纳入研究数:\", k, \"\\n\")\nif (k < 3) {\n  warning(\"研究数少于 3 时合并结果的可靠性很低，不建议下结论\")\n}\n\n# 随机效应模型：生物异质性普遍存在，固定效应模型在生态/临床数据上通常不成立\nres <- rma(yi, vi, data = dat, method = \"REML\")\ns <- summary(res)\n\ncat(\"\\n--- 合并结果 ---\\n\")\ncat(sprintf(\"效应量 %.3f  95%% CI [%.3f, %.3f]\\n\", s$beta[1], s$ci.lb, s$ci.ub))\ncat(sprintf(\"p = %s\\n\", format.pval(s$pval, digits = 3)))\ncat(sprintf(\"异质性: I² = %.1f%%   τ² = %.4f   Q 检验 p = %s\\n\",\n            res$I2, res$tau2, format.pval(res$QEp, digits = 3)))\n\nif (res$I2 > 75) {\n  cat(\"\\n注意: I² > 75% 表明研究间异质性很高，\")\n  cat(\"「合并后的单一效应」不足以概括这些研究，应报告异质性来源（亚组/元回归）\\n\")\n} else if (res$I2 < 25) {\n  cat(\"\\nI² < 25% 表明研究间一致性较好，合并结果的可解释性较强\\n\")\n}\n\nout <- data.frame(effect = s$beta[1], ci_lb = s$ci.lb, ci_ub = s$ci.ub,\n                  p = s$pval, I2 = res$I2, tau2 = res$tau2, k = k)\nwrite.csv(out, \"09_results/meta_result.csv\", row.names = FALSE)\n\npdf(\"09_results/forest.pdf\", width = 7, height = max(3.2, k * 0.42 + 1.6))\nforest(res, slab = dat$study, xlab = \"效应量\", refline = 0, digits = 2)\ndev.off()\n\ncat(\"\\n已导出 meta_result.csv 与 forest.pdf\\n\")"
+    },
+    "params": [
+      {
+        "flag": "escalc(measure)",
+        "default": "无",
+        "note": "效应量类型必须与研究设计匹配：连续量用 'SMD'/'MD'、二分类用 'OR'/'RR'、相关系数用 'ZCOR'。**测量选错会让合并结果完全无意义**"
+      },
+      {
+        "flag": "rma(method)",
+        "default": "\"REML\"",
+        "note": "异质性方差的估计方法。REML 常用；研究数很少时 'PM'（Paule-Mandel）或 'DL' 可能更稳健"
+      },
+      {
+        "flag": "rma(model)",
+        "default": "随机效应",
+        "note": "写 `model = \"FE\"` 是固定效应（假设所有研究共享同一真实效应）。生态与临床数据上这一假设通常不成立"
+      },
+      {
+        "flag": "regtest（Egger 检验）",
+        "default": "无",
+        "note": "研究数 < 10 时效力不足，不应据此判断发表偏倚"
+      },
+      {
+        "flag": "cox.zph",
+        "default": "无",
+        "note": "Cox 模型的**必需前提检验**。p < 0.05 说明比例风险假设不成立，HR 不能直接解读"
+      },
+      {
+        "flag": "escalc 的抽样方差",
+        "default": "自动计算",
+        "note": "从均值和标准差换算时，sd 必须是**标准差**而不是标准误；把 SEM 当 SD 输入会严重高估精度（把权重给错）"
+      }
+    ],
+    "pitfalls": [
+      "**把标准误（SEM）当成标准差（SD）输入**。这会让该研究的权重被严重高估，合并结果被它单方面主导。很多论文报告的是 SEM，换算公式是 `SD = SEM × sqrt(n)`，必须先确认报告的是哪一个。",
+      "**测量类型选错**。把二分类数据当连续量处理，或把相关系数直接当效应量输入，会让合并结果在数值上与解释上都无意义。选 measure 前先想清楚原始数据的形式。",
+      "只看合并后的 p 值不看异质性。I² 很高的「显著」结果说明的是「这些研究平均下来有效应」，但不代表存在一个共同的真实效应 —— 此时更该报告异质性来源，而不是把 I² 当作可以忽略的附录数字。",
+      "研究数太少（< 3）就做元分析。两三个研究的合并结果对模型选择与单个研究的数据质量极其敏感，可靠性很低，应如实说明这是描述性汇总而非元分析。",
+      "研究数 < 10 就用漏斗图与 Egger 检验判断发表偏倚。这些方法的检验效力不足，阴性结果不能证明没有偏倚。",
+      "把不同测量尺度的效应量直接放在一起合并（例如一部分研究用 OR、一部分用 SMD）。必须统一成同一量纲，或分开展开分析。",
+      "用 Cox 模型但不做比例风险检验（cox.zph）。比例风险假设不成立时 HR 不是「随时间恒定的风险比」，把它当作一个固定数字解读是常见错误。",
+      "生存分析的删失（censoring）机制被忽略。如果删失与结局相关（信息性删失），标准 K-M 与 Cox 的估计都会有偏，这一点需要在方法里讨论。",
+      "从森林图上直接读出数值。森林图的方块大小与置信区间宽度是视觉映射，精确数值必须来自结果表。",
+      "把元分析当成「不需要做质量评价的批量统计」。纳入研究的偏倚会被直接带进合并结果，纳入标准与偏倚风险评估应当与统计结果一起报告。"
+    ],
+    "related": [
+      {
+        "id": "r_matrix_stats",
+        "note": "单个数据集内部的统计与距离计算"
+      },
+      {
+        "id": "r_limma_stats",
+        "note": "产生单个研究的效应量；元分析是跨研究的下一层"
+      },
+      {
+        "id": "viz_ggplot2",
+        "note": "森林图与异质性图的绘制"
+      },
+      {
+        "id": "py_scipy_stats",
+        "note": "Python 侧的统计检验；单研究层面"
+      }
+    ],
+    "docs": [
+      {
+        "label": "第 10 章 下游分析与可视化",
+        "path": "docs/guidebook/10-downstream-analysis-visualization.md"
+      }
+    ]
+  }
+]

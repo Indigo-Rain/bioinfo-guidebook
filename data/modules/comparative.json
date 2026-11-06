@@ -1,0 +1,408 @@
+[
+  {
+    "id": "comp_syri",
+    "name": "基因组共线性比较 (SyRI / MUMmer)",
+    "category": "comparative",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics", "phylogenetics"],
+    "tags": ["共线性", "重排", "倒位", "易位", "syri", "mummer"],
+    "summary": "识别两基因组间的倒位、易位与重排区块",
+    "what": [
+      "SyRI 接收一对全基因组比对结果（近缘菌株可用 minimap2 生成，稍远一些的用 MUMmer 的 nucmer），在同源区块内区分出 SNP/INDEL 与结构性差异：倒位、易位（基因组内与基因组间）、重复，以及两侧都无法比对的区域（not-aligned）。后一类往往就是菌株特有的附属区、可移动元件或组装缺口。配合绘图工具可以把这些差异画成一张对照图，是「两个基因组到底哪里不同」这个问题的标准答案。",
+      "共线性是 SNP 层面看不见的那一层：两个菌株的基因内容可以几乎一样却有一个大倒位，纯 SNP 比较会认为它们几乎相同；反过来，草图组装里的 contig 断点会被算法记成重排，看起来「结构差异巨大」，实际只是没拼通。所以共线性结果必须和组装统计（contig 数、N50、是否有闭环）以及注释一起解释，孤立地数「多少个倒位」没有意义。",
+      "它的适用范围有限：一次只比较两个（少数几个）基因组，结果强烈依赖比对质量与序列相似度。当 ANI 低于约 90% 时比对会碎片化，not-aligned 区域大量增加，此时报出的「重排」多半是比对失败的产物而不是真实重排。重复序列的处理方式（是否允许重复匹配）会直接改变倒位判定，因此 nucmer 的匹配策略与所用版本都要记录。"
+    ],
+    "inputs": [
+      { "type": "genome-fasta", "name": "参考基因组", "required": true, "note": "建议用质量更高、更完整的组装作为参考" },
+      { "type": "genome-fasta", "name": "查询基因组", "required": true, "note": "待比较的第二个基因组；两条序列的 ID 命名要能区分来源" },
+      { "type": "gff", "name": "注释文件", "required": false, "note": "用于按基因标注重排断点，判断哪些基因落在差异区内" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "同源区块与重排标注表", "ext": ".syri.out", "note": "每行一个区块，含类型（SYN/INV/TRANS/DUP/NOTAL）与双端坐标" },
+      { "type": "tsv-table", "name": "差异统计汇总", "ext": ".syri.summary.tsv", "note": "各类结构差异的数量与总长度，适合放进结果表" },
+      { "type": "figure-vector", "name": "共线性与重排图", "ext": ".pdf", "note": "参考与查询基因组的坐标对照图；必须写明谁是参考" },
+      { "type": "log-report", "name": "比对与分类日志", "ext": ".syri.log", "note": "含比对参数、覆盖率与区块数，用于判断结果是否可信" }
+    ],
+    "provides": [
+      { "tool": "SyRI", "version": "1.7.x", "access": "cli", "install": "conda", "note": "Python 实现；输入必须是同一套坐标体系的比对文件" },
+      { "tool": "MUMmer (nucmer)", "version": "4.0.x", "access": "cli", "install": "conda", "note": "经典全基因组比对；参数决定重复区与倒位的判定结果" },
+      { "tool": "minimap2", "version": "2.2x", "access": "cli", "install": "conda", "note": "近缘菌株可直接用 asm5/asm10 预设生成比对，比 nucmer 快很多" }
+    ],
+    "feeds": [
+      { "target": "comp_island_path", "viaType": "tsv-table", "note": "not-aligned 与特有区块是基因组岛的候选区间" },
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "把区块表整理成可读的结果表并统计各类型长度" },
+      { "target": "viz_pub_style", "viaType": "figure-vector", "note": "把示意稿重绘成投稿质量的图" }
+    ],
+    "usage": [
+      {
+        "label": "近缘菌株：minimap2 比对 + SyRI 分类",
+        "lang": "bash",
+        "code": "minimap2 -ax asm5 --eqx -t 8 ref.fna qry.fna > aln.sam\nsamtools sort -@ 8 -o aln.bam aln.sam && samtools index aln.bam\nsyri -c aln.bam -r ref.fna -q qry.fna -F B --prefix sample --dir syri_out"
+      },
+      {
+        "label": "较远缘或需要精确坐标：nucmer 路线",
+        "lang": "bash",
+        "code": "nucmer --maxmatch -p aln ref.fna qry.fna\nshow-coords -THrd aln.delta > aln.coords\nsyri -c aln.coords -d aln.delta -r ref.fna -q qry.fna --prefix sample --dir syri_out"
+      },
+      {
+        "label": "先看汇总，确认差异构成是否合理",
+        "lang": "bash",
+        "code": "awk -F'\\t' '{print $8}' syri_out/sample.syri.out | sort | uniq -c | sort -rn\n# 若 NOTAL 占比异常高，优先怀疑比对质量或基因组不完整，而不是真有那么多特有区"
+      }
+    ],
+    "recipes": {
+      "bash": "minimap2 -ax asm5 --eqx -t ${THREADS} 02_assembly/${REF}.fna 02_assembly/${QRY}.fna \\\n  > 07_compare/${REF}_${QRY}.sam\nsamtools sort -@ ${THREADS} -o 07_compare/${REF}_${QRY}.bam 07_compare/${REF}_${QRY}.sam\nsamtools index 07_compare/${REF}_${QRY}.bam\nsyri -c 07_compare/${REF}_${QRY}.bam -r 02_assembly/${REF}.fna -q 02_assembly/${QRY}.fna \\\n  -F B --prefix ${REF}_${QRY} --dir 07_compare/syri > 10_logs/${REF}_${QRY}.syri.log 2>&1",
+      "python": "run(f\"minimap2 -ax asm5 --eqx -t {THREADS} {ref_fna} {qry_fna} > {cmp_dir}/{pair}.sam\")\nrun([\"samtools\", \"sort\", \"-@\", str(THREADS), \"-o\", str(cmp_dir / f\"{pair}.bam\"), str(cmp_dir / f\"{pair}.sam\")])\nrun([\"samtools\", \"index\", str(cmp_dir / f\"{pair}.bam\")])\nrun([\"syri\", \"-c\", str(cmp_dir / f\"{pair}.bam\"), \"-r\", str(ref_fna), \"-q\", str(qry_fna),\n     \"-F\", \"B\", \"--prefix\", pair, \"--dir\", str(cmp_dir / \"syri\")],\n    log_name=f\"{pair}.syri.log\")"
+    },
+    "params": [
+      { "flag": "nucmer --maxmatch", "default": "关闭", "note": "允许重复序列多次匹配；会显著影响倒位与重复区的判定，开关选择必须写进方法" },
+      { "flag": "minimap2 -ax asm5", "default": "—", "note": "近缘（≈99% ANI）基因组比对预设；距离更远时改用 asm10/asm20，否则比对率会很低" },
+      { "flag": "syri -F/--file-type", "default": "自动", "note": "输入比对格式（BAM/SAM/coords+PAF 等）；格式判断错会得到空的区块表" },
+      { "flag": "syri -k/--keep-intermediates", "default": "关闭", "note": "保留中间文件，便于排查某段区域为何被判成重排" },
+      { "flag": "参考基因组的选择", "default": "—", "note": "坐标体系完全不同：以 A 为参考报出的倒位，换成以 B 为参考后坐标与方向都会变，图中必须标注" }
+    ],
+    "pitfalls": [
+      "草图组装的 contig 断点会被记成重排。在比较之前先确认两个基因组的 contig 数与完整度，否则「大量易位」很可能只是没拼通的假象。",
+      "ANI 低于约 90% 时比对碎片化，not-aligned 区域暴增；此时的结构差异结果基本不可用，应该换更合适的比较方法或明确说明局限。",
+      "参考基因组换了，坐标与方向全变。同一对基因组以 A 为参考报「1 个倒位」，以 B 为参考可能报成另一组区块，图注与结果表必须写清参考是谁。",
+      "重复序列（rRNA 操纵子、IS 元件、噬菌体）会让比对在多个位置之间摇摆，直接产生假倒位或漏掉真倒位；含大量可移动元件的菌株尤其要人工核对几个关键区块。",
+      "SyRI 需要同一坐标体系的比对文件，把 nucmer 的 delta 与 coords 混用、或把不同参数两次比对的输出拼在一起，会得到看似正常但内部矛盾的区块表。",
+      "它是两两比较工具，不能直接推广成「整个种的结构变异谱」。多个基因组时要么做参考-所有菌株的两两比较并汇总，要么先用共线性聚类挑选代表性基因组。"
+    ],
+    "related": [
+      { "id": "comp_proksee", "note": "把共线性与注释画成环形对照图" },
+      { "id": "comp_island_path", "note": "从差异区块进一步找基因组岛与可移动元件" },
+      { "id": "tax_fastani", "note": "先用 ANI 确认两个基因组确实处于可比的亲缘距离" },
+      { "id": "asmqc_quast", "note": "比较前确认组装本身的质量，避免把组装缺陷读成结构变异" }
+    ],
+    "docs": [
+      { "label": "第 7 章 比较基因组与泛基因组", "path": "docs/guidebook/07-comparative-pangenome.md" }
+    ]
+  },
+  {
+    "id": "comp_proksee",
+    "name": "比较基因组可视化 (Proksee / CGView)",
+    "category": "comparative",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "active",
+    "domains": ["genomics"],
+    "tags": ["环形图", "基因组可视化", "cgview", "proksee", "注释轨道"],
+    "summary": "把基因组与注释画成可交互的环形比较图",
+    "what": [
+      "Proksee 把基因组序列、注释、以及额外的比较轨道（BLAST 命中、BED 区间、VCF 变异、耐药/毒力基因表）画成一张可缩放到碱基级别的环形图，底层用 CGView.js 渲染。它解决的是「一页看清这个基因组长什么样」的问题：GC 含量与 GC skew 的异常区、CDS 在两个链上的分布、前噬菌体或耐药基因是否成簇、与参考基因组相比哪里有特有区，都能在图上直接读出来。命令行版本 proksee-batch 可以批量处理几十上百个基因组，适合接在流程末端。",
+      "它属于可视化层而不是证据层：图上颜色最丰富的区域未必最有生物学意义，一个「特有区」也可能只是低质量组装段。环形图不表达距离，圈上的角度与实际碱基距离无关，因此任何定量结论都必须回到区间表与统计数字，图只作为导读。",
+      "实践上要注意交付形态：proksee-batch 生成的 HTML 报告不是自包含文件，它需要同目录下的数据目录与 CGView.js 代码目录才能打开；报告里通往 Proksee 网站的分析链接需要联网，并会把基因组数据上传到外部服务器。未发表菌株或受管控样本要先用命令行/本地方式出图，或者只交付本地可看的版本。"
+    ],
+    "inputs": [
+      { "type": "genome-fasta", "name": "基因组序列", "required": true, "note": "每个基因组一个文件；序列 ID 会成为图上的 contig 标签" },
+      { "type": "gff", "name": "基因注释", "required": false, "note": "没有注释也能出图，但只有 GC 轨道，信息量很低" },
+      { "type": "tsv-table", "name": "额外注释轨道", "required": false, "note": "BLAST outfmt6 命中表、BED 区间或变异位点表，用于叠加比较信息" }
+    ],
+    "outputs": [
+      { "type": "report", "name": "可交互基因组图 (HTML)", "ext": ".html", "note": "必须与同批生成的数据目录一起分发，否则打开是空白" },
+      { "type": "figure-vector", "name": "矢量环形图", "ext": ".pdf", "note": "从交互界面或本地 CGView 导出的投稿用图" },
+      { "type": "figure-png", "name": "位图环形图", "ext": ".png", "note": "用于汇报与幻灯片；分辨率在导出时确定，事后放大会糊" }
+    ],
+    "provides": [
+      { "tool": "proksee-batch", "version": "0.6.x", "access": "cli", "install": "pip", "note": "Proksee 的命令行批量入口；把每个基因组按约定目录结构组织后批量出图与项目链接" },
+      { "tool": "CGView", "version": "1.0.x", "access": "cli", "install": "source", "note": "本地可脚本化的环形图绘制程序；适合需要完全离线、版式固定的场景" }
+    ],
+    "feeds": [
+      { "target": "viz_pub_style", "viaType": "figure-vector", "note": "统一配色与字号后作为正式插图" },
+      { "target": "py_export_report", "viaType": "report", "note": "把交互图与注释统计合并成交付报告" }
+    ],
+    "usage": [
+      {
+        "label": "批量出图（输入是指定目录结构，每个基因组一个子目录）",
+        "lang": "bash",
+        "code": "proksee-batch --input input_directory --output proksee_out\n# 目录约定：<genome>/genbank/*.gbk 或 <genome>/fasta/*.fna，另可放 gff/ bed/ blast/ vcf/ json/ metadata/"
+      },
+      {
+        "label": "生成一份合规模板目录，照着填数据",
+        "lang": "bash",
+        "code": "proksee-batch --download-example-data example_input\nfind example_input -type f | sort"
+      },
+      {
+        "label": "确认输出必须整目录分发",
+        "lang": "bash",
+        "code": "ls proksee_out\n# 期望看到 HTML 报告 + 数据目录 + cgview-js 代码目录；只拷 HTML 会得到空白页"
+      }
+    ],
+    "recipes": {
+      "bash": "mkdir -p 07_compare/proksee_input/${SAMPLE}/genbank 07_compare/proksee_input/${SAMPLE}/gff\ncp 02_assembly/${SAMPLE}.gbk 07_compare/proksee_input/${SAMPLE}/genbank/\ncp 03_annotation/${SAMPLE}.gff 07_compare/proksee_input/${SAMPLE}/gff/\nproksee-batch --input 07_compare/proksee_input --output 07_compare/proksee_out",
+      "python": "genome_dir = CMP_DIR / \"proksee_input\" / sample\n(genome_dir / \"genbank\").mkdir(parents=True, exist_ok=True)\n(genome_dir / \"gff\").mkdir(parents=True, exist_ok=True)\nshutil.copy(ASM_DIR / f\"{sample}.gbk\", genome_dir / \"genbank\")\nshutil.copy(ANNO_DIR / f\"{sample}.gff\", genome_dir / \"gff\")\nrun([\"proksee-batch\", \"--input\", str(CMP_DIR / \"proksee_input\"),\n     \"--output\", str(CMP_DIR / \"proksee_out\")])"
+    },
+    "params": [
+      { "flag": "--input", "default": "无", "note": "输入目录，不是一个文件：每个基因组一个子目录，子目录里按数据类型再分层" },
+      { "flag": "--output", "default": "无", "note": "输出目录；产出是「目录」而不是单个文件，交付与归档都要整目录处理" },
+      { "flag": "genbank / 与 fasta 的取舍", "default": "genbank 优先", "note": "有 GenBank 时优先使用（自带注释）；只给 FASTA 则没有任何基因轨道，图上基本只有 GC" },
+      { "flag": "json 样式模板", "default": "无", "note": "在网页端调好样式后导出为可重载的 JSON，命令行批量时复用它才能保证所有图版式一致" }
+    ],
+    "pitfalls": [
+      "HTML 报告不是单文件。它依赖同目录下的数据目录与 CGView.js 代码目录，只把 HTML 拷走或发邮件附单个文件，对方打开就是空白页；归档时要打包整个输出目录。",
+      "报告里的「在 Proksee 网站上分析」链接需要联网，并且会把基因组数据上传到外部服务器。未发表菌株或临床受管控样本要先确认数据共享政策，必要时只用本地绘图。",
+      "输入轨道有隐式约束：变异轨道的 contig ID 必须与 GenBank/FASTA 里的序列 ID 完全一致，REF 碱基也要与基因组一致，否则该轨道会静默缺失或错位，而图看起来仍然「正常」。",
+      "一张漂亮的环图不是基因组质量的证明。草图组装的 contig 断点、未闭合的重复区都会在图上表现为醒目区块；解释图之前先看组装统计与完整度评估。",
+      "环图不表达距离：角度与碱基长度无关，环形排布也会让基因组的首尾相邻而产生视觉误导。定量描述必须回到区间表与坐标，不要用「看起来离得很近」下结论。",
+      "proksee-batch 仍是 0.x 版本，命令行接口与目录约定可能变化；用于正式项目时固定版本，并把生成命令与样式文件一起归档。"
+    ],
+    "related": [
+      { "id": "comp_syri", "note": "共线性与重排的定量结果，可作为环形图的注释轨道" },
+      { "id": "viz_circos", "note": "需要自定义多基因组比较环图时的通用替代方案" },
+      { "id": "anno_bakta", "note": "提供带注释的 GenBank/GFF，是出图质量的前提" },
+      { "id": "viz_pub_style", "note": "把交互图重绘成符合投稿规范的插图" }
+    ],
+    "docs": [
+      { "label": "第 7 章 比较基因组与泛基因组", "path": "docs/guidebook/07-comparative-pangenome.md" }
+    ]
+  },
+  {
+    "id": "comp_snp_dist",
+    "name": "SNP 距离矩阵（菌株传播）",
+    "category": "comparative",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics", "phylogenetics"],
+    "tags": ["SNP 距离", "传播链", "成簇", "snp-dists", "snippy", "重组"],
+    "summary": "用核心 SNP 差异量化菌株间的遗传距离",
+    "what": [
+      "从多菌株的核心 SNP 比对（或经过掩蔽的变异位点集合）计算两两之间的 SNP 差异数，得到距离矩阵，再按阈值做单连接聚类，把菌株划成传播簇。常用实现是 snp-dists（比对直接出距离矩阵）配合 Snippy 的核心基因组流程，或从 VCF 出发自行计数。这里最关键的一点是：距离必须在**同一批共有位点**上计算，把每个菌株各自「与参考的差异数」拿来互相比较，比较的其实是各自与参考的关系，而不是菌株之间的关系。",
+      "绝对 SNP 数离开背景没有意义。它同时取决于基因组长度、位点集合大小、掩蔽策略、测序错误率与时间尺度；「≤5 个 SNP 属于同一传播链」这类阈值来自特定病原体与特定暴发场景的经验值，不是通用法则，出处与被引用时的人群/时间跨度都要交代。对高重组率的物种，一个导入片段能一次带来几十个 SNP，直接用 SNP 距离会把无关菌株拉近或把相关菌株推远，必须先去掉重组区（Gubbins、ClonalFrameML 一类方法），或改用核心基因组多位点序列分型（cgMLST）的等位基因差异。",
+      "报告时至少给出四件事：所用核心位点数、掩蔽/剔除策略（重复区、前噬菌体、rRNA 操纵子）、是否去除重组、以及成簇阈值的理由。边界菌株（例如 4 个 SNP 与 6 个 SNP 的两对）往往正好落在阈值两侧，掩蔽策略的微小变化就会改变结论，因此对关键传播链建议同时给出距离矩阵、掩蔽前后对比与聚类树的置信情况。"
+    ],
+    "inputs": [
+      { "type": "vcf", "name": "多菌株核心变异位点", "required": true, "note": "所有菌株在同一坐标体系下的位点表；每个位点必须是全部菌株都有的核心位点" },
+      { "type": "alignment-fasta", "name": "核心 SNP 串联比对", "required": false, "note": "也可以直接给比对（snp-dists 的主输入），此时不需要 VCF" },
+      { "type": "tsv-table", "name": "掩蔽区间表", "required": false, "note": "需要剔除的重复区、可移动元件或低比对质量区间" }
+    ],
+    "outputs": [
+      { "type": "cluster-dist", "name": "SNP 距离矩阵", "ext": ".snp.dist.tsv", "note": "对称矩阵；对角为 0，单位是 SNP 个数（不是比例）" },
+      { "type": "cluster-dist", "name": "聚类分组表", "ext": ".clusters.tsv", "note": "按阈值单连接聚类得到的簇编号与簇内成员" },
+      { "type": "log-report", "name": "位点统计与掩蔽记录", "ext": ".snpdist.log", "note": "核心位点数、被掩蔽长度、是否去重组；缺了它距离数字无法解释" }
+    ],
+    "provides": [
+      { "tool": "snp-dists", "version": "0.8.x", "access": "cli", "install": "conda", "note": "从比对直接算两两 SNP 距离；单文件 C 程序，极快" },
+      { "tool": "Snippy", "version": "4.6.x", "access": "cli", "install": "conda", "note": "单菌 SNP 流程：比对、变异检出、核心位点合并一步到位" },
+      { "tool": "Gubbins", "version": "3.3.x", "access": "cli", "install": "conda", "note": "重组区检测与剔除；高重组物种的必需前置步骤" },
+      { "tool": "bcftools", "version": "1.1x", "access": "cli", "install": "conda", "note": "位点过滤与掩蔽（按区间排除、按质量与深度筛选）" }
+    ],
+    "feeds": [
+      { "target": "r_matrix_stats", "viaType": "cluster-dist", "note": "在 R 里做层次聚类、热图距离矩阵与阈值敏感性分析" },
+      { "target": "viz_heatmap", "viaType": "cluster-dist", "note": "把距离矩阵画成带聚类树的热图，异常菌株一眼可见" },
+      { "target": "py_pandas_io", "viaType": "cluster-dist", "note": "转成结果表与元数据合并，做交付表格" }
+    ],
+    "usage": [
+      {
+        "label": "从核心 SNP 比对直接算距离矩阵",
+        "lang": "bash",
+        "code": "snp-dists -c core_snp.aln.fasta > snp.dist.tsv\n# -c 只统计完全确定的碱基；含 N 的位点会被跳过"
+      },
+      {
+        "label": "先掩蔽可疑区间，再算距离",
+        "lang": "bash",
+        "code": "bcftools view -T ^mask.bed -Oz -o core.masked.vcf.gz core.vcf.gz\nbcftools index core.masked.vcf.gz\n# 掩蔽前后各算一次距离，比较边界菌株的归属是否稳定"
+      },
+      {
+        "label": "从距离矩阵做阈值聚类（示意）",
+        "lang": "bash",
+        "code": "python - <<'PY'\nimport pandas as pd, scipy.cluster.hierarchy as h\nD = pd.read_csv(\"snp.dist.tsv\", sep=\"\\t\", index_col=0)\nlab = h.fcluster(h.linkage(h.squareform(D.values), method=\"single\"), t=5, criterion=\"distance\")\nprint(dict(zip(D.index, lab)))\nPY"
+      }
+    ],
+    "recipes": {
+      "bash": "snp-dists -c 06_phylo/${PROJECT}.core_snp.aln.fasta > 09_results/${PROJECT}.snp.dist.tsv\nwc -l < 09_results/${PROJECT}.snp.dist.tsv > 10_logs/${PROJECT}.snpdist.log\necho \"掩蔽策略与是否去重组必须写入同一份日志\" >> 10_logs/${PROJECT}.snpdist.log",
+      "python": "import pandas as pd\nimport scipy.cluster.hierarchy as h\nwith open(RES_DIR / f\"{project}.snp.dist.tsv\", \"w\", encoding=\"utf-8\") as fh:\n    subprocess.run([\"snp-dists\", \"-c\", str(PHYLO_DIR / f\"{project}.core_snp.aln.fasta\")],\n                   check=True, stdout=fh)\nD = pd.read_csv(RES_DIR / f\"{project}.snp.dist.tsv\", sep=\"\\t\", index_col=0)\nclusters = h.fcluster(h.linkage(h.squareform(D.values), method=\"single\"),\n                      t=SNP_THRESHOLD, criterion=\"distance\")\npd.DataFrame({\"sample\": D.index, \"cluster\": clusters}).to_csv(\n    RES_DIR / f\"{project}.clusters.tsv\", sep=\"\\t\", index=False)"
+    },
+    "params": [
+      { "flag": "snp-dists -c", "default": "关闭", "note": "只保留不含模糊碱基的位点；会丢掉少量真实变异，但避免 N 被当成差异或匹配" },
+      { "flag": "成簇阈值", "default": "无通用默认", "note": "5 SNP 之类的阈值来自特定病原体与暴发场景；使用文献阈值必须引用出处并说明人群与时间跨度" },
+      { "flag": "是否去除重组", "default": "不去除", "note": "克隆性物种可不去；重组频繁的物种必须去，否则距离被导入片段主导" },
+      { "flag": "掩蔽区间", "default": "无", "note": "重复区、rRNA 操纵子、前噬菌体、低比对质量区；掩蔽策略变化会改变边界菌株的归属" },
+      { "flag": "位点集", "default": "核心位点", "note": "必须所有菌株共有；允许缺失位点参与会同时引入「缺失即差异」的系统性偏差" }
+    ],
+    "pitfalls": [
+      "最常见的错误是把每个菌株「与参考基因组的 SNP 数」当成菌株间距离。这比较的是各菌株与参考的关系，不是彼此的关系，聚出来的「传播链」没有意义。",
+      "绝对 SNP 数不能脱离背景解读：基因组长度、核心位点数、掩蔽策略、测序质量与时间跨度都会影响它。报告距离时必须同时给出这些量。",
+      "重组会一次引入成串 SNP。对于重组频繁的物种，不做去重组就直接说「差 30 个 SNP 所以不是同一暴发」是站不住的；应先 Gubbins/ClonalFrameML，或改用 cgMLST 等位基因差异。",
+      "阈值附近的菌株归属不稳定。掩蔽策略或位点集微调就能让 4 SNP 与 6 SNP 的菌株互换阵营，关键传播链必须做敏感性分析而不是只报一个结果。",
+      "测序质量差的菌株会人为抬高距离：低覆盖度、混菌样本或未去除的污染读长都会带来假 SNP，先把质量指标（覆盖度、比对率、杂合位点比例）查一遍再解释距离。",
+      "用从头组装做全基因组比对得到的距离与用读长比对参考得到的 SNP 距离不是一回事：前者包含组装错误与基因内容差异，数值会明显偏大，两种结果不能混在同一张表里。"
+    ],
+    "related": [
+      { "id": "pange_core_align", "note": "提供核心 SNP 比对，是本模块的主要上游" },
+      { "id": "var_snippy", "note": "单菌 SNP 流程，通常用来生成多菌株共有的核心位点" },
+      { "id": "var_typing_cgmlst", "note": "高重组物种的替代口径：等位基因差异而非 SNP 数" },
+      { "id": "viz_heatmap", "note": "距离矩阵的热图呈现与聚类可视化" }
+    ],
+    "docs": [
+      { "label": "第 7 章 比较基因组与泛基因组", "path": "docs/guidebook/07-comparative-pangenome.md" }
+    ]
+  },
+  {
+    "id": "comp_gene_presence",
+    "name": "基因存在/缺失矩阵构建",
+    "category": "comparative",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics", "phylogenetics"],
+    "tags": ["存在缺失矩阵", "附属基因", "关联分析", "系统发育混杂", "scoary"],
+    "summary": "把多基因组注释整合成基因存在/缺失矩阵",
+    "what": [
+      "把多个基因组的注释结果整合成一张行是基因家族、列是基因组的矩阵，值可以是 0/1，也可以是拷贝数。来源有三类：泛基因组工具已经聚好类的家族表、直系同源工具的计数矩阵，或自己用同源搜索把每个基因组的基因比对到一套参考基因集（例如耐药基因库、标志基因集）再统计有无。张矩阵是所有下游比较分析（关联分析、聚类、存在缺失热图、泛基因组曲线）的共同入口。",
+      "构建时必须显式定义四件事，否则数字无法解释：什么算一个「基因」（基因预测工具、最短长度阈值、contig 末端被截断的部分基因是否计入——草图基因组里这类基因很多，按「不存在」处理会系统性歧视碎片化基因组）；家族的一致性阈值；旁系同源如何表示（0/1 会丢掉拷贝数，而 rRNA 操纵子、IS 元件、耐药基因重复正好是拷贝数最有意义的地方）；以及家族注释用哪条代表序列。",
+      "做统计时的最大陷阱是系统发育混杂：0/1 矩阵带有极强的系统发育信号，亲缘相近的菌株自然共享基因。直接用卡方/Fisher 检验找「与致病性相关的基因」，得到的往往是谱系差异而不是致病机制。规范做法是用系统发育感知的方法（Scoary、treeWAS、系统发育广义线性模型一类）把树作为协变量纳入，并在报告中说明所用树与校正方式。"
+    ],
+    "inputs": [
+      { "type": "tsv-table", "name": "基因家族表", "required": true, "note": "泛基因组或直系同源工具产出的家族/计数矩阵，是主要输入" },
+      { "type": "gff", "name": "各基因组注释", "required": false, "note": "需要从零构建矩阵时使用；所有基因组必须来自同一注释流程" },
+      { "type": "cds-fasta", "name": "基因核酸/蛋白序列集合", "required": false, "note": "用同源搜索把基因组映射到参考基因集时使用" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "基因存在/缺失矩阵", "ext": ".gene_presence_absence.tsv", "note": "0/1 与拷贝数两套列，避免下游误用" },
+      { "type": "tsv-table", "name": "家族注释与统计表", "ext": ".family_annot.tsv", "note": "家族大小、代表序列、功能注释；关联分析前先看这里" },
+      { "type": "gene-list", "name": "核心/附属基因 ID 列表", "ext": ".core_genes.txt", "note": "按出现率划分的基因集，供建树与富集分析使用" },
+      { "type": "log-report", "name": "整合统计", "ext": ".presence.log", "note": "每基因组基因数、缺失率、被过滤的短基因数；判断输入质量的关键" }
+    ],
+    "provides": [
+      { "tool": "Scoary", "version": "1.6.x", "access": "cli", "install": "conda", "note": "把系统发育树纳入的存在缺失关联分析；避免把谱系差异当成表型关联" },
+      { "tool": "DIAMOND", "version": "2.1.x", "access": "cli", "install": "conda", "note": "把各基因组蛋白比对到参考基因集，用于从零构建矩阵" },
+      { "tool": "pandas", "version": "2.2.x", "access": "python-api", "install": "pip", "note": "矩阵整理、合并注释与缺失率统计；步骤虽简单但必须写成脚本而不是手工表格" }
+    ],
+    "feeds": [
+      { "target": "pange_acc_stats", "viaType": "tsv-table", "note": "统一格式的 0/1 矩阵可直接做累积曲线与家族分区" },
+      { "target": "viz_heatmap", "viaType": "tsv-table", "note": "存在缺失热图，常按系统发育树排序展示" },
+      { "target": "py_scipy_stats", "viaType": "tsv-table", "note": "初步的统计检验；正式结论需系统发育校正" },
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "与元数据合并、导出交付表格" }
+    ],
+    "usage": [
+      {
+        "label": "把家族表整理成标准 0/1 矩阵（示意）",
+        "lang": "python",
+        "code": "import pandas as pd\npa = pd.read_csv(\"gene_presence_absence.csv\", index_col=0)\ngenome_cols = [c for c in pa.columns if not c.startswith(\"annotation\")]\nmat01 = pa[genome_cols].notna().astype(int)          # 0/1\nmatcn = pa[genome_cols].notna().astype(int)          # 若输入含\"基因名;基因名\"则需先数拷贝\nmat01.to_csv(\"gene_presence_absence.01.tsv\", sep=\"\\t\")"
+      },
+      {
+        "label": "从零构建：把各基因组蛋白比对到参考基因集",
+        "lang": "bash",
+        "code": "diamond makedb --in ref_genes.faa -d ref_genes\ndiamond blastp -q sample.faa -d ref_genes -o sample.tsv --outfmt 6 qseqid sseqid pident length evalue bitscore --max-target-seqs 1\n# 再按 pident/覆盖度阈值判定该基因是否存在，阈值必须写进方法"
+      },
+      {
+        "label": "流行病学关联分析（需要系统发育树）",
+        "lang": "bash",
+        "code": "scoary -t core_tree.nwk -g gene_presence_absence.01.tsv -s traits.csv -o scoary_out"
+      }
+    ],
+    "recipes": {
+      "python": "import pandas as pd\npa = pd.read_csv(PANGE_DIR / \"gene_presence_absence.csv\", index_col=0)\ngenome_cols = [c for c in pa.columns if c not in ANNOT_COLUMNS]\nmat = pa[genome_cols].notna().astype(\"int8\")\nmat.to_csv(RES_DIR / f\"{project}.gene_presence_absence.tsv\", sep=\"\\t\")\n(LOG_DIR / f\"{project}.presence.log\").write_text(\n    f\"genomes={mat.shape[1]}\\tfamilies={mat.shape[0]}\\t\"\n    f\"core_families={(mat.sum(axis=1) == mat.shape[1]).sum()}\\n\",\n    encoding=\"utf-8\")",
+      "bash": "Rscript 11_scripts/build_presence_matrix.R \\\n  --input 05_pangenome/panaroo/gene_presence_absence.csv \\\n  --outdir 09_results \\\n  > 10_logs/${PROJECT}.presence.log 2>&1"
+    },
+    "params": [
+      { "flag": "最短基因长度阈值", "default": "以注释器默认为准", "note": "用于剔除碎片与假 ORF；阈值变化会同时影响所有基因组的基因数，必须统一并记录" },
+      { "flag": "contig 末端截断基因", "default": "计入", "note": "草图基因组里被截断的基因很多；按「不存在」处理会系统性歧视碎片化基因组" },
+      { "flag": "一致性/覆盖度阈值", "default": "以官方文档为准", "note": "同源搜索判定「存在」的阈值；阈值越松，附属基因越多" },
+      { "flag": "旁系同源表示", "default": "0/1", "note": "0/1 会丢拷贝数信息；涉及 rRNA 操纵子、IS 元件、耐药基因重复时必须保留拷贝数" },
+      { "flag": "关联分析的校正方式", "default": "无", "note": "系统发育混杂必须处理：用系统发育感知方法，或至少在报告中说明未校正的局限" }
+    ],
+    "pitfalls": [
+      "系统发育混杂是这一环节最大的坑：亲缘相近的菌株天然共享基因，普通卡方/Fisher 检验会把谱系差异报成表型关联。找关联基因必须用把树纳入模型的方法，并报告所用树。",
+      "0/1 矩阵会丢掉拷贝数。rRNA 操纵子数、IS 元件数、耐药基因的扩增正好是拷贝数最有意义的地方，用 0/1 会把这些信号抹平。",
+      "碎片化基因组被系统性歧视：contig 末端被截断的基因若按「不存在」处理，组装差的菌株会凭空多出一批「缺失基因」，看起来像生物学差异。要么计入，要么在报告中说明并按组装质量分层分析。",
+      "注释必须同源。混用不同注释器的结果会让同一基因被拆成两个家族，矩阵里表现为一对「互补缺失」的假家族，这种模式在热图上很显眼，出现时要先怀疑注释而非生物学。",
+      "从零构建矩阵时，阈值（一致性、覆盖度）决定了所有后续结论；阈值写在脚本里的默认值而不写进方法部分，等于让结果无法复现。",
+      "家族表里的注释列与基因组列容易被脚本混淆：把注释列当成一个「基因组」统计，会得到每个家族「存在率 100%」的荒谬结果，矩阵形状检查（列数 = 基因组数）应作为固定自检。"
+    ],
+    "related": [
+      { "id": "pange_panaroo", "note": "最常用的家族表来源" },
+      { "id": "pange_orthofinder", "note": "基于蛋白的家族/计数矩阵来源，含拷贝数信息" },
+      { "id": "pange_acc_stats", "note": "把矩阵转成家族分区与累积曲线" },
+      { "id": "viz_heatmap", "note": "存在缺失热图与聚类展示" }
+    ],
+    "docs": [
+      { "label": "第 7 章 比较基因组与泛基因组", "path": "docs/guidebook/07-comparative-pangenome.md" }
+    ]
+  },
+  {
+    "id": "comp_island_path",
+    "name": "基因组岛与致病岛预测 (IslandViewer)",
+    "category": "comparative",
+    "layer": "core",
+    "kind": "standard",
+    "maturity": "stable",
+    "domains": ["genomics", "metagenomics"],
+    "tags": ["基因组岛", "致病岛", "水平转移", "islandviewer", "GC 偏移"],
+    "summary": "预测基因组岛、致病岛与可移动元件区块",
+    "what": [
+      "基因组岛是水平转移获得的染色体区块，通常带有整合酶/转座酶等可移动元件基因，并表现出与宿主基因组不同的碱基组成特征。IslandViewer 把三类互补的预测器汇总成一个共识结果：基于比较基因组学的 IslandPick（在一组近缘基因组中找不到的区域）、基于密码子使用偏好的 SIGI-HMM，以及基于二核苷酸偏好加可移动元件基因的 IslandPath-DIMOB。三者取交集能明显降低单一方法的假阳性。",
+      "共识是这类方法的要点而不是装饰：组成法（GC 含量、二核苷酸偏好）在本身 GC 就有强烈波动的基因组上会产生大量假阳性，比较法则高度依赖所选参考基因组——没有近缘参考时 IslandPick 什么也找不到，参考太远时整个基因组都「看起来特有」。因此结果必须写明用了哪些方法、参考基因组是哪几个、阈值如何设置。",
+      "解释结果时要区分「组成异常区」与「致病岛」：一个 GC 偏低的区块里恰好有一个毒力基因，并不能证明它是水平转移来的致病岛，还需要可移动性证据（整合酶、tRNA 基因边界、正向重复）与在近缘菌株中的分布差异。另外，预测的边界精度有限，落在边界上的基因往往归属模糊，报数时应以「区间 + 区间内基因表」的形式给出，而不是只给一个总数。"
+    ],
+    "inputs": [
+      { "type": "genome-fasta", "name": "目标基因组", "required": true, "note": "尽量使用完整或高质量的组装；草图会在 contig 末端产生假边界" },
+      { "type": "gff", "name": "基因注释", "required": false, "note": "用于把预测区间映射到具体基因（尤其是毒力与可移动元件基因）" },
+      { "type": "tsv-table", "name": "比较用近缘基因组或区间表", "required": false, "note": "比较法需要近缘基因组序列或其比对区间；缺失时只能依赖组成法" }
+    ],
+    "outputs": [
+      { "type": "tsv-table", "name": "基因组岛区间表", "ext": ".islands.gff", "note": "含起止坐标、预测方法与共识评分；下游可当区间文件使用" },
+      { "type": "tsv-table", "name": "岛内基因与元件表", "ext": ".islands_genes.tsv", "note": "区间内的基因、注释与是否含可移动元件" },
+      { "type": "figure-png", "name": "岛位置示意图", "ext": ".png", "note": "在全基因组坐标上标出各预测方法与共识区间" },
+      { "type": "log-report", "name": "方法与一致性统计", "ext": ".island_summary.txt", "note": "各方法预测数、交集大小与所用参考基因组，是可信度判断依据" }
+    ],
+    "provides": [
+      { "tool": "IslandViewer 4", "version": "4.0.x", "access": "bundled", "install": "container", "note": "以网页服务为主要入口；本地部署需自行准备 IslandPick / SIGI-HMM / IslandPath-DIMOB 三个预测器，以官方文档为准" },
+      { "tool": "IslandPath-DIMOB", "version": "1.0.x", "access": "cli", "install": "source", "note": "二核苷酸偏好 + 可移动元件基因的本地预测器，作为离线替代" },
+      { "tool": "alien_hunter", "version": "1.7.x", "access": "cli", "install": "source", "note": "基于组成与密码子使用的水平转移区间预测，可与上述结果取交集" }
+    ],
+    "feeds": [
+      { "target": "comp_gene_presence", "viaType": "tsv-table", "note": "把岛内基因并入存在/缺失矩阵，检查该岛是否只在部分菌株中出现" },
+      { "target": "py_pandas_io", "viaType": "tsv-table", "note": "整理成结果表并与耐药/毒力注释合并" },
+      { "target": "viz_pub_style", "viaType": "figure-png", "note": "把岛位置示意图规范成投稿插图" }
+    ],
+    "usage": [
+      {
+        "label": "准备提交输入：基因组与注释",
+        "lang": "bash",
+        "code": "# IslandViewer 以网页提交为主：上传基因组 FASTA（含注释的 GenBank 更好）\n# 比较法需要额外提供若干近缘基因组；没有近缘基因组时只会得到组成法结果\nls genome.fna annotation.gff refs/*.fna"
+      },
+      {
+        "label": "离线路线：本地预测器出区间后取交集",
+        "lang": "bash",
+        "code": "islandpath_dimob -f genome.fna -g annotation.gff -o islands.txt\nalien_hunter -i genome.fna -o alien_hunter_out\n# 两个结果取交集（区间重叠）比单用任一方法的假阳性低得多"
+      },
+      {
+        "label": "核对区间是否落在 contig 边界",
+        "lang": "bash",
+        "code": "awk -F'\\t' 'NR>1{print $1, $4, $5}' islands.gff | head\nseqkit fx2tab -l genome.fna | sort -k2,2nr | head   # 结合 contig 长度判断是否为末端假象"
+      }
+    ],
+    "recipes": {
+      "bash": "mkdir -p 07_compare/islands\nislandpath_dimob -f 02_assembly/${SAMPLE}.fna -g 03_annotation/${SAMPLE}.gff \\\n  -o 07_compare/islands/${SAMPLE}.dimob.txt > 10_logs/${SAMPLE}.island.log 2>&1\nalien_hunter -i 02_assembly/${SAMPLE}.fna -o 07_compare/islands/${SAMPLE}.alien >> 10_logs/${SAMPLE}.island.log 2>&1\ngrep -c . 07_compare/islands/${SAMPLE}.dimob.txt >> 10_logs/${SAMPLE}.island.log",
+      "python": "run([\"islandpath_dimob\", \"-f\", str(ASM_DIR / f\"{sample}.fna\"),\n     \"-g\", str(ANNO_DIR / f\"{sample}.gff\"),\n     \"-o\", str(CMP_DIR / \"islands\" / f\"{sample}.dimob.txt\")],\n    log_name=f\"{sample}.island.log\")\n# 交集与区间合并建议用 bedtools，避免手写坐标比较脚本\nrun(f\"bedtools intersect -a {CMP_DIR}/islands/{sample}.dimob.bed \"\n    f\"-b {CMP_DIR}/islands/{sample}.alien.bed -wa -wb > \"\n    f\"{CMP_DIR}/islands/{sample}.consensus.tsv\")"
+    },
+    "params": [
+      { "flag": "参考基因组集合", "default": "无", "note": "比较法完全依赖它：没有近缘参考就只能用组成法，参考太远则全基因组都像「特有区」" },
+      { "flag": "最小岛长度", "default": "以官方文档为准", "note": "短区块多半是噪声；过滤长度会明显减少预测数，阈值必须写进方法" },
+      { "flag": "是否要求含可移动元件基因", "default": "建议要求", "note": "要求整合酶/转座酶等证据能显著提高可信度，但会漏掉退化严重的古老岛" },
+      { "flag": "多方法共识策略", "default": "至少两种方法支持", "note": "单方法结果假阳性率高；共识要求越严，预测越少但越可靠" }
+    ],
+    "pitfalls": [
+      "组成法会在本身 GC 波动大的基因组上产生大量假阳性。先看全基因组的 GC 分布，如果本身就呈多峰，纯组成法结果几乎不可用，必须依赖比较法或可移动元件证据。",
+      "比较法依赖参考基因组的选择：没有近缘参考时 IslandPick 无输出，参考太远时整个基因组都被判成「特有」。参考集合与版本必须随结果一起报告。",
+      "「致病岛」需要多重证据：组成异常 + 可移动性（整合酶、tRNA 边界、正向重复）+ 在近缘菌株中的分布差异。只凭 GC 偏低加一个毒力基因就下结论是最常见的过度解读。",
+      "草图组装会在 contig 末端产生假边界，也会把真实的岛截断成几段。做岛预测尽量用完整或高度连续的组装，否则预测数量与长度都不可靠。",
+      "预测边界本身有误差，边界上的基因归属模糊（同一基因在不同方法里可能落进或落出）。下游统计应以区间内的基因表为单位，而不是只用一个「岛数量」。",
+      "网页版工具有排队与输入大小限制，大量基因组时既慢又难复现；批量项目应固定本地预测器版本，并把参数与输出一起归档。"
+    ],
+    "related": [
+      { "id": "comp_syri", "note": "not-aligned 与特有区块可作为岛的候选区间" },
+      { "id": "res_mobilome", "note": "可移动元件的系统注释，是判定岛边界与可移动性的证据来源" },
+      { "id": "res_vfdb", "note": "毒力因子注释，用于判断岛内是否真的携带毒力基因" },
+      { "id": "comp_gene_presence", "note": "检查该岛在各菌株中的分布，验证水平转移假说" }
+    ],
+    "docs": [
+      { "label": "第 7 章 比较基因组与泛基因组", "path": "docs/guidebook/07-comparative-pangenome.md" }
+    ]
+  }
+]
