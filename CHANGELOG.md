@@ -6,6 +6,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] — 2026-11-06
+
+### 中文
+
+**修复**
+
+- `smoke-edge.mjs` 在容器 / CI 中启动 Chromium 时使用 `--no-sandbox`、`--disable-dev-shm-usage`，并把 `HOME` / `XDG_*` 指向临时目录；若浏览器启动但未产出 DOM，打印 stderr 末尾。
+- 文档同步：浏览器渲染由 smoke-edge 覆盖（14/14）；拖拽、连线、缩放等鼠标交互仍未纳入自动化测试。
+- README 增加 CI 状态徽章。
+
+### English
+
+**Fixed**
+
+- `smoke-edge.mjs` now launches Chromium with `--no-sandbox`, `--disable-dev-shm-usage` and a writable `HOME` in containers/CI, and prints the stderr tail when the browser starts but produces no DOM.
+- Documentation updated: browser rendering is covered by `smoke-edge` (14/14); mouse interactions (drag, connect, zoom) are still not covered.
+- Added a CI status badge to both READMEs.
+
 ## [1.0.0] — 2026-11-06
 
 首个公开版本。
@@ -50,5 +68,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The panel does not run analyses; exported scripts are structural skeletons with parameter starting points.
 - DOM interactions (drag, connect, zoom) are not yet covered by automated tests.
 
-[Unreleased]: https://github.com/Indigo-Rain/bioinfo-guidebook/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/Indigo-Rain/bioinfo-guidebook/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/Indigo-Rain/bioinfo-guidebook/releases/tag/v1.0.1
 [1.0.0]: https://github.com/Indigo-Rain/bioinfo-guidebook/releases/tag/v1.0.0

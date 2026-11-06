@@ -323,7 +323,7 @@ node tools/smoke-edge.mjs
   title   = {Microbial Bioinformatics Pipeline Guidebook},
   author  = {{Indigo-Rain and contributors}},
   year    = {2026},
-  version = {1.0.0},
+  version = {1.0.1},
   url     = {https://github.com/Indigo-Rain/bioinfo-guidebook},
   license = {MIT}
 }
