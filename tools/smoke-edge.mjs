@@ -14,12 +14,13 @@
  * 沙箱注意事项（重要）：
  *   - 子进程输出必须重定向到真实文件描述符。DSH 文件沙箱禁止子进程通过管道
  *     通信，用 stdio: 'pipe' 会 EPERM。
- *   - Chromium 自身的多进程 IPC 也依赖命名管道，因此在 DSH 沙箱内**根本起不来**：
- *     实测报 `FATAL:mojo/.../platform_channel.cc Check failed: Access is denied`。
- *     这种情况按"跳过"处理并返回退出码 2，绝不谎报通过。
+ *   - Chromium 在容器/CI 与部分沙箱中需要 `--no-sandbox` 才能启动；本脚本渲染的
+ *     只是本地的 index.html，不加载外部内容，因此可以安全地关闭该沙箱。
+ *   - 若浏览器仍因环境限制无法启动，按"跳过"处理并返回退出码 2；若启动了但没有
+ *     产出 DOM，则按失败处理并打印 stderr 末尾，绝不谎报通过。
  */
 
-import { readFile, writeFile, rm, mkdtemp, open, stat } from 'node:fs/promises';
+import { readFile, writeFile, rm, mkdtemp, mkdir, open, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -316,6 +317,13 @@ async function browserChecks(html) {
     const domFile = path.join(tmpDir, 'dom.html');
     const stderrFile = path.join(tmpDir, 'stderr.txt');
     const profileDir = path.join(tmpDir, 'profile');
+    // 容器与 CI 里 HOME 常不可写；把 Chromium 的配置/缓存也指向临时目录。
+    const homeDir = path.join(tmpDir, 'home');
+    const configDir = path.join(homeDir, '.config');
+    const cacheDir = path.join(homeDir, '.cache');
+    await mkdir(configDir, { recursive: true });
+    await mkdir(cacheDir, { recursive: true });
+    await mkdir(profileDir, { recursive: true });
 
     await writeFile(probeFile, withProbe(html), 'utf8');
     await writeFile(reportFile, withReporter(await readFile(probeFile, 'utf8')), 'utf8');
@@ -330,7 +338,10 @@ async function browserChecks(html) {
         browser,
         [
           '--headless=new',
+          '--no-sandbox',
           '--disable-gpu',
+          '--disable-dev-shm-usage',
+          '--disable-software-rasterizer',
           '--no-first-run',
           '--no-default-browser-check',
           '--disable-extensions',
@@ -341,7 +352,18 @@ async function browserChecks(html) {
           '--dump-dom',
           toFileUrl(reportFile)
         ],
-        { stdio: ['ignore', domHandle.fd, errHandle.fd], timeout: 120000, windowsHide: true }
+        {
+          stdio: ['ignore', domHandle.fd, errHandle.fd],
+          timeout: 120000,
+          windowsHide: true,
+          env: {
+            ...process.env,
+            HOME: homeDir,
+            XDG_CONFIG_HOME: configDir,
+            XDG_CACHE_HOME: cacheDir,
+            TMPDIR: tmpDir
+          }
+        }
       );
       if (result.error) {
         bad('无法启动浏览器', String(result.error.message));
@@ -367,7 +389,8 @@ async function browserChecks(html) {
           '这不代表渲染有问题，但也**不构成通过**：请在沙箱外重跑本脚本以获得结论。'
         ]);
       } else {
-        bad('浏览器未产出 DOM', '且未识别为沙箱限制，需要人工排查（见临时目录里的 stderr）');
+        const tail = stderrText.trim().split(/\r?\n/).slice(-8).map((line) => '       ' + line).join('\n');
+        bad('浏览器未产出 DOM', '且未识别为沙箱限制，需要人工排查' + (tail ? '\n' + tail : '（stderr 为空）'));
       }
       return;
     }

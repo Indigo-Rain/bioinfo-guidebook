@@ -276,7 +276,7 @@ node tools/build.mjs --strict              # 结构、类型、feeds、manifest�
 node --test tools/tests/model.test.mjs      # 48 项单元测试
 node tools/verify-exports.mjs               # 12 条预设的导出链路
 node tools/diagnose-preset-edges.mjs        # 应为 0 条错误连线
-node tools/smoke-edge.mjs                   # 产物静态检查（浏览器项视环境而定）
+node tools/smoke-edge.mjs                   # 静态 + 浏览器渲染/运行时断言
 ```
 
-全部通过即可提交。`smoke-edge.mjs` 在无法启动浏览器的环境下会返回 2（「有跳过项」）或以非零码报告失败；这是环境限制，不代表渲染有问题，但也**不构成通过**。请在正常环境重跑以获得完整结论。
+全部通过即可提交（当前 `smoke-edge.mjs` 为 14/14）。在无法启动浏览器的环境下，它会返回 2（「有跳过项」）或以非零码报告失败；这是环境限制，不代表渲染有问题，但也**不构成通过**。

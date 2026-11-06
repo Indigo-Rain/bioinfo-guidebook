@@ -276,7 +276,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design (Chinese).
 | `node tools/verify-exports.mjs` | 12 workflows × 3 exports + edge cases | 16 / 16 pass |
 | `node tools/diagnose-preset-edges.mjs` | Preset edge type diagnosis | 0 type errors |
 | `node tools/audit-data.mjs` | Cross-file consistency audit | Pass (with a manual review list) |
-| `node tools/smoke-edge.mjs` | Static artifact checks + browser render probe | 4 static checks pass; browser probe depends on the environment |
+| `node tools/smoke-edge.mjs` | Static artifact checks + browser render and runtime assertions | 14 / 14 pass (including a real browser render) |
 
 CI runs the build, tests and export verification on Node.js 18, 20 and 22, and checks that the committed `index.html` and `data/bundle.json` match the data registry.
 
@@ -290,7 +290,7 @@ CI runs the build, tests and export verification on Node.js 18, 20 and 22, and c
 
 **Some modules are incomplete.** `asmqc_ideel` has `kind: template`: it provides inputs/outputs and decision criteria but does not pin a concrete command (the tool's entry point and parameters vary by release). The panel labels it as requiring project-specific adaptation.
 
-**Browser rendering is not part of automated testing.** The static checks in `smoke-edge.mjs` always run, but Chromium/Edge may fail to start in restricted sandboxes; the script then reports "skipped" or "failed" rather than pretending to pass. Export logic is covered by all 12 real workflows, but drag-and-drop, wiring and zooming have no end-to-end tests.
+**Browser rendering is automated; interactions are not.** `smoke-edge.mjs` launches a real Chromium/Edge instance and asserts the registry, module palette, preset loading, edge rendering and runtime errors (currently 14/14). Drag-and-drop, wiring and zooming still have no end-to-end tests. In environments where the browser cannot start, the script reports "skipped" or "failed" rather than pretending to pass.
 
 **The type system is "good enough", not complete.** For example, rRNA sequences reuse `cds-fasta`, and shared modules output `any`. Such borrowings are documented in port `note` fields, but not eliminated at the type level.
 
